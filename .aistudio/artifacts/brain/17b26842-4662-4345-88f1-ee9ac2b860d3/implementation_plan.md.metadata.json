@@ -1,0 +1,6 @@
+{
+  "summary": "Plano de implementação revisado: substitui o módulo LGPD por exportação direta de arquivo de logs de acesso (disponível para download junto ao backup do banco de dados), mantendo a matriz de permissões por checkboxes na criação de usuários, o perfil TI/DPO e o isolamento de relatórios e requisições por Centro de Custo para usuários comuns.",
+  "updatedAt": "2026-10-19T14:42:48.890106805Z",
+  "requestFeedback": true,
+  "userFacing": true
+}

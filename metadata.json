@@ -1,0 +1,8 @@
+{
+  "name": "Remix Sistema de Almoxarifado Hospitalar",
+  "description": "Sistema integrado de controle de almoxarifado hospitalar e suprimentos com gestão de centros de custo, aprovação de requisições, rastreabilidade e controle de empréstimos.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

@@ -1,0 +1,41 @@
+@import "tailwindcss";
+
+@theme {
+  --color-brand-blue: #00237D;
+  --color-brand-blue-hover: #001c66;
+  --color-brand-blue-dark: #00144d;
+  --color-brand-blue-light: #1e3f9a;
+  --color-brand-red: #C2363A;
+  --color-brand-red-hover: #a62b2f;
+  --color-brand-red-dark: #871f23;
+  --color-brand-navy: #192641;
+  --color-brand-cyan: #6EC1E4;
+  --color-brand-gold: #FFBC7D;
+
+  /* Overrides para converter a paleta principal para a identidade visual Santa Casa SBC */
+  --color-teal-50: #f0f4fc;
+  --color-teal-100: #e0ecff;
+  --color-teal-200: #c4dbfe;
+  --color-teal-300: #96c0fd;
+  --color-teal-400: #609efa;
+  --color-teal-500: #2563eb;
+  --color-teal-600: #00237D;
+  --color-teal-700: #001c66;
+  --color-teal-800: #00154d;
+  --color-teal-900: #192641;
+  --color-teal-950: #0b1326;
+}
+
+@layer base {
+  body {
+    font-family: 'Plus Jakarta Sans', system-ui, -apple-system, sans-serif;
+    color: #1e293b;
+    background-color: #f8fafc;
+    overflow-x: clip;
+  }
+
+  /* Aplicação estrita de números tabulares em tabelas e métricas */
+  table, .tabular-nums {
+    font-variant-numeric: tabular-nums;
+  }
+}
