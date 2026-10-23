@@ -18,7 +18,7 @@ import { SearchableSelect, type SearchableOption } from './SearchableSelect.tsx'
 
 interface LoginViewProps {
   unidades?: EmpresaUnidade[];
-  onLoginSuccess: (user: Usuario, areaSigla: string) => void;
+  onLoginSuccess: (user: Usuario, token: string, areaSigla: string) => void;
 }
 
 export const LoginView: React.FC<LoginViewProps> = ({
@@ -81,7 +81,7 @@ export const LoginView: React.FC<LoginViewProps> = ({
         throw new Error(data.error || 'Falha ao autenticar.');
       }
 
-      onLoginSuccess(data.user, selectedAreaSigla);
+      onLoginSuccess(data.user, data.token || '', selectedAreaSigla);
     } catch (err: any) {
       setErrorMsg(err.message || 'Erro de conexão com o servidor.');
     } finally {

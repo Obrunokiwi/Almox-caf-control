@@ -22,7 +22,7 @@ import {
 import * as XLSX from 'xlsx';
 import { jsPDF } from 'jspdf';
 import autoTable from 'jspdf-autotable';
-import type { Usuario, Produto, Fornecedor } from '../types/index.ts';
+import type { Usuario, Produto, Fornecedor, Area } from '../types/index.ts';
 import { useToast } from '../context/ToastContext.tsx';
 
 interface ImportacaoCadastrosViewProps {
@@ -108,7 +108,13 @@ export const ImportacaoCadastrosView: React.FC<ImportacaoCadastrosViewProps> = (
   const { toast } = useToast();
   const isAdmin = currentUser?.perfil === 'admin';
 
-  // Base existente no banco (para checagem em tempo real na prévia)
+  // Áreas ativas do sistema e Área de Destino da Importação
+  const [areas, setAreas] = useState<Area[]>([]);
+  const [selectedTargetSigla, setSelectedTargetSigla] = useState<string>(currentUser?.area_sigla || 'ALM');
+  const [isConfirmModalOpen, setIsConfirmModalOpen] = useState<boolean>(false);
+  const [confirmImportType, setConfirmImportType] = useState<'produtos' | 'fornecedores' | null>(null);
+
+  // Base existente no banco da área de destino (para checagem em tempo real na prévia)
   const [bancoProdutos, setBancoProdutos] = useState<Produto[]>([]);
   const [bancoFornecedores, setBancoFornecedores] = useState<Fornecedor[]>([]);
   const [carregandoBase, setCarregandoBase] = useState(false);
@@ -127,11 +133,47 @@ export const ImportacaoCadastrosView: React.FC<ImportacaoCadastrosViewProps> = (
   const [isGravandoForn, setIsGravandoForn] = useState(false);
   const [relatorioForn, setRelatorioForn] = useState<any | null>(null);
 
-  // Carrega produtos e fornecedores atuais para comparar códigos
-  const carregarBaseExistente = async () => {
+  // Carrega lista de áreas ativas
+  useEffect(() => {
+    const fetchAreas = async () => {
+      try {
+        const token = localStorage.getItem('multi_almox_token') || localStorage.getItem('token') || '';
+        const res = await fetch('/api/areas/publicas', {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        if (res.ok) {
+          const data: Area[] = await res.json();
+          if (Array.isArray(data) && data.length > 0) {
+            setAreas(data);
+            if (!data.some((a) => a.sigla.toUpperCase() === selectedTargetSigla.toUpperCase())) {
+              setSelectedTargetSigla(data[0].sigla);
+            }
+          }
+        }
+      } catch (err) {
+        console.error('Erro ao carregar lista de áreas:', err);
+      }
+    };
+    fetchAreas();
+  }, []);
+
+  const targetArea = areas.find((a) => a.sigla.toUpperCase() === selectedTargetSigla.toUpperCase()) || {
+    id: 1,
+    sigla: selectedTargetSigla || 'ALM',
+    nome: selectedTargetSigla === 'CAF' ? 'Farmácia / CAF' : 'Almoxarifado',
+    arquivo_db: selectedTargetSigla === 'CAF' ? 'caf.db' : 'almoxarifado.db',
+  };
+
+  // Carrega produtos e fornecedores cadastrados na ÁREA DE DESTINO selecionada
+  const carregarBaseExistente = async (siglaAlvo?: string) => {
+    const sigla = siglaAlvo || selectedTargetSigla;
     setCarregandoBase(true);
     try {
-      const headers: Record<string, string> = currentUser?.id ? { Authorization: `user:${currentUser.id}` } : {};
+      const token = localStorage.getItem('multi_almox_token') || localStorage.getItem('token') || '';
+      const headers: Record<string, string> = {
+        Authorization: `Bearer ${token}`,
+        'X-Area-Sigla': sigla,
+      };
       const [resProd, resForn] = await Promise.all([
         fetch('/api/produtos?apenas_ativos=false', { headers }),
         fetch('/api/fornecedores?apenas_ativos=false', { headers }),
@@ -147,7 +189,20 @@ export const ImportacaoCadastrosView: React.FC<ImportacaoCadastrosViewProps> = (
 
   useEffect(() => {
     carregarBaseExistente();
-  }, [currentUser?.id]);
+  }, [selectedTargetSigla]);
+
+  const handleTargetAreaChange = (novaSigla: string) => {
+    if (novaSigla === selectedTargetSigla) return;
+    setSelectedTargetSigla(novaSigla);
+    carregarBaseExistente(novaSigla);
+
+    if (produtosParsed.length > 0 || fornecedoresParsed.length > 0) {
+      toast.info(
+        'Área de Destino Alterada',
+        `Área alterada para ${novaSigla}. A validação de duplicidades será realizada contra o banco desta área.`
+      );
+    }
+  };
 
   // Se o usuário não for administrador
   if (!isAdmin) {
@@ -349,30 +404,32 @@ export const ImportacaoCadastrosView: React.FC<ImportacaoCadastrosViewProps> = (
     e.target.value = '';
   };
 
-  // Confirmar Importação de Produtos no Banco
+  // Confirmar Importação de Produtos no Banco de Destino
   const handleConfirmarImportacaoProdutos = async () => {
     // Apenas registros válidos e que NÃO existem no banco
     const registrosParaGravar = produtosParsed.filter((p) => p.valido && !p.ja_existe_no_banco);
 
     if (registrosParaGravar.length === 0) {
-      toast.warning('Nada a Gravar', 'Todos os registros válidos já existem no catálogo ou estão inválidos.');
+      toast.warning('Nada a Gravar', 'Todos os registros válidos já existem no catálogo da área selecionada ou estão inválidos.');
       return;
     }
 
     setIsGravandoProd(true);
     try {
-      const res = await fetch('/api/importacao/produtos', {
+      const token = localStorage.getItem('multi_almox_token') || localStorage.getItem('token') || '';
+      const res = await fetch(`/api/importacao/${selectedTargetSigla}/produtos`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          Authorization: `user:${currentUser?.id}`,
+          Authorization: `Bearer ${token}`,
+          'X-Area-Sigla': selectedTargetSigla,
         },
-        body: JSON.stringify({ produtos: registrosParaGravar }),
+        body: JSON.stringify({ produtos: registrosParaGravar, targetSigla: selectedTargetSigla }),
       });
 
       const data = await res.json();
       if (!res.ok) {
-        throw new Error(data.error || 'Falha ao processar gravação no banco.');
+        throw new Error(data.error || 'Falha ao processar gravação no banco de destino.');
       }
 
       // Constrói relatório consolidado
@@ -382,6 +439,7 @@ export const ImportacaoCadastrosView: React.FC<ImportacaoCadastrosViewProps> = (
 
       setRelatorioProd({
         tipo: 'produtos',
+        area: data.area || targetArea,
         dataHora: new Date(),
         arquivo: arquivoProdNome,
         totalLidos: produtosParsed.length,
@@ -396,7 +454,11 @@ export const ImportacaoCadastrosView: React.FC<ImportacaoCadastrosViewProps> = (
 
       setIsPreviaProdAberta(false);
       setProdutosParsed([]);
-      toast.success('Importação Concluída', `${incluidos.length} produtos cadastrados com sucesso.`);
+      setIsConfirmModalOpen(false);
+      toast.success(
+        'Importação Concluída',
+        `${incluidos.length} produtos cadastrados com sucesso no banco da área ${targetArea.nome} (${targetArea.arquivo_db}).`
+      );
       onRefresh();
       carregarBaseExistente();
     } catch (err: any) {
@@ -664,7 +726,7 @@ export const ImportacaoCadastrosView: React.FC<ImportacaoCadastrosViewProps> = (
     toast.success('Conflito Resolvido', `Dados da ocorrência selecionada aplicados para o código ${opcaoEscolhida.codigo}.`);
   };
 
-  // Confirmar Importação de Fornecedores no Banco
+  // Confirmar Importação de Fornecedores no Banco de Destino
   const handleConfirmarImportacaoFornecedores = async () => {
     // Apenas válidos, sem conflito e que não existem no banco
     const registrosParaGravar = fornecedoresParsed.filter(
@@ -672,24 +734,26 @@ export const ImportacaoCadastrosView: React.FC<ImportacaoCadastrosViewProps> = (
     );
 
     if (registrosParaGravar.length === 0) {
-      toast.warning('Nada a Gravar', 'Nenhum fornecedor pronto para importação sem conflitos ou pendências.');
+      toast.warning('Nada a Gravar', 'Nenhum fornecedor pronto para importação sem conflitos ou pendências na área selecionada.');
       return;
     }
 
     setIsGravandoForn(true);
     try {
-      const res = await fetch('/api/importacao/fornecedores', {
+      const token = localStorage.getItem('multi_almox_token') || localStorage.getItem('token') || '';
+      const res = await fetch(`/api/importacao/${selectedTargetSigla}/fornecedores`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          Authorization: `user:${currentUser?.id}`,
+          Authorization: `Bearer ${token}`,
+          'X-Area-Sigla': selectedTargetSigla,
         },
-        body: JSON.stringify({ fornecedores: registrosParaGravar }),
+        body: JSON.stringify({ fornecedores: registrosParaGravar, targetSigla: selectedTargetSigla }),
       });
 
       const data = await res.json();
       if (!res.ok) {
-        throw new Error(data.error || 'Erro ao processar importação de fornecedores.');
+        throw new Error(data.error || 'Erro ao processar importação de fornecedores no banco de destino.');
       }
 
       const incluidos = data.incluidos || [];
@@ -699,6 +763,7 @@ export const ImportacaoCadastrosView: React.FC<ImportacaoCadastrosViewProps> = (
 
       setRelatorioForn({
         tipo: 'fornecedores',
+        area: data.area || targetArea,
         dataHora: new Date(),
         arquivo: arquivoFornNome,
         totalLidos: fornecedoresParsed.length,
@@ -715,7 +780,11 @@ export const ImportacaoCadastrosView: React.FC<ImportacaoCadastrosViewProps> = (
 
       setIsPreviaFornAberta(false);
       setFornecedoresParsed([]);
-      toast.success('Fornecedores Importados', `${incluidos.length} entidades cadastradas com sucesso.`);
+      setIsConfirmModalOpen(false);
+      toast.success(
+        'Fornecedores Importados',
+        `${incluidos.length} entidades cadastradas com sucesso no banco da área ${targetArea.nome} (${targetArea.arquivo_db}).`
+      );
       onRefresh();
       carregarBaseExistente();
     } catch (err: any) {
@@ -915,13 +984,13 @@ export const ImportacaoCadastrosView: React.FC<ImportacaoCadastrosViewProps> = (
         <div className="flex items-center gap-2">
           <button
             type="button"
-            onClick={carregarBaseExistente}
+            onClick={() => carregarBaseExistente()}
             disabled={carregandoBase}
             className="px-3 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg text-xs font-semibold cursor-pointer border border-slate-300 flex items-center gap-1.5 transition-all"
-            title="Atualizar contadores da base existente"
+            title={`Atualizar contadores da área ${targetArea.nome} (${targetArea.arquivo_db})`}
           >
             <RotateCcw className={`w-3.5 h-3.5 ${carregandoBase ? 'animate-spin' : ''}`} />
-            <span>Atualizar Base ({bancoProdutos.length} prods / {bancoFornecedores.length} forns)</span>
+            <span>Atualizar Base ({bancoProdutos.length} prods / {bancoFornecedores.length} forns em {targetArea.sigla})</span>
           </button>
 
           <button
@@ -932,6 +1001,51 @@ export const ImportacaoCadastrosView: React.FC<ImportacaoCadastrosViewProps> = (
             <ArrowLeft className="w-4 h-4" />
             <span>VOLTAR</span>
           </button>
+        </div>
+      </div>
+
+      {/* =========================================================================
+          SELETOR OBRIGATÓRIO DE ÁREA DE DESTINO DA IMPORTAÇÃO
+         ========================================================================= */}
+      <div className="bg-gradient-to-r from-slate-900 via-indigo-950 to-slate-900 p-4 sm:p-5 rounded-xl text-white shadow-md border border-indigo-900/60 flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
+        <div className="flex items-start sm:items-center gap-3.5">
+          <div className="p-3 bg-indigo-500/20 text-indigo-300 rounded-xl border border-indigo-400/30 shrink-0">
+            <Building2 className="w-6 h-6 text-amber-400" />
+          </div>
+          <div>
+            <div className="flex items-center gap-2">
+              <span className="text-[10px] font-bold uppercase tracking-widest bg-amber-400/20 text-amber-300 px-2 py-0.5 rounded border border-amber-400/30">
+                Área de Destino Obrigatória
+              </span>
+              <span className="text-[11px] font-medium text-slate-300">
+                Banco Afetado: <strong className="text-white font-mono">{targetArea.arquivo_db}</strong>
+              </span>
+            </div>
+            <h2 className="text-base font-bold text-white tracking-tight mt-0.5">
+              Destino Selecionado: <span className="text-amber-300">{targetArea.nome} ({targetArea.sigla})</span>
+            </h2>
+            <p className="text-xs text-slate-300 mt-0.5">
+              Os registros de produtos e fornecedores serão gravados EXCLUSIVAMENTE na base desta área selecionada.
+            </p>
+          </div>
+        </div>
+
+        <div className="w-full md:w-auto shrink-0 bg-white/10 p-2.5 rounded-xl border border-white/15 flex flex-col sm:flex-row items-start sm:items-center gap-3">
+          <label htmlFor="target-area-select" className="text-xs font-bold text-amber-300 uppercase tracking-wider whitespace-nowrap">
+            Área de Destino:
+          </label>
+          <select
+            id="target-area-select"
+            value={selectedTargetSigla}
+            onChange={(e) => handleTargetAreaChange(e.target.value)}
+            className="w-full sm:w-64 px-3 py-2 bg-slate-900 text-white font-bold text-xs rounded-lg border border-indigo-400/50 focus:outline-none focus:ring-2 focus:ring-amber-400 cursor-pointer"
+          >
+            {areas.map((a) => (
+              <option key={a.id} value={a.sigla} className="bg-slate-900 text-white">
+                {a.sigla} — {a.nome} ({a.arquivo_db})
+              </option>
+            ))}
+          </select>
         </div>
       </div>
 
@@ -948,12 +1062,17 @@ export const ImportacaoCadastrosView: React.FC<ImportacaoCadastrosViewProps> = (
                   <Package className="w-6 h-6" />
                 </div>
                 <div>
-                  <span className="text-[10px] font-bold uppercase tracking-wider text-teal-700 bg-teal-50 px-2 py-0.5 rounded border border-teal-200">
-                    Card 1
-                  </span>
+                  <div className="flex items-center gap-2">
+                    <span className="text-[10px] font-bold uppercase tracking-wider text-teal-700 bg-teal-50 px-2 py-0.5 rounded border border-teal-200">
+                      Card 1
+                    </span>
+                    <span className="text-[10px] font-bold uppercase tracking-wider text-indigo-800 bg-indigo-50 px-2 py-0.5 rounded border border-indigo-200 font-mono">
+                      Destino: {targetArea.nome} ({targetArea.arquivo_db})
+                    </span>
+                  </div>
                   <h2 className="text-lg font-bold text-slate-800 mt-1">Importar Produtos</h2>
                   <p className="text-xs text-slate-500">
-                    Catálogo com código único interno, grupo FEFO, unidade e custo oficial
+                    Catálogo com código único interno, grupo FEFO, unidade e custo oficial na base {targetArea.sigla}
                   </p>
                 </div>
               </div>
@@ -1012,12 +1131,17 @@ export const ImportacaoCadastrosView: React.FC<ImportacaoCadastrosViewProps> = (
                   <Truck className="w-6 h-6" />
                 </div>
                 <div>
-                  <span className="text-[10px] font-bold uppercase tracking-wider text-blue-700 bg-blue-50 px-2 py-0.5 rounded border border-blue-200">
-                    Card 2
-                  </span>
+                  <div className="flex items-center gap-2">
+                    <span className="text-[10px] font-bold uppercase tracking-wider text-blue-700 bg-blue-50 px-2 py-0.5 rounded border border-blue-200">
+                      Card 2
+                    </span>
+                    <span className="text-[10px] font-bold uppercase tracking-wider text-indigo-800 bg-indigo-50 px-2 py-0.5 rounded border border-indigo-200 font-mono">
+                      Destino: {targetArea.nome} ({targetArea.arquivo_db})
+                    </span>
+                  </div>
                   <h2 className="text-lg font-bold text-slate-800 mt-1">Importar Fornecedores / Entidades</h2>
                   <p className="text-xs text-slate-500">
-                    Fornecedores comerciais e parceiros com detecção de duplicidades e pendências
+                    Fornecedores comerciais e parceiros na base {targetArea.sigla} com detecção de duplicidades
                   </p>
                 </div>
               </div>
@@ -1098,7 +1222,10 @@ export const ImportacaoCadastrosView: React.FC<ImportacaoCadastrosViewProps> = (
 
               <button
                 type="button"
-                onClick={handleConfirmarImportacaoProdutos}
+                onClick={() => {
+                  setConfirmImportType('produtos');
+                  setIsConfirmModalOpen(true);
+                }}
                 disabled={isGravandoProd || produtosParsed.filter((p) => p.valido && !p.ja_existe_no_banco).length === 0}
                 className="px-4 py-1.5 bg-teal-700 hover:bg-teal-800 text-white font-bold rounded-lg text-xs cursor-pointer shadow flex items-center gap-1.5 disabled:opacity-50"
               >
@@ -1110,11 +1237,19 @@ export const ImportacaoCadastrosView: React.FC<ImportacaoCadastrosViewProps> = (
                 ) : (
                   <>
                     <CheckCircle2 className="w-4 h-4" />
-                    <span>CONFIRMAR E GRAVAR NO BANCO</span>
+                    <span>CONFIRMAR GRAVAÇÃO ({targetArea.sigla})</span>
                   </>
                 )}
               </button>
             </div>
+          </div>
+
+          {/* Aviso Explícito de Destino na Prévia */}
+          <div className="p-3 bg-indigo-50 border border-indigo-200 rounded-lg text-xs text-indigo-900 font-medium flex items-center gap-2">
+            <Building2 className="w-4 h-4 text-indigo-700 shrink-0" />
+            <span>
+              Os dados abaixo serão gravados exclusivamente na base de dados da área: <strong>{targetArea.nome}</strong> (<code className="font-bold text-indigo-950 font-mono">{targetArea.arquivo_db}</code>).
+            </span>
           </div>
 
           {/* Cards de Resumo da Prévia */}
@@ -1253,7 +1388,10 @@ export const ImportacaoCadastrosView: React.FC<ImportacaoCadastrosViewProps> = (
 
               <button
                 type="button"
-                onClick={handleConfirmarImportacaoFornecedores}
+                onClick={() => {
+                  setConfirmImportType('fornecedores');
+                  setIsConfirmModalOpen(true);
+                }}
                 disabled={
                   isGravandoForn ||
                   fornecedoresParsed.filter((f) => f.valido && !f.ja_existe_no_banco && !f.tem_conflito).length === 0
@@ -1268,11 +1406,19 @@ export const ImportacaoCadastrosView: React.FC<ImportacaoCadastrosViewProps> = (
                 ) : (
                   <>
                     <CheckCircle2 className="w-4 h-4" />
-                    <span>CONFIRMAR E GRAVAR FORNECEDORES</span>
+                    <span>CONFIRMAR GRAVAÇÃO ({targetArea.sigla})</span>
                   </>
                 )}
               </button>
             </div>
+          </div>
+
+          {/* Aviso Explícito de Destino na Prévia de Fornecedores */}
+          <div className="p-3 bg-indigo-50 border border-indigo-200 rounded-lg text-xs text-indigo-900 font-medium flex items-center gap-2">
+            <Building2 className="w-4 h-4 text-indigo-700 shrink-0" />
+            <span>
+              Os dados de fornecedores/entidades abaixo serão gravados exclusivamente na base de dados da área: <strong>{targetArea.nome}</strong> (<code className="font-bold text-indigo-950 font-mono">{targetArea.arquivo_db}</code>).
+            </span>
           </div>
 
           {/* Cards de Resumo da Prévia */}
@@ -1630,6 +1776,104 @@ export const ImportacaoCadastrosView: React.FC<ImportacaoCadastrosViewProps> = (
             </div>
           );
         })()
+      )}
+      {/* =========================================================================
+          MODAL DE CONFIRMAÇÃO DEFINITIVA DE IMPORTAÇÃO
+         ========================================================================= */}
+      {isConfirmModalOpen && (
+        <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl shadow-2xl border border-slate-200 max-w-lg w-full p-6 space-y-5">
+            <div className="flex items-start gap-4">
+              <div className="p-3 bg-amber-100 text-amber-800 rounded-xl border border-amber-200 shrink-0">
+                <AlertTriangle className="w-6 h-6" />
+              </div>
+              <div className="space-y-1">
+                <h3 className="text-base font-bold text-slate-800">
+                  Confirmação Definitiva de Importação em Massa
+                </h3>
+                <p className="text-xs text-slate-500">
+                  Validação de segurança e área de destino da gravação.
+                </p>
+              </div>
+            </div>
+
+            <div className="bg-slate-50 rounded-xl p-4 border border-slate-200 space-y-2 text-xs">
+              <div className="flex justify-between items-center py-1 border-b border-slate-200">
+                <span className="text-slate-600 font-semibold">Tipo de Cadastro:</span>
+                <span className="font-bold text-indigo-900 uppercase">
+                  {confirmImportType === 'produtos' ? 'Catálogo de Produtos' : 'Fornecedores / Entidades'}
+                </span>
+              </div>
+
+              <div className="flex justify-between items-center py-1 border-b border-slate-200">
+                <span className="text-slate-600 font-semibold">Área de Destino:</span>
+                <span className="font-bold text-slate-800">
+                  {targetArea.nome} ({targetArea.sigla})
+                </span>
+              </div>
+
+              <div className="flex justify-between items-center py-1 border-b border-slate-200">
+                <span className="text-slate-600 font-semibold">Banco SQLite Afetado:</span>
+                <span className="font-mono font-bold text-emerald-800 bg-emerald-50 px-2 py-0.5 rounded border border-emerald-200">
+                  {targetArea.arquivo_db}
+                </span>
+              </div>
+
+              <div className="flex justify-between items-center py-1">
+                <span className="text-slate-600 font-semibold">Registros a Inserir:</span>
+                <span className="font-bold text-teal-800 text-sm">
+                  {confirmImportType === 'produtos'
+                    ? produtosParsed.filter((p) => p.valido && !p.ja_existe_no_banco).length
+                    : fornecedoresParsed.filter((f) => f.valido && !f.ja_existe_no_banco && !f.tem_conflito).length}{' '}
+                  registros válidos
+                </span>
+              </div>
+            </div>
+
+            <div className="p-3 bg-amber-50 rounded-xl border border-amber-200 text-xs text-amber-900 flex items-start gap-2">
+              <ShieldAlert className="w-4 h-4 text-amber-700 shrink-0 mt-0.5" />
+              <p>
+                Os registros serão inseridos exclusivamente na base <strong>{targetArea.arquivo_db}</strong> utilizando transação atômica no SQLite. Apenas cadastros serão criados (0 saldo e sem estoque).
+              </p>
+            </div>
+
+            <div className="flex items-center justify-end gap-3 pt-2">
+              <button
+                type="button"
+                onClick={() => setIsConfirmModalOpen(false)}
+                disabled={isGravandoProd || isGravandoForn}
+                className="px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 font-semibold rounded-lg text-xs cursor-pointer border border-slate-300"
+              >
+                Cancelar
+              </button>
+
+              <button
+                type="button"
+                onClick={() => {
+                  if (confirmImportType === 'produtos') {
+                    handleConfirmarImportacaoProdutos();
+                  } else if (confirmImportType === 'fornecedores') {
+                    handleConfirmarImportacaoFornecedores();
+                  }
+                }}
+                disabled={isGravandoProd || isGravandoForn}
+                className="px-4 py-2 bg-teal-700 hover:bg-teal-800 text-white font-bold rounded-lg text-xs cursor-pointer shadow flex items-center gap-2"
+              >
+                {isGravandoProd || isGravandoForn ? (
+                  <>
+                    <RotateCcw className="w-4 h-4 animate-spin" />
+                    <span>Gravando no Banco...</span>
+                  </>
+                ) : (
+                  <>
+                    <CheckCircle2 className="w-4 h-4" />
+                    <span>CONFIRMAR GRAVAÇÃO DEFINITIVA</span>
+                  </>
+                )}
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );

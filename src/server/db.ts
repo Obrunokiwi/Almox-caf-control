@@ -99,8 +99,22 @@ function ensureCentralSchema(db: DatabaseSync) {
     }
   } catch {}
 
-  // 3. Garante centros de custo, usuários, usuario_areas, usuario_modulos, logs_acesso
+  // 3. Garante empresas_unidades, centros de custo, usuários, usuario_areas, usuario_modulos, logs_acesso
   db.exec(`
+    CREATE TABLE IF NOT EXISTS empresas_unidades (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        codigo TEXT UNIQUE NOT NULL,
+        nome TEXT NOT NULL,
+        cnpj TEXT UNIQUE,
+        endereco TEXT,
+        cidade TEXT,
+        uf TEXT,
+        ativo INTEGER NOT NULL DEFAULT 1,
+        criado_em DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+    CREATE INDEX IF NOT EXISTS idx_empresas_unidades_codigo ON empresas_unidades (codigo);
+    CREATE INDEX IF NOT EXISTS idx_empresas_unidades_ativo ON empresas_unidades (ativo);
+
     CREATE TABLE IF NOT EXISTS centros_custo (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         codigo TEXT UNIQUE NOT NULL,
@@ -166,6 +180,16 @@ function ensureCentralSchema(db: DatabaseSync) {
     CREATE INDEX IF NOT EXISTS idx_logs_acesso_data ON logs_acesso (data_hora);
     CREATE INDEX IF NOT EXISTS idx_logs_acesso_login ON logs_acesso (login);
   `);
+
+  try {
+    const empCount = (db.prepare('SELECT COUNT(*) as c FROM empresas_unidades').get() as any)?.c || 0;
+    if (empCount === 0) {
+      db.prepare(`
+        INSERT INTO empresas_unidades (id, codigo, nome, ativo)
+        VALUES (1, 'UNI-01', 'Unidade Principal / Hospital Central', 1)
+      `).run();
+    }
+  } catch {}
 
   // Migra dados de usuários e centros de custo existentes do almoxarifado.db se central estiver vazio
   migrateLegacyUsersAndCentrosCusto(db);
@@ -292,25 +316,12 @@ export function getAreaDb(siglaOrId: string | number, readOnly = false): Databas
   }
 
   const dbFilePath = path.resolve(PROJECT_ROOT, area.arquivo_db);
-  const exists = fs.existsSync(dbFilePath);
 
   conn = new DatabaseSync(dbFilePath);
   conn.exec('PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL;');
 
-  if (!exists) {
-    // Inicializa nova área usando o schema_area.sql padrão
-    const schemaAreaSqlPath = path.resolve(PROJECT_ROOT, 'schema_area.sql');
-    if (fs.existsSync(schemaAreaSqlPath)) {
-      const sql = fs.readFileSync(schemaAreaSqlPath, 'utf-8');
-      conn.exec(sql);
-    }
-    try {
-      conn.exec('INSERT OR REPLACE INTO versao_schema (versao) VALUES (1);');
-    } catch {}
-  } else {
-    // Garante que o schema existente na área possui todas as tabelas e colunas necessárias
-    ensureAreaSchema(conn);
-  }
+  // Garante que a área possui todas as tabelas operacionais do schema_area.sql
+  ensureAreaSchema(conn);
 
   // Sincroniza espelhos imediatamente
   syncMirrorsToArea(conn);
@@ -325,69 +336,16 @@ export function getAreaDb(siglaOrId: string | number, readOnly = false): Databas
 
 function ensureAreaSchema(areaDb: DatabaseSync) {
   try {
-    areaDb.exec(`
-      CREATE TABLE IF NOT EXISTS versao_schema (
-          versao INTEGER PRIMARY KEY,
-          atualizado_em DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
-      );
-      INSERT OR IGNORE INTO versao_schema (versao) VALUES (1);
+    // Executa schema_area.sql para garantir todas as tabelas (produtos, fornecedores, requisicoes, etc.)
+    const schemaAreaSqlPath = path.resolve(PROJECT_ROOT, 'schema_area.sql');
+    if (fs.existsSync(schemaAreaSqlPath)) {
+      const sql = fs.readFileSync(schemaAreaSqlPath, 'utf-8');
+      areaDb.exec(sql);
+    }
 
-      CREATE TABLE IF NOT EXISTS centros_custo (
-          id INTEGER PRIMARY KEY,
-          codigo TEXT UNIQUE NOT NULL,
-          nome TEXT NOT NULL,
-          departamento TEXT NOT NULL,
-          responsavel TEXT NOT NULL,
-          ativo INTEGER NOT NULL DEFAULT 1,
-          criado_em DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
-      );
-
-      CREATE TABLE IF NOT EXISTS usuarios (
-          id INTEGER PRIMARY KEY,
-          codigo TEXT,
-          nome TEXT NOT NULL,
-          login TEXT UNIQUE NOT NULL,
-          senha_hash TEXT NOT NULL DEFAULT '',
-          cpf TEXT,
-          email TEXT,
-          perfil TEXT NOT NULL,
-          cargo_nome TEXT,
-          centro_custo_id INTEGER REFERENCES centros_custo(id) ON DELETE SET NULL,
-          ativo INTEGER NOT NULL DEFAULT 1,
-          criado_em DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
-      );
-
-      CREATE TABLE IF NOT EXISTS consumos (
-          id INTEGER PRIMARY KEY AUTOINCREMENT,
-          numero_consumo TEXT UNIQUE NOT NULL,
-          centro_custo_id INTEGER NOT NULL REFERENCES centros_custo(id),
-          centro_custo_nome TEXT,
-          centro_custo_codigo TEXT,
-          responsavel_recebimento TEXT NOT NULL,
-          usuario_id INTEGER NOT NULL REFERENCES usuarios(id),
-          usuario_nome TEXT,
-          observacao TEXT,
-          data_consumo DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-          criado_em DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
-      );
-      CREATE INDEX IF NOT EXISTS idx_consumos_numero ON consumos (numero_consumo);
-      CREATE INDEX IF NOT EXISTS idx_consumos_centro_custo ON consumos (centro_custo_id);
-      CREATE INDEX IF NOT EXISTS idx_consumos_data ON consumos (data_consumo);
-
-      CREATE TABLE IF NOT EXISTS itens_consumo (
-          id INTEGER PRIMARY KEY AUTOINCREMENT,
-          consumo_id INTEGER NOT NULL REFERENCES consumos(id) ON DELETE CASCADE,
-          produto_id INTEGER NOT NULL REFERENCES produtos(id),
-          lote_id INTEGER NOT NULL REFERENCES lotes_estoque(id),
-          numero_lote TEXT,
-          data_validade DATE,
-          quantidade REAL NOT NULL CHECK (quantidade > 0),
-          custo_unitario REAL NOT NULL DEFAULT 0
-      );
-      CREATE INDEX IF NOT EXISTS idx_itens_consumo_consumo ON itens_consumo (consumo_id);
-      CREATE INDEX IF NOT EXISTS idx_itens_consumo_produto ON itens_consumo (produto_id);
-      CREATE INDEX IF NOT EXISTS idx_itens_consumo_lote ON itens_consumo (lote_id);
-    `);
+    try {
+      areaDb.exec('INSERT OR IGNORE INTO versao_schema (versao) VALUES (1);');
+    } catch {}
 
     // Atualiza colunas em movimentacoes
     const movCols = new Set((areaDb.prepare("PRAGMA table_info('movimentacoes')").all() as Array<{ name: string }>).map((c) => c.name));
@@ -415,7 +373,7 @@ function ensureAreaSchema(areaDb: DatabaseSync) {
 }
 
 /**
- * Sincroniza os espelhos de usuários e centros de custo do banco central para um banco de área
+ * Sincroniza os espelhos de usuários, centros de custo e empresas/unidades do banco central para um banco de área
  */
 export function syncMirrorsToArea(areaDb: DatabaseSync) {
   try {
@@ -444,6 +402,18 @@ export function syncMirrorsToArea(areaDb: DatabaseSync) {
         u.ativo ?? 1, u.criado_em || new Date().toISOString()
       );
     }
+
+    // 3. Empresas / Unidades
+    try {
+      const emps = central.prepare('SELECT id, codigo, nome, cnpj, endereco, cidade, uf, ativo, criado_em FROM empresas_unidades').all() as any[];
+      const insEmp = areaDb.prepare(`
+        INSERT OR REPLACE INTO empresas_unidades (id, codigo, nome, cnpj, endereco, cidade, uf, ativo, criado_em)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `);
+      for (const e of emps) {
+        insEmp.run(e.id, e.codigo, e.nome, e.cnpj || null, e.endereco || null, e.cidade || null, e.uf || null, e.ativo ?? 1, e.criado_em || new Date().toISOString());
+      }
+    } catch {}
   } catch (err) {
     console.error('[DB Mirror] Erro ao sincronizar espelhos para área:', err);
   }
@@ -587,9 +557,13 @@ export function getSeedSql(): string {
   return fs.existsSync(seedPath) ? fs.readFileSync(seedPath, 'utf-8') : '';
 }
 
-export function resetDatabase() {
+export function clearAccessLogs() {
   const central = getCentralDb();
   central.exec('DELETE FROM logs_acesso;');
+}
+
+export function resetDatabase() {
+  clearAccessLogs();
 }
 
 export function initDatabase() {

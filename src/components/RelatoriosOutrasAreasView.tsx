@@ -42,9 +42,10 @@ export const RelatoriosOutrasAreasView: React.FC<RelatoriosOutrasAreasViewProps>
   useEffect(() => {
     const fetchPermitted = async () => {
       try {
+        const token = localStorage.getItem('multi_almox_token') || localStorage.getItem('token') || '';
         const res = await fetch('/api/relatorios-outras-areas/areas-permitidas', {
           headers: {
-            Authorization: `Bearer ${localStorage.getItem('token') || ''}`,
+            Authorization: `Bearer ${token}`,
             'X-Area-Sigla': activeAreaSigla,
           },
         });
@@ -69,34 +70,34 @@ export const RelatoriosOutrasAreasView: React.FC<RelatoriosOutrasAreasViewProps>
     setErrorMsg(null);
 
     try {
+      const token = localStorage.getItem('multi_almox_token') || localStorage.getItem('token') || '';
+      const headers = {
+        Authorization: `Bearer ${token}`,
+        'X-Area-Sigla': activeAreaSigla,
+      };
+
       if (activeSubTab === 'saldo') {
-        const res = await fetch(`/api/relatorios-outras-areas/${selectedTargetSigla}/saldo`, {
-          headers: {
-            Authorization: `Bearer ${localStorage.getItem('token') || ''}`,
-            'X-Area-Sigla': activeAreaSigla,
-          },
-        });
-        if (!res.ok) throw new Error('Não foi possível consultar os saldos da área solicitada.');
+        const res = await fetch(`/api/relatorios-outras-areas/${selectedTargetSigla}/saldo`, { headers });
+        if (!res.ok) {
+          const errData = await res.json().catch(() => ({}));
+          throw new Error(errData.error || 'Não foi possível consultar os saldos da área solicitada.');
+        }
         const data = await res.json();
         setSaldoData(data);
       } else if (activeSubTab === 'movimentacoes') {
-        const res = await fetch(`/api/relatorios-outras-areas/${selectedTargetSigla}/movimentacoes`, {
-          headers: {
-            Authorization: `Bearer ${localStorage.getItem('token') || ''}`,
-            'X-Area-Sigla': activeAreaSigla,
-          },
-        });
-        if (!res.ok) throw new Error('Não foi possível consultar movimentações da área solicitada.');
+        const res = await fetch(`/api/relatorios-outras-areas/${selectedTargetSigla}/movimentacoes`, { headers });
+        if (!res.ok) {
+          const errData = await res.json().catch(() => ({}));
+          throw new Error(errData.error || 'Não foi possível consultar movimentações da área solicitada.');
+        }
         const data = await res.json();
         setMovimentacoesData(data);
       } else if (activeSubTab === 'validades') {
-        const res = await fetch(`/api/relatorios-outras-areas/${selectedTargetSigla}/validades`, {
-          headers: {
-            Authorization: `Bearer ${localStorage.getItem('token') || ''}`,
-            'X-Area-Sigla': activeAreaSigla,
-          },
-        });
-        if (!res.ok) throw new Error('Não foi possível consultar lotes/validades da área solicitada.');
+        const res = await fetch(`/api/relatorios-outras-areas/${selectedTargetSigla}/validades`, { headers });
+        if (!res.ok) {
+          const errData = await res.json().catch(() => ({}));
+          throw new Error(errData.error || 'Não foi possível consultar lotes/validades da área solicitada.');
+        }
         const data = await res.json();
         setValidadesData(data);
       }

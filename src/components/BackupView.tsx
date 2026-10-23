@@ -49,9 +49,11 @@ export const BackupView: React.FC<BackupViewProps> = ({
   const fetchBackupInfo = useCallback(async () => {
     setLoading(true);
     try {
+      const token = localStorage.getItem('multi_almox_token') || localStorage.getItem('token') || '';
       const res = await fetch('/api/backup/info', {
         headers: {
-          'Authorization': `user:${currentUser.id}`,
+          'Authorization': `Bearer ${token}`,
+          'X-Area-Sigla': currentUser.area_sigla || 'ALM',
         },
       });
       if (res.ok) {

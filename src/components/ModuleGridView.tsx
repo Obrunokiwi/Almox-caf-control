@@ -29,6 +29,10 @@ import { NotificationsDropdown } from './NotificationsDropdown.tsx';
 interface ModuleGridViewProps {
   currentUser: Usuario;
   activeUnidade?: EmpresaUnidade | null;
+  activeAreaSigla?: string;
+  activeAreaNome?: string;
+  areasLiberadas?: Array<{ id: number; sigla: string; nome: string }>;
+  onSwitchArea?: (sigla: string) => void;
   produtos?: Produto[];
   requisicoes?: Requisicao[];
   centrosCustoCount?: number;
@@ -44,6 +48,10 @@ interface ModuleGridViewProps {
 export const ModuleGridView: React.FC<ModuleGridViewProps> = ({
   currentUser,
   activeUnidade,
+  activeAreaSigla = 'ALM',
+  activeAreaNome = 'Almoxarifado',
+  areasLiberadas = [],
+  onSwitchArea,
   produtos = [],
   requisicoes = [],
   centrosCustoCount = 0,
@@ -242,6 +250,10 @@ export const ModuleGridView: React.FC<ModuleGridViewProps> = ({
             <span aria-hidden="true" className="text-white/25 hidden sm:inline">·</span>
             <span className="text-xs text-blue-200/70 hidden sm:inline truncate">
               {activeUnidade ? `${activeUnidade.codigo} — ${activeUnidade.nome}` : 'Almoxarifado Central'}
+            </span>
+            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-bold bg-teal-500/20 text-teal-200 border border-teal-400/30 shrink-0">
+              <Layers className="w-3 h-3 text-teal-300" />
+              <span>Área: {activeAreaSigla}</span>
             </span>
           </div>
         </div>

@@ -58,11 +58,13 @@ export const SecurityPasswordModal: React.FC<SecurityPasswordModalProps> = ({
     setLoading(true);
 
     try {
+      const token = localStorage.getItem('multi_almox_token') || localStorage.getItem('token') || '';
       const res = await fetch('/api/auth/alterar-senha', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'Authorization': `user:${currentUser.id}`,
+          'Authorization': token ? `Bearer ${token}` : `user:${currentUser.id}`,
+          'X-Area-Sigla': currentUser.area_sigla || 'ALM',
         },
         body: JSON.stringify({
           nova_senha: novaSenha.trim(),

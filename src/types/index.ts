@@ -118,6 +118,9 @@ export interface Usuario {
   modulos?: string[];
   areas_liberadas?: Area[];
   area_ids?: number[];
+  area_id?: number;
+  area_sigla?: string;
+  area_nome?: string;
   area_ativa?: Area;
 }
 

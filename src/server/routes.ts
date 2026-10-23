@@ -27,7 +27,8 @@ import {
   ALL_SYSTEM_MODULES, 
   MODULOS_PADRAO_SISTEMA, 
   hasModulePermission,
-  requireRole
+  requireRole,
+  type UserSession
 } from './auth.ts';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -255,9 +256,18 @@ export function consumirLotesValidosFEFO(
 }
 
 // ============================================================================
-// 1. EMPRESAS / UNIDADES DE ALMOXARIFADO (PADRÃO SALUTEM)
+// 1. EMPRESAS / UNIDADES DE ALMOXARIFADO
 // ============================================================================
 
+apiRouter.get(['/empresas-unidades', '/unidades'], (_req, res) => {
+  try {
+    const central = getCentralDb();
+    const rows = central.prepare('SELECT * FROM empresas_unidades WHERE ativo = 1 ORDER BY id ASC').all();
+    res.json(rows);
+  } catch (err: any) {
+    res.status(500).json({ error: 'Erro ao buscar unidades: ' + err.message });
+  }
+});
 
 // ============================================================================
 // 1.1 GESTÃO DE ÁREAS OPERACIONAIS (SOMENTE ADMINISTRADOR)
@@ -808,6 +818,38 @@ apiRouter.post('/consumos/:id/estorno', (req, res) => {
 // 1.3 RELATÓRIOS DE OUTRAS ÁREAS (SOMENTE LEITURA)
 // ============================================================================
 
+function checkCrossAreaAuthorization(user: UserSession | null, targetSigla: string): { allowed: boolean; status: number; message: string; targetSiglaNorm?: string } {
+  if (!user) {
+    return { allowed: false, status: 401, message: 'Não autenticado' };
+  }
+
+  if (user.perfil === 'requisitante') {
+    return { allowed: false, status: 403, message: 'Acesso negado. Usuários requisitantes não possuem permissão para relatórios de outras áreas.' };
+  }
+
+  const originSigla = (user.area_sigla || 'ALM').toUpperCase();
+  const targetSiglaNorm = targetSigla.toUpperCase();
+
+  if (originSigla === targetSiglaNorm) {
+    return { allowed: true, status: 200, message: 'OK', targetSiglaNorm };
+  }
+
+  const central = getCentralDb();
+  const originArea = central.prepare('SELECT id FROM areas WHERE UPPER(sigla) = ? AND ativa = 1').get(originSigla) as { id: number } | undefined;
+  const targetArea = central.prepare('SELECT id FROM areas WHERE UPPER(sigla) = ? AND ativa = 1').get(targetSiglaNorm) as { id: number } | undefined;
+
+  if (!originArea || !targetArea) {
+    return { allowed: false, status: 404, message: `Área de origem (${originSigla}) ou destino (${targetSiglaNorm}) não encontrada ou inativa.` };
+  }
+
+  const rule = central.prepare('SELECT id FROM area_relatorios_cruzados WHERE area_origem_id = ? AND area_alvo_id = ?').get(originArea.id, targetArea.id);
+  if (!rule) {
+    return { allowed: false, status: 403, message: `Acesso negado. A área ${originSigla} não possui autorização para consultar relatórios da área ${targetSiglaNorm}.` };
+  }
+
+  return { allowed: true, status: 200, message: 'OK', targetSiglaNorm };
+}
+
 apiRouter.get('/relatorios-outras-areas/areas-permitidas', (req, res) => {
   const user = authenticateRequest(req);
   if (!user) {
@@ -815,24 +857,24 @@ apiRouter.get('/relatorios-outras-areas/areas-permitidas', (req, res) => {
     return;
   }
 
-  const areaSigla = ((req as any).areaSigla || user.area_sigla || 'CAF').toUpperCase();
+  if (user.perfil === 'requisitante') {
+    res.json([]);
+    return;
+  }
+
+  const areaSigla = (user.area_sigla || 'ALM').toUpperCase();
   const central = getCentralDb();
 
   try {
     const currentArea = central.prepare('SELECT id FROM areas WHERE UPPER(sigla) = ?').get(areaSigla) as any;
-    const currentAreaId = currentArea ? currentArea.id : 2;
+    const currentAreaId = currentArea ? currentArea.id : 1;
 
-    let targetAreas: any[] = [];
-    if (user.perfil === 'admin' || user.perfil === 'ti_dpo') {
-      targetAreas = central.prepare('SELECT id, sigla, nome, arquivo_db, descricao FROM areas WHERE id != ? AND ativa = 1').all(currentAreaId);
-    } else {
-      targetAreas = central.prepare(`
-        SELECT a.id, a.sigla, a.nome, a.arquivo_db, a.descricao
-        FROM area_relatorios_cruzados rc
-        JOIN areas a ON rc.area_alvo_id = a.id
-        WHERE rc.area_origem_id = ? AND a.ativa = 1
-      `).all(currentAreaId);
-    }
+    const targetAreas = central.prepare(`
+      SELECT a.id, a.sigla, a.nome, a.arquivo_db, a.descricao
+      FROM area_relatorios_cruzados rc
+      JOIN areas a ON rc.area_alvo_id = a.id
+      WHERE rc.area_origem_id = ? AND a.ativa = 1
+    `).all(currentAreaId);
 
     res.json(targetAreas);
   } catch (err: any) {
@@ -842,14 +884,14 @@ apiRouter.get('/relatorios-outras-areas/areas-permitidas', (req, res) => {
 
 apiRouter.get('/relatorios-outras-areas/:targetSigla/saldo', (req, res) => {
   const user = authenticateRequest(req);
-  if (!user) {
-    res.status(401).json({ error: 'Não autenticado' });
+  const check = checkCrossAreaAuthorization(user, req.params.targetSigla);
+  if (!check.allowed) {
+    res.status(check.status).json({ error: check.message });
     return;
   }
 
-  const { targetSigla } = req.params;
   try {
-    const targetDb = getAreaDb(targetSigla.toUpperCase(), true); // Read-only connection!
+    const targetDb = getAreaDb(check.targetSiglaNorm!, true); // Read-only connection!
     const rows = targetDb.prepare(`
       SELECT p.id, p.codigo, p.nome, p.unidade_medida, p.tipo, p.quantidade_atual,
              p.estoque_minimo, p.valor_unitario, gp.nome as grupo_nome
@@ -866,14 +908,14 @@ apiRouter.get('/relatorios-outras-areas/:targetSigla/saldo', (req, res) => {
 
 apiRouter.get('/relatorios-outras-areas/:targetSigla/movimentacoes', (req, res) => {
   const user = authenticateRequest(req);
-  if (!user) {
-    res.status(401).json({ error: 'Não autenticado' });
+  const check = checkCrossAreaAuthorization(user, req.params.targetSigla);
+  if (!check.allowed) {
+    res.status(check.status).json({ error: check.message });
     return;
   }
 
-  const { targetSigla } = req.params;
   try {
-    const targetDb = getAreaDb(targetSigla.toUpperCase(), true);
+    const targetDb = getAreaDb(check.targetSiglaNorm!, true);
     const rows = targetDb.prepare(`
       SELECT m.*, p.nome as produto_nome, p.codigo as produto_codigo,
              cc.nome as centro_custo_nome
@@ -890,14 +932,14 @@ apiRouter.get('/relatorios-outras-areas/:targetSigla/movimentacoes', (req, res) 
 
 apiRouter.get('/relatorios-outras-areas/:targetSigla/validades', (req, res) => {
   const user = authenticateRequest(req);
-  if (!user) {
-    res.status(401).json({ error: 'Não autenticado' });
+  const check = checkCrossAreaAuthorization(user, req.params.targetSigla);
+  if (!check.allowed) {
+    res.status(check.status).json({ error: check.message });
     return;
   }
 
-  const { targetSigla } = req.params;
   try {
-    const targetDb = getAreaDb(targetSigla.toUpperCase(), true);
+    const targetDb = getAreaDb(check.targetSiglaNorm!, true);
     const rows = targetDb.prepare(`
       SELECT le.*, p.nome as produto_nome, p.codigo as produto_codigo, p.unidade_medida
       FROM lotes_estoque le
@@ -1038,19 +1080,25 @@ apiRouter.post('/auth/alterar-senha', (req, res) => {
     return;
   }
 
-  const dbUser = db.prepare('SELECT senha_hash FROM usuarios WHERE id = ?').get(user.id) as { senha_hash: string } | undefined;
+  const central = getCentralDb();
+  const dbUser = central.prepare('SELECT senha_hash FROM usuarios WHERE id = ?').get(user.id) as { senha_hash: string } | undefined;
   if (!dbUser) {
     res.status(404).json({ error: 'Usuário não encontrado' });
     return;
   }
 
-  if (senha_atual && dbUser.senha_hash !== hashPassword(senha_atual)) {
+  if (senha_atual && dbUser.senha_hash && dbUser.senha_hash !== hashPassword(senha_atual)) {
     res.status(400).json({ error: 'Senha atual incorreta' });
     return;
   }
 
   const newHash = hashPassword(nova_senha.trim());
-  db.prepare('UPDATE usuarios SET senha_hash = ? WHERE id = ?').run(newHash, user.id);
+  central.prepare('UPDATE usuarios SET senha_hash = ? WHERE id = ?').run(newHash, user.id);
+
+  // Também atualiza o hash na área atual se aplicável
+  try {
+    db.prepare('UPDATE usuarios SET senha_hash = ? WHERE id = ?').run(newHash, user.id);
+  } catch {}
 
   res.json({ message: 'Senha alterada com sucesso! Recomendamos memorizar suas novas credenciais.' });
 });
@@ -1242,7 +1290,7 @@ apiRouter.get('/dashboard/stats', (_req, res) => {
 apiRouter.get('/centros-custo', (req, res) => {
   const { apenas_ativos, busca } = req.query;
   let sql = `
-    SELECT cc.*, eu.nome as empresa_nome
+    SELECT cc.*
     FROM centros_custo cc
     WHERE 1=1
   `;
@@ -6719,15 +6767,15 @@ apiRouter.post('/relatorios/executar', (req, res) => {
 apiRouter.post('/system/reset', (req, res) => {
   const user = authenticateRequest(req);
   if (!user || user.perfil !== 'admin') {
-    res.status(403).json({ error: 'Apenas Administradores podem reiniciar o banco de dados' });
+    res.status(403).json({ error: 'Apenas Administradores podem limpar os logs de acesso' });
     return;
   }
 
   try {
     resetDatabase();
-    res.json({ message: 'Banco de dados restaurado para o estado inicial limpo com sucesso' });
+    res.json({ message: 'Logs de acesso e auditoria limpos com sucesso. Os dados operacionais foram mantidos intactos.' });
   } catch (err: any) {
-    res.status(500).json({ error: 'Erro ao reiniciar banco: ' + err.message });
+    res.status(500).json({ error: 'Erro ao limpar logs de acesso: ' + err.message });
   }
 });
 
@@ -6805,7 +6853,7 @@ apiRouter.get('/backup/info', (req, res) => {
     res.json({
       sistema: 'Multi Almox',
       versao: '2.4',
-      padrao: 'Salutem Hospitalar',
+      padrao: 'Multiárea',
       database_file: 'almoxarifado.db',
       tamanho_bytes: sizeBytes,
       tamanho_formatado: formatBytes(sizeBytes),
@@ -6890,7 +6938,7 @@ apiRouter.get('/backup/download-sql', (req, res) => {
     let sql = `-- ============================================================================\n`;
     sql += `-- MULTI ALMOX - BACKUP COMPLETO DO BANCO DE DADOS (SQL DUMP)\n`;
     sql += `-- Data de Geração: ${new Date().toLocaleString('pt-BR')}\n`;
-    sql += `-- Sistema: Multi Almox (Padrão Salutem)\n`;
+    sql += `-- Sistema: Multi Almox\n`;
     sql += `-- Versão: 2.4 | Arquivo de Origem: almoxarifado.db\n`;
     sql += `-- ============================================================================\n\n`;
 
@@ -6997,7 +7045,7 @@ apiRouter.get('/backup/download-json', (req, res) => {
       metadata: {
         sistema: 'Multi Almox',
         versao: '2.4',
-        padrao: 'Salutem Hospitalar',
+        padrao: 'Multiárea',
         gerado_em: new Date().toISOString(),
         gerado_por: {
           id: user.id,
@@ -7688,10 +7736,24 @@ apiRouter.delete('/inventarios/:id', (req, res) => {
 // 9. IMPORTAÇÃO DE CADASTROS (PRODUTOS E FORNECEDORES / ENTIDADES)
 // ============================================================================
 
-apiRouter.post('/importacao/produtos', (req, res) => {
+function handleImportacaoProdutosRoute(req: any, res: any) {
   const user = authenticateRequest(req);
   if (!user || user.perfil !== 'admin') {
     res.status(403).json({ error: 'Apenas Administradores podem importar cadastros de produtos.' });
+    return;
+  }
+
+  const clientIp = String(req.headers['x-forwarded-for'] || req.socket.remoteAddress || '127.0.0.1');
+
+  // Roteamento para a área de destino (via param URL, body ou header)
+  const targetSiglaParam = req.params.targetSigla || req.body.targetSigla || (req.headers['x-area-sigla'] as string) || user.area_sigla || 'ALM';
+  const targetSiglaNorm = String(targetSiglaParam).trim().toUpperCase();
+
+  const central = getCentralDb();
+  const areaRow = central.prepare('SELECT id, sigla, nome, arquivo_db, ativa FROM areas WHERE UPPER(sigla) = ? AND ativa = 1').get(targetSiglaNorm) as any;
+
+  if (!areaRow) {
+    res.status(400).json({ error: `Área de destino "${targetSiglaNorm}" é inválida, inativa ou não cadastrada no sistema.db.` });
     return;
   }
 
@@ -7702,24 +7764,26 @@ apiRouter.post('/importacao/produtos', (req, res) => {
   }
 
   try {
+    const targetDb = getAreaDb(areaRow.sigla);
+
     const result = runInTransaction(() => {
       const incluidos: any[] = [];
       const ignorados: any[] = [];
       const avisos: string[] = [];
 
-      // Mapeamento de grupos existentes
-      const todosGrupos = db.prepare('SELECT id, UPPER(nome) as nome_upper FROM grupos_produtos').all() as any[];
+      // Mapeamento de grupos existentes no banco da área de destino
+      const todosGrupos = targetDb.prepare('SELECT id, UPPER(nome) as nome_upper FROM grupos_produtos').all() as any[];
       const grupoMap = new Map<string, number>();
       for (const g of todosGrupos) {
         grupoMap.set(g.nome_upper, g.id);
       }
 
-      const stmtCheckProd = db.prepare('SELECT id, codigo, nome FROM produtos WHERE UPPER(codigo) = UPPER(?)');
-      const stmtInsertGrupo = db.prepare(`
+      const stmtCheckProd = targetDb.prepare('SELECT id, codigo, nome FROM produtos WHERE UPPER(codigo) = UPPER(?)');
+      const stmtInsertGrupo = targetDb.prepare(`
         INSERT INTO grupos_produtos (codigo, nome, tipo_padrao, ativo)
         VALUES (?, ?, ?, 1)
       `);
-      const stmtInsertProd = db.prepare(`
+      const stmtInsertProd = targetDb.prepare(`
         INSERT INTO produtos (
           codigo, nome, descricao, grupo_id, unidade_medida, tipo, controla_validade,
           estoque_minimo, estoque_maximo, quantidade_atual, valor_unitario, custo_unitario, ativo
@@ -7740,18 +7804,18 @@ apiRouter.post('/importacao/produtos', (req, res) => {
           continue;
         }
 
-        // Verifica se já existe pelo código no banco
+        // Verifica se já existe pelo código no catálogo da área de destino
         const existe = stmtCheckProd.get(rawCod) as any;
         if (existe) {
           ignorados.push({
             codigo: rawCod,
             nome: rawDesc,
-            motivo: `Código "${rawCod}" já cadastrado no catálogo (ID #${existe.id} - ${existe.nome}). Registro ignorado sem alteração.`,
+            motivo: `Código "${rawCod}" já cadastrado no catálogo da área ${areaRow.sigla} (ID #${existe.id} - ${existe.nome}). Registro ignorado sem alteração.`,
           });
           continue;
         }
 
-        // Resolução / criação do Grupo de Produto
+        // Resolução / criação do Grupo de Produto na área de destino
         let grupoId: number | null = null;
         if (rawGrupoNome) {
           const upperGrupo = rawGrupoNome.toUpperCase();
@@ -7795,6 +7859,7 @@ apiRouter.post('/importacao/produtos', (req, res) => {
 
       return {
         sucesso: true,
+        area: { id: areaRow.id, sigla: areaRow.sigla, nome: areaRow.nome, arquivo_db: areaRow.arquivo_db },
         total_lidos: produtos.length,
         total_incluidos: incluidos.length,
         total_ignorados: ignorados.length,
@@ -7802,18 +7867,44 @@ apiRouter.post('/importacao/produtos', (req, res) => {
         ignorados,
         avisos,
       };
-    });
+    }, targetDb);
+
+    // Auditoria de Acesso no banco central
+    registrarLogAcesso(
+      user,
+      clientIp,
+      'importacao_produtos',
+      `Importação em massa de ${result.total_incluidos} produtos na área ${areaRow.sigla} (${areaRow.arquivo_db})`,
+      areaRow.sigla
+    );
 
     res.json(result);
   } catch (err: any) {
     res.status(500).json({ error: 'Falha transacional ao importar produtos: ' + err.message });
   }
-});
+}
 
-apiRouter.post('/importacao/fornecedores', (req, res) => {
+apiRouter.post('/importacao/produtos', handleImportacaoProdutosRoute);
+apiRouter.post('/importacao/:targetSigla/produtos', handleImportacaoProdutosRoute);
+
+function handleImportacaoFornecedoresRoute(req: any, res: any) {
   const user = authenticateRequest(req);
   if (!user || user.perfil !== 'admin') {
     res.status(403).json({ error: 'Apenas Administradores podem importar fornecedores e entidades.' });
+    return;
+  }
+
+  const clientIp = String(req.headers['x-forwarded-for'] || req.socket.remoteAddress || '127.0.0.1');
+
+  // Roteamento para a área de destino (via param URL, body ou header)
+  const targetSiglaParam = req.params.targetSigla || req.body.targetSigla || (req.headers['x-area-sigla'] as string) || user.area_sigla || 'ALM';
+  const targetSiglaNorm = String(targetSiglaParam).trim().toUpperCase();
+
+  const central = getCentralDb();
+  const areaRow = central.prepare('SELECT id, sigla, nome, arquivo_db, ativa FROM areas WHERE UPPER(sigla) = ? AND ativa = 1').get(targetSiglaNorm) as any;
+
+  if (!areaRow) {
+    res.status(400).json({ error: `Área de destino "${targetSiglaNorm}" é inválida, inativa ou não cadastrada no sistema.db.` });
     return;
   }
 
@@ -7824,15 +7915,17 @@ apiRouter.post('/importacao/fornecedores', (req, res) => {
   }
 
   try {
+    const targetDb = getAreaDb(areaRow.sigla);
+
     const result = runInTransaction(() => {
       const incluidos: any[] = [];
       const ignorados: any[] = [];
       const avisos: string[] = [];
 
-      const stmtCheckCod = db.prepare('SELECT id, codigo, razao_social FROM fornecedores WHERE UPPER(codigo) = UPPER(?)');
-      const stmtCheckCnpj = db.prepare("SELECT id, codigo, razao_social FROM fornecedores WHERE cnpj = ? AND cnpj IS NOT NULL AND cnpj != ''");
+      const stmtCheckCod = targetDb.prepare('SELECT id, codigo, razao_social FROM fornecedores WHERE UPPER(codigo) = UPPER(?)');
+      const stmtCheckCnpj = targetDb.prepare("SELECT id, codigo, razao_social FROM fornecedores WHERE cnpj = ? AND cnpj IS NOT NULL AND cnpj != ''");
 
-      const stmtInsertForn = db.prepare(`
+      const stmtInsertForn = targetDb.prepare(`
         INSERT INTO fornecedores (
           codigo, razao_social, nome_fantasia, cnpj, tipo_entidade, inscricao_estadual,
           telefone, email, contato_responsavel, endereco, cidade, uf, observacoes, ativo
@@ -7860,25 +7953,25 @@ apiRouter.post('/importacao/fornecedores', (req, res) => {
           continue;
         }
 
-        // Verifica existência pelo código
+        // Verifica existência pelo código na área de destino
         const existeCod = stmtCheckCod.get(rawCod) as any;
         if (existeCod) {
           ignorados.push({
             codigo: rawCod,
             razao_social: rawNome,
-            motivo: `Código "${rawCod}" já existente no banco de dados (ID #${existeCod.id} - ${existeCod.razao_social}). Registro ignorado sem alterações.`,
+            motivo: `Código "${rawCod}" já existente na área ${areaRow.sigla} (ID #${existeCod.id} - ${existeCod.razao_social}). Registro ignorado sem alterações.`,
           });
           continue;
         }
 
-        // Se tiver CNPJ, verifica duplicidade de CNPJ
+        // Se tiver CNPJ, verifica duplicidade de CNPJ na área de destino
         if (rawCnpj) {
           const existeCnpj = stmtCheckCnpj.get(rawCnpj) as any;
           if (existeCnpj) {
             ignorados.push({
               codigo: rawCod,
               razao_social: rawNome,
-              motivo: `CNPJ "${rawCnpj}" já utilizado por outra entidade no sistema (Código: ${existeCnpj.codigo} - ${existeCnpj.razao_social}).`,
+              motivo: `CNPJ "${rawCnpj}" já utilizado por outra entidade na área ${areaRow.sigla} (Código: ${existeCnpj.codigo} - ${existeCnpj.razao_social}).`,
             });
             continue;
           }
@@ -7916,6 +8009,7 @@ apiRouter.post('/importacao/fornecedores', (req, res) => {
 
       return {
         sucesso: true,
+        area: { id: areaRow.id, sigla: areaRow.sigla, nome: areaRow.nome, arquivo_db: areaRow.arquivo_db },
         total_lidos: fornecedores.length,
         total_incluidos: incluidos.length,
         total_ignorados: ignorados.length,
@@ -7923,11 +8017,23 @@ apiRouter.post('/importacao/fornecedores', (req, res) => {
         ignorados,
         avisos,
       };
-    });
+    }, targetDb);
+
+    // Auditoria de Acesso no banco central
+    registrarLogAcesso(
+      user,
+      clientIp,
+      'importacao_fornecedores',
+      `Importação em massa de ${result.total_incluidos} fornecedores na área ${areaRow.sigla} (${areaRow.arquivo_db})`,
+      areaRow.sigla
+    );
 
     res.json(result);
   } catch (err: any) {
     res.status(500).json({ error: 'Falha transacional ao importar fornecedores: ' + err.message });
   }
-});
+}
+
+apiRouter.post('/importacao/fornecedores', handleImportacaoFornecedoresRoute);
+apiRouter.post('/importacao/:targetSigla/fornecedores', handleImportacaoFornecedoresRoute);
 

@@ -76,6 +76,9 @@ function attachUserModulesAndAreas(row: any, activeAreaSigla?: string) {
     let selectedArea: AreaInfo | undefined;
     if (activeAreaSigla) {
       selectedArea = areas.find((a) => a.sigla.toUpperCase() === activeAreaSigla.toUpperCase());
+      if (!selectedArea && row.perfil !== 'admin' && row.perfil !== 'ti_dpo') {
+        row.acesso_area_negado = true;
+      }
     }
     if (!selectedArea && areas.length > 0) {
       selectedArea = areas[0];
@@ -86,6 +89,9 @@ function attachUserModulesAndAreas(row: any, activeAreaSigla?: string) {
       row.area_sigla = selectedArea.sigla;
       row.area_nome = selectedArea.nome;
     } else {
+      if (row.perfil !== 'admin' && row.perfil !== 'ti_dpo') {
+        row.acesso_area_negado = true;
+      }
       row.area_id = 1;
       row.area_sigla = 'ALM';
       row.area_nome = 'Almoxarifado';
@@ -263,17 +269,25 @@ export function authenticateRequest(req: Request): UserSession | null {
   // Header ou query de área preferida
   const headerArea = (req.headers['x-area-sigla'] || req.query.area) as string | undefined;
 
-  const token = authHeader.replace(/^Bearer\s+/i, '').trim();
-  const sessionUser = getSessionUser(token, headerArea);
-  if (sessionUser) return sessionUser;
+  let token = authHeader.replace(/^Bearer\s+/i, '').trim();
 
-  // Suporte a token no formato user:ID
   if (token.startsWith('user:')) {
     const uid = parseInt(token.replace('user:', ''), 10);
-    return getUserById(uid, headerArea);
+    if (!isNaN(uid)) {
+      return getUserById(uid, headerArea);
+    }
   }
 
-  return null;
+  const sessionUser = getSessionUser(token, headerArea);
+  if (!sessionUser || (sessionUser as any).acesso_area_negado) {
+    const uid = parseInt(token, 10);
+    if (!isNaN(uid)) {
+      return getUserById(uid, headerArea);
+    }
+    return null;
+  }
+
+  return sessionUser;
 }
 
 export function requireRole(allowedRoles: Array<'admin' | 'ti_dpo' | 'almoxarife' | 'requisitante'>) {

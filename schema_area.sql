@@ -377,3 +377,60 @@ CREATE TABLE IF NOT EXISTS itens_inventario (
 CREATE INDEX IF NOT EXISTS idx_itens_inv_inventario ON itens_inventario (inventario_id);
 CREATE INDEX IF NOT EXISTS idx_itens_inv_produto ON itens_inventario (produto_id);
 CREATE INDEX IF NOT EXISTS idx_itens_inv_lote ON itens_inventario (lote_id);
+
+-- 15. ESPELHO DE EMPRESAS / UNIDADES
+CREATE TABLE IF NOT EXISTS empresas_unidades (
+    id INTEGER PRIMARY KEY,
+    codigo TEXT UNIQUE NOT NULL,
+    nome TEXT NOT NULL,
+    cnpj TEXT UNIQUE,
+    endereco TEXT,
+    cidade TEXT,
+    uf TEXT,
+    ativo INTEGER NOT NULL DEFAULT 1,
+    criado_em DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+-- 16. ALIAS / ESPELHO DE FORNECEDORES E ENTIDADES
+CREATE TABLE IF NOT EXISTS fornecedores_entidades (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    codigo TEXT UNIQUE NOT NULL,
+    razao_social TEXT NOT NULL,
+    nome_fantasia TEXT,
+    cnpj TEXT UNIQUE,
+    tipo_entidade TEXT NOT NULL DEFAULT 'fornecedor_comercial',
+    inscricao_estadual TEXT,
+    telefone TEXT,
+    email TEXT,
+    contato_responsavel TEXT,
+    endereco TEXT,
+    cidade TEXT,
+    uf TEXT,
+    observacoes TEXT,
+    ativo INTEGER NOT NULL DEFAULT 1,
+    criado_em DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+-- 17. TABELA DE EMPRÉSTIMOS INDIVIDUAIS DE EQUIPAMENTOS
+CREATE TABLE IF NOT EXISTS emprestimos (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    codigo_emprestimo TEXT,
+    produto_id INTEGER NOT NULL REFERENCES produtos(id),
+    quantidade REAL NOT NULL CHECK (quantidade > 0),
+    centro_custo_id INTEGER NOT NULL REFERENCES centros_custo(id),
+    solicitante_id INTEGER NOT NULL REFERENCES usuarios(id),
+    almoxarife_liberacao_id INTEGER NOT NULL REFERENCES usuarios(id),
+    almoxarife_recebimento_id INTEGER REFERENCES usuarios(id),
+    data_emprestimo DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    data_prevista_devolucao DATE NOT NULL,
+    data_devolucao DATETIME,
+    status TEXT NOT NULL DEFAULT 'emprestado' CHECK (status IN ('emprestado', 'devolvido', 'atrasado')),
+    condicao_saida TEXT,
+    condicao_devolucao TEXT,
+    observacao TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_emprestimos_produto ON emprestimos (produto_id);
+CREATE INDEX IF NOT EXISTS idx_emprestimos_centro_custo ON emprestimos (centro_custo_id);
+CREATE INDEX IF NOT EXISTS idx_emprestimos_solicitante ON emprestimos (solicitante_id);
+CREATE INDEX IF NOT EXISTS idx_emprestimos_status ON emprestimos (status);
+

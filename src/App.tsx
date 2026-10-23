@@ -88,14 +88,16 @@ export default function App() {
 
   const loadData = useCallback(async (overrideUserId?: number) => {
     try {
-      const storedUserId = localStorage.getItem('multi_almox_user_id');
-      const effectiveUserId = overrideUserId ?? currentUserId ?? (storedUserId ? Number(storedUserId) : null);
-
-      if (!effectiveUserId) {
+      const token = localStorage.getItem('multi_almox_token');
+      if (!token) {
         return;
       }
 
-      const authHeader: Record<string, string> = { 'Authorization': `user:${effectiveUserId}` };
+      const areaSigla = localStorage.getItem('multi_almox_area_sigla') || currentUser?.area_sigla || 'ALM';
+      const authHeader: Record<string, string> = { 
+        'Authorization': `Bearer ${token}`,
+        'X-Area-Sigla': areaSigla
+      };
 
       const [
         meRes,
@@ -122,7 +124,7 @@ export default function App() {
       ]);
 
       // Ignora resposta se o usuário deslogou enquanto a requisição estava em andamento
-      if (!localStorage.getItem('multi_almox_user_id')) {
+      if (!localStorage.getItem('multi_almox_token')) {
         return;
       }
 
@@ -135,6 +137,7 @@ export default function App() {
               prev.id === meData.user.id &&
               prev.nome === meData.user.nome &&
               prev.perfil === meData.user.perfil &&
+              prev.area_sigla === meData.user.area_sigla &&
               prev.usando_senha_padrao === meData.user.usando_senha_padrao &&
               prev.empresa_id === meData.user.empresa_id
             ) {
@@ -150,7 +153,9 @@ export default function App() {
           }
         }
       } else {
+        localStorage.removeItem('multi_almox_token');
         localStorage.removeItem('multi_almox_user_id');
+        localStorage.removeItem('multi_almox_area_sigla');
         setCurrentUser(null);
         return;
       }
@@ -169,7 +174,7 @@ export default function App() {
     } finally {
       setIsDataLoaded(true);
     }
-  }, [currentUserId]);
+  }, [currentUserId, currentUser?.area_sigla]);
 
   useEffect(() => {
     loadUnidades();
@@ -180,8 +185,10 @@ export default function App() {
   const activeUnidade = unidades.find((u) => u.id === activeUnidadeId) || unidades[0] || null;
 
   // Ação de Login Formal
-  const handleLoginSuccess = (user: Usuario, areaSigla: string) => {
+  const handleLoginSuccess = (user: Usuario, token: string, areaSigla: string) => {
+    localStorage.setItem('multi_almox_token', token);
     localStorage.setItem('multi_almox_user_id', String(user.id));
+    localStorage.setItem('multi_almox_area_sigla', areaSigla);
     setCurrentUser(user);
     setIsGridView(true);
     setCurrentTab('relatorios');
@@ -195,9 +202,44 @@ export default function App() {
     loadData(user.id);
   };
 
+  // Alternar Área Operacional (ALM, CAF, etc.)
+  const handleSwitchArea = async (newSigla: string) => {
+    try {
+      const token = localStorage.getItem('multi_almox_token');
+      if (!token) return;
+
+      const res = await fetch('/api/auth/trocar-area', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`,
+          'X-Area-Sigla': newSigla
+        },
+        body: JSON.stringify({ area_sigla: newSigla })
+      });
+
+      const data = await res.json();
+      if (res.ok && data.user) {
+        localStorage.setItem('multi_almox_area_sigla', newSigla);
+        if (data.token) {
+          localStorage.setItem('multi_almox_token', data.token);
+        }
+        setCurrentUser(data.user);
+        toast.success('Área Alterada', `Sessão alternada para: ${data.user.area_sigla} (${data.user.area_nome || newSigla})`);
+        loadData();
+      } else {
+        toast.error('Erro ao Trocar Área', data.error || 'Não foi possível alternar de área.');
+      }
+    } catch {
+      toast.error('Erro ao Trocar Área', 'Falha de comunicação com o servidor.');
+    }
+  };
+
   // Encerrar sessão (obrigatório para trocar de usuário)
   const handleLogout = () => {
+    localStorage.removeItem('multi_almox_token');
     localStorage.removeItem('multi_almox_user_id');
+    localStorage.removeItem('multi_almox_area_sigla');
     setCurrentUser(null);
     setIsDataLoaded(false);
     setShowSecurityModal(false);
@@ -226,7 +268,7 @@ export default function App() {
     setIsGridView(true);
   }, [loadData]);
 
-  // Reset do banco de dados para estado limpo inicial
+  // Limpeza de logs de acesso e auditoria
   const handleResetDb = () => {
     setIsResetDbModalOpen(true);
   };
@@ -234,21 +276,24 @@ export default function App() {
   const handleConfirmResetDb = async () => {
     setIsResettingDb(true);
     try {
+      const token = localStorage.getItem('multi_almox_token');
       const res = await fetch('/api/system/reset', {
         method: 'POST',
-        headers: { 'Authorization': `user:${currentUser?.id}` },
+        headers: { 
+          'Authorization': `Bearer ${token}`,
+          'X-Area-Sigla': currentUser?.area_sigla || 'ALM'
+        },
       });
       const data = await res.json();
       if (res.ok) {
         toast.success(
-          'Base de Dados Restaurada',
-          data.message || 'Banco de dados restaurado para o estado limpo inicial.'
+          'Logs de Acesso Limpos',
+          data.message || 'Histórico de logs de acesso limpo com sucesso.'
         );
         setIsResetDbModalOpen(false);
-        loadUnidades();
         loadData();
       } else {
-        toast.error('Erro ao Restaurar Base', data.error || 'Erro ao restaurar banco.');
+        toast.error('Erro ao Limpar Logs', data.error || 'Erro ao limpar logs de acesso.');
       }
     } catch {
       toast.error('Falha de Conexão', 'Não foi possível comunicar com o servidor.');
@@ -319,6 +364,10 @@ export default function App() {
         <ModuleGridView
           currentUser={currentUser}
           activeUnidade={activeUnidade}
+          activeAreaSigla={currentUser?.area_sigla || localStorage.getItem('multi_almox_area_sigla') || 'ALM'}
+          activeAreaNome={currentUser?.area_nome || 'Almoxarifado'}
+          areasLiberadas={currentUser?.areas_liberadas || []}
+          onSwitchArea={handleSwitchArea}
           produtos={produtos}
           requisicoes={requisicoes}
           activeCentrosCustoCount={activeCentrosCustoCount}
@@ -355,6 +404,10 @@ export default function App() {
         currentTab={currentTab}
         currentUser={currentUser}
         activeUnidade={activeUnidade}
+        activeAreaSigla={currentUser?.area_sigla || localStorage.getItem('multi_almox_area_sigla') || 'ALM'}
+        activeAreaNome={currentUser?.area_nome || 'Almoxarifado'}
+        areasLiberadas={currentUser?.areas_liberadas || []}
+        onSwitchArea={handleSwitchArea}
         produtos={produtos}
         requisicoes={requisicoes}
         isSidebarOpen={isSidebarOpen}
@@ -618,9 +671,9 @@ export default function App() {
 
       <ConfirmDeleteModal
         isOpen={isResetDbModalOpen}
-        title="Restaurar Base de Dados Inicial"
-        entityName="Banco SQLite (almoxarifado.db)"
-        description="Esta ação redefinirá todas as tabelas para o estado limpo de instalação (mantendo apenas o usuário administrador padrão e unidades básicas)."
+        title="Limpar Logs de Acesso e Auditoria"
+        entityName="Histórico de Logs de Acesso"
+        description="Esta ação excluirá o histórico de auditoria e acesso do sistema. Os dados operacionais (produtos, estoques, movimentações, requisições) serão mantidos intactos."
         isProcessing={isResettingDb}
         onConfirm={handleConfirmResetDb}
         onClose={() => setIsResetDbModalOpen(false)}

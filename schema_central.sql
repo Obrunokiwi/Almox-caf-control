@@ -98,3 +98,19 @@ CREATE TABLE IF NOT EXISTS logs_acesso (
 );
 CREATE INDEX IF NOT EXISTS idx_logs_acesso_data ON logs_acesso (data_hora);
 CREATE INDEX IF NOT EXISTS idx_logs_acesso_login ON logs_acesso (login);
+
+-- 8. TABELA DE EMPRESAS / UNIDADES DE ALMOXARIFADO
+CREATE TABLE IF NOT EXISTS empresas_unidades (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    codigo TEXT UNIQUE NOT NULL,
+    nome TEXT NOT NULL,
+    cnpj TEXT UNIQUE,
+    endereco TEXT,
+    cidade TEXT,
+    uf TEXT,
+    ativo INTEGER NOT NULL DEFAULT 1,
+    criado_em DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_empresas_unidades_codigo ON empresas_unidades (codigo);
+CREATE INDEX IF NOT EXISTS idx_empresas_unidades_ativo ON empresas_unidades (ativo);
+
