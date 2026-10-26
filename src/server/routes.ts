@@ -8383,6 +8383,7 @@ function handleImportacaoProdutosRoute(req: any, res: any) {
 
     const result = runInTransaction(() => {
       const incluidos: any[] = [];
+      const atualizados: any[] = [];
       const ignorados: any[] = [];
       const avisos: string[] = [];
 
@@ -8393,7 +8394,12 @@ function handleImportacaoProdutosRoute(req: any, res: any) {
         grupoMap.set(g.nome_upper, g.id);
       }
 
-      const stmtCheckProd = targetDb.prepare('SELECT id, codigo, nome FROM produtos WHERE UPPER(codigo) = UPPER(?)');
+      // Valida usuário para auditoria e chave estrangeira na área de destino
+      const userExiste = targetDb.prepare('SELECT id FROM usuarios WHERE id = ?').get(user.id) as any;
+      const auditoriaUserId = userExiste ? user.id : 1;
+      const auditoriaUserNome = user.nome || 'Administrador Geral';
+
+      const stmtCheckProd = targetDb.prepare('SELECT id, codigo, nome, quantidade_atual, custo_unitario FROM produtos WHERE UPPER(codigo) = UPPER(?)');
       const stmtInsertGrupo = targetDb.prepare(`
         INSERT INTO grupos_produtos (codigo, nome, tipo_padrao, ativo)
         VALUES (?, ?, ?, 1)
@@ -8402,73 +8408,156 @@ function handleImportacaoProdutosRoute(req: any, res: any) {
         INSERT INTO produtos (
           codigo, nome, descricao, grupo_id, unidade_medida, tipo, controla_validade,
           estoque_minimo, estoque_maximo, quantidade_atual, valor_unitario, custo_unitario, ativo
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, 0, 0, 0, ?, ?, 1)
+        ) VALUES (?, ?, ?, ?, ?, ?, 1, 0, 0, ?, ?, ?, 1)
+      `);
+      const stmtUpdateProd = targetDb.prepare(`
+        UPDATE produtos
+        SET quantidade_atual = quantidade_atual + ?,
+            custo_unitario = CASE WHEN ? > 0 THEN ? ELSE custo_unitario END,
+            valor_unitario = CASE WHEN ? > 0 THEN ? ELSE valor_unitario END,
+            unidade_medida = COALESCE(?, unidade_medida)
+        WHERE id = ?
+      `);
+
+      // Verificação e inserção/atualização de lotes em lotes_estoque
+      const stmtCheckLote = targetDb.prepare(`
+        SELECT id, numero_lote, data_validade, quantidade_atual, quantidade_inicial
+        FROM lotes_estoque
+        WHERE produto_id = ?
+          AND UPPER(numero_lote) = ?
+          AND COALESCE(data_validade, '') = COALESCE(?, '')
+        LIMIT 1
+      `);
+      const stmtInsertLote = targetDb.prepare(`
+        INSERT INTO lotes_estoque (
+          produto_id, numero_lote, data_validade, quantidade_inicial, quantidade_atual,
+          documento_referencia
+        ) VALUES (?, ?, ?, ?, ?, 'IMPORTACAO-PLANILHA')
+      `);
+      const stmtUpdateLote = targetDb.prepare(`
+        UPDATE lotes_estoque
+        SET quantidade_atual = quantidade_atual + ?,
+            quantidade_inicial = quantidade_inicial + ?
+        WHERE id = ?
+      `);
+
+      // Movimentações para auditoria e histórico no Kardex
+      const stmtInsertMov = targetDb.prepare(`
+        INSERT INTO movimentacoes (
+          tipo, motivo_diverso, produto_id, lote_id, quantidade,
+          usuario_id, responsavel_nome, documento_referencia,
+          numero_lote, data_validade, valor_unitario, observacao, data_movimentacao
+        ) VALUES (
+          'entrada', 'Carga Inicial / Importação de Planilha', ?, ?, ?,
+          ?, ?, 'IMPORTACAO-PLANILHA',
+          ?, ?, ?, ?, CURRENT_TIMESTAMP
+        )
       `);
 
       for (let i = 0; i < produtos.length; i++) {
         const item = produtos[i];
         const rawCod = String(item.codigo || '').trim();
-        const rawDesc = String(item.nome || item.descricao || '').trim();
-        const rawUnd = String(item.unidade_medida || 'UN').trim().toUpperCase();
-        const rawCusto = item.custo_unitario !== undefined && item.custo_unitario !== null ? Number(item.custo_unitario) : 0;
+        const rawDesc = String(item.descricao || item.nome || '').trim();
+        const rawUnd = String(item.unidade || item.unidade_medida || 'UN').trim().toUpperCase() || 'UN';
+        const rawLote = item.lote && String(item.lote).trim() ? String(item.lote).trim().toUpperCase() : 'SEM LOTE';
+        const rawValidade = item.validade && String(item.validade).trim() ? String(item.validade).trim().slice(0, 10) : null;
+        const saldoNum = item.saldo !== undefined && item.saldo !== null ? Number(item.saldo) : (item.sald !== undefined ? Number(item.sald) : 0);
+        const custoNum = item.custo !== undefined && item.custo !== null ? Number(item.custo) : (item.custo_unitario !== undefined ? Number(item.custo_unitario) : 0);
+        const totalNum = item.total !== undefined && item.total !== null ? Number(item.total) : (item.valor_total !== undefined ? Number(item.valor_total) : (saldoNum * custoNum));
         const rawGrupoNome = String(item.grupo_nome || 'GERAL').trim();
         const tipoFinal = item.tipo === 'nao_consumivel' ? 'nao_consumivel' : 'consumivel';
 
         if (!rawCod || !rawDesc) {
-          avisos.push(`Linha ${i + 1}: Registro ignorado por falta de Código ou Descrição obrigatória.`);
+          avisos.push(`Linha ${i + 1}: Registro ignorado por falta de Código ou Descrição.`);
           continue;
         }
 
-        // Verifica se já existe pelo código no catálogo da área de destino
+        let produtoId: number;
+        let isNovo = false;
+
         const existe = stmtCheckProd.get(rawCod) as any;
         if (existe) {
-          ignorados.push({
+          produtoId = Number(existe.id);
+          stmtUpdateProd.run(saldoNum, custoNum, custoNum, custoNum, custoNum, rawUnd, produtoId);
+          atualizados.push({
+            id: produtoId,
             codigo: rawCod,
             nome: rawDesc,
-            motivo: `Código "${rawCod}" já cadastrado no catálogo da área ${areaRow.sigla} (ID #${existe.id} - ${existe.nome}). Registro ignorado sem alteração.`,
+            unidade: rawUnd,
+            lote: rawLote,
+            validade: rawValidade,
+            saldo: saldoNum,
+            custo: custoNum,
+            total: totalNum,
           });
-          continue;
+        } else {
+          isNovo = true;
+          // Resolução / criação do Grupo de Produto na área de destino
+          let grupoId: number | null = null;
+          if (rawGrupoNome) {
+            const upperGrupo = rawGrupoNome.toUpperCase();
+            if (grupoMap.has(upperGrupo)) {
+              grupoId = grupoMap.get(upperGrupo)!;
+            } else {
+              const nextGrupoCod = `GRP-${Math.floor(100 + Math.random() * 900)}`;
+              const infoGrupo = stmtInsertGrupo.run(nextGrupoCod, rawGrupoNome, tipoFinal);
+              grupoId = Number(infoGrupo.lastInsertRowid);
+              grupoMap.set(upperGrupo, grupoId);
+            }
+          }
+
+          const insertInfo = stmtInsertProd.run(
+            rawCod,
+            rawDesc,
+            rawDesc,
+            grupoId,
+            rawUnd,
+            tipoFinal,
+            saldoNum,
+            custoNum,
+            custoNum
+          );
+          produtoId = Number(insertInfo.lastInsertRowid);
+
+          incluidos.push({
+            id: produtoId,
+            codigo: rawCod,
+            nome: rawDesc,
+            unidade: rawUnd,
+            lote: rawLote,
+            validade: rawValidade,
+            saldo: saldoNum,
+            custo: custoNum,
+            total: totalNum,
+          });
         }
 
-        // Resolução / criação do Grupo de Produto na área de destino
-        let grupoId: number | null = null;
-        if (rawGrupoNome) {
-          const upperGrupo = rawGrupoNome.toUpperCase();
-          if (grupoMap.has(upperGrupo)) {
-            grupoId = grupoMap.get(upperGrupo)!;
+        // Criar ou atualizar lote em lotes_estoque se saldo > 0 ou lote/validade informados
+        let loteId: number | null = null;
+        if (saldoNum > 0 || (rawLote && rawLote !== 'SEM LOTE') || rawValidade) {
+          const loteExistente = stmtCheckLote.get(produtoId, rawLote, rawValidade || '') as any;
+          if (loteExistente) {
+            loteId = Number(loteExistente.id);
+            stmtUpdateLote.run(saldoNum, saldoNum, loteId);
           } else {
-            const nextGrupoCod = `GRP-${Math.floor(100 + Math.random() * 900)}`;
-            const infoGrupo = stmtInsertGrupo.run(nextGrupoCod, rawGrupoNome, tipoFinal);
-            grupoId = Number(infoGrupo.lastInsertRowid);
-            grupoMap.set(upperGrupo, grupoId);
+            const infoLote = stmtInsertLote.run(produtoId, rawLote, rawValidade, saldoNum, saldoNum);
+            loteId = Number(infoLote.lastInsertRowid);
           }
         }
 
-        // Importação não gera saldo, lotes nem movimentações. Quantidade atual = 0.
-        const insertInfo = stmtInsertProd.run(
-          rawCod,
-          rawDesc,
-          item.descricao ? String(item.descricao).trim() : rawDesc,
-          grupoId,
-          rawUnd,
-          tipoFinal,
-          tipoFinal === 'consumivel' ? 1 : 0,
-          rawCusto,
-          rawCusto
-        );
-
-        incluidos.push({
-          id: Number(insertInfo.lastInsertRowid),
-          codigo: rawCod,
-          nome: rawDesc,
-          grupo: rawGrupoNome,
-          unidade: rawUnd,
-          custo: rawCusto,
-          tipo: tipoFinal,
-        });
-
-        if (rawCusto === 0) {
-          avisos.push(`Produto "${rawCod} - ${rawDesc}": cadastrado com Custo Unitário R$ 0,00.`);
+        // Registrar movimentação de entrada se saldo > 0
+        if (saldoNum > 0) {
+          stmtInsertMov.run(
+            produtoId,
+            loteId,
+            saldoNum,
+            auditoriaUserId,
+            auditoriaUserNome,
+            rawLote,
+            rawValidade,
+            custoNum,
+            `Carga inicial via planilha (Saldo: ${saldoNum}, Lote: ${rawLote}, Custo: R$ ${custoNum.toFixed(2)})`
+          );
         }
       }
 
@@ -8477,8 +8566,10 @@ function handleImportacaoProdutosRoute(req: any, res: any) {
         area: { id: areaRow.id, sigla: areaRow.sigla, nome: areaRow.nome, arquivo_db: areaRow.arquivo_db },
         total_lidos: produtos.length,
         total_incluidos: incluidos.length,
+        total_atualizados: atualizados.length,
         total_ignorados: ignorados.length,
         incluidos,
+        atualizados,
         ignorados,
         avisos,
       };

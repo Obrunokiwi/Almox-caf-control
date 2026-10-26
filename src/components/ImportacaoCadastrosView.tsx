@@ -32,7 +32,8 @@ interface ImportacaoCadastrosViewProps {
   onVoltar: () => void;
 }
 
-// Estrutura de Produto parsed da planilha
+// Estrutura de Produto parsed da planilha com os 8 campos solicitados:
+// codigo | descricao | unidade | lote | validade | sald | custo | total
 interface ProdutoImportItem {
   id_temp: string;
   codigo: string;
@@ -40,8 +41,13 @@ interface ProdutoImportItem {
   descricao?: string;
   grupo_nome: string;
   unidade_medida: string;
-  tipo: 'consumivel' | 'nao_consumivel';
+  lote: string;
+  validade: string | null;
+  validade_formatada: string;
+  saldo: number;
   custo_unitario: number;
+  valor_total: number;
+  tipo: 'consumivel' | 'nao_consumivel';
   valido: boolean;
   motivo_invalido?: string;
   ja_existe_no_banco?: boolean;
@@ -99,6 +105,113 @@ function parseCustoValue(rawCustoCell: any): number {
   // Se contiver apenas ponto (ex: 5.25 ou 1250.50): ponto já é decimal legítimo
   const parsed = parseFloat(str);
   return isNaN(parsed) ? 0 : parsed;
+}
+
+// Utilitário para conversão de quantidade / saldo (suporta inteiros, decimais, vírgula e ponto)
+function parseSaldoValue(rawSaldoCell: any): number {
+  if (rawSaldoCell === undefined || rawSaldoCell === null || rawSaldoCell === '') return 0;
+  if (typeof rawSaldoCell === 'number') return rawSaldoCell >= 0 ? rawSaldoCell : 0;
+  let str = String(rawSaldoCell).trim();
+  if (str.includes('.') && str.includes(',')) {
+    str = str.replace(/\./g, '').replace(',', '.');
+  } else if (str.includes(',')) {
+    str = str.replace(',', '.');
+  }
+  const parsed = parseFloat(str);
+  return isNaN(parsed) || parsed < 0 ? 0 : parsed;
+}
+
+// Utilitário para interpretar e normalizar datas de validade (suporta número de série Excel, DD/MM/AAAA, AAAA-MM-DD, MM/AAAA)
+function parseValidadeValue(raw: any): { iso: string | null; formatted: string } {
+  if (raw === undefined || raw === null || raw === '') {
+    return { iso: null, formatted: '-' };
+  }
+
+  // Se for número (serial date do Excel)
+  if (typeof raw === 'number') {
+    if (raw > 1000 && raw < 100000) {
+      try {
+        const dateObj = XLSX.SSF.parse_date_code(raw);
+        if (dateObj && dateObj.y && dateObj.m && dateObj.d) {
+          const y = String(dateObj.y).padStart(4, '0');
+          const m = String(dateObj.m).padStart(2, '0');
+          const d = String(dateObj.d).padStart(2, '0');
+          return {
+            iso: `${y}-${m}-${d}`,
+            formatted: `${d}/${m}/${y}`,
+          };
+        }
+      } catch {
+        // fallback
+      }
+      const jsDate = new Date(Math.round((raw - 25569) * 86400 * 1000));
+      if (!isNaN(jsDate.getTime())) {
+        const y = jsDate.getUTCFullYear();
+        const m = String(jsDate.getUTCMonth() + 1).padStart(2, '0');
+        const d = String(jsDate.getUTCDate()).padStart(2, '0');
+        return {
+          iso: `${y}-${m}-${d}`,
+          formatted: `${d}/${m}/${y}`,
+        };
+      }
+    }
+  }
+
+  const str = String(raw).trim();
+  if (!str || str === '-' || str.toLowerCase() === 'null') {
+    return { iso: null, formatted: '-' };
+  }
+
+  // DD/MM/YYYY ou DD-MM-YYYY
+  const matchBr = str.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{2,4})$/);
+  if (matchBr) {
+    const d = matchBr[1].padStart(2, '0');
+    const m = matchBr[2].padStart(2, '0');
+    let y = matchBr[3];
+    if (y.length === 2) {
+      y = Number(y) > 50 ? `19${y}` : `20${y}`;
+    }
+    return {
+      iso: `${y}-${m}-${d}`,
+      formatted: `${d}/${m}/${y}`,
+    };
+  }
+
+  // MM/YYYY
+  const matchMonthYear = str.match(/^(\d{1,2})[\/\-](\d{4})$/);
+  if (matchMonthYear) {
+    const m = matchMonthYear[1].padStart(2, '0');
+    const y = matchMonthYear[2];
+    return {
+      iso: `${y}-${m}-01`,
+      formatted: `01/${m}/${y}`,
+    };
+  }
+
+  // YYYY-MM-DD
+  const matchIso = str.match(/^(\d{4})[\/\-](\d{1,2})[\/\-](\d{1,2})$/);
+  if (matchIso) {
+    const y = matchIso[1];
+    const m = matchIso[2].padStart(2, '0');
+    const d = matchIso[3].padStart(2, '0');
+    return {
+      iso: `${y}-${m}-${d}`,
+      formatted: `${d}/${m}/${y}`,
+    };
+  }
+
+  const parsedDate = new Date(str);
+  if (!isNaN(parsedDate.getTime()) && parsedDate.getFullYear() > 1990) {
+    const y = parsedDate.getFullYear();
+    const m = String(parsedDate.getMonth() + 1).padStart(2, '0');
+    const d = String(parsedDate.getDate()).padStart(2, '0');
+    return {
+      iso: `${y}-${m}-${d}`,
+      formatted: `${d}/${m}/${y}`,
+    };
+  }
+
+  return { iso: null, formatted: str };
 }
 
 export const ImportacaoCadastrosView: React.FC<ImportacaoCadastrosViewProps> = ({
@@ -276,10 +389,21 @@ export const ImportacaoCadastrosView: React.FC<ImportacaoCadastrosViewProps> = (
         let colCod = -1;
         let colDesc = -1;
         let colUnd = -1;
+        let colLote = -1;
+        let colValidade = -1;
+        let colSaldo = -1;
         let colCusto = -1;
+        let colTotal = -1;
 
         const itens: ProdutoImportItem[] = [];
         const codigosNoBanco = new Set(bancoProdutos.map((p) => String(p.codigo).toUpperCase().trim()));
+
+        const normalizeColHeader = (val: any) =>
+          String(val || '')
+            .toUpperCase()
+            .trim()
+            .normalize('NFD')
+            .replace(/[\u0300-\u036f]/g, '');
 
         for (let rowIndex = 0; rowIndex < rawRows.length; rowIndex++) {
           const row = rawRows[rowIndex];
@@ -314,41 +438,67 @@ export const ImportacaoCadastrosView: React.FC<ImportacaoCadastrosViewProps> = (
             continue;
           }
 
-          // 2. Detecta cabeçalhos repetidos e define colunas
+          // 2. Detecta cabeçalhos com suporte aos 8 campos:
+          // codigo | descricao | unidade | lote | validade | sald | custo | total
           const isHeaderRow = row.some((c) => {
-            const s = String(c || '').toUpperCase();
-            return s === 'COD' || s === 'CÓD' || s === 'CODIGO' || s === 'CÓDIGO';
+            const s = normalizeColHeader(c);
+            return s === 'COD' || s === 'CODIGO' || s === 'ID' || s === 'COD.';
           }) && row.some((c) => {
-            const s = String(c || '').toUpperCase();
-            return s.includes('DESC') || s.includes('PRODUTO');
+            const s = normalizeColHeader(c);
+            return (
+              s.includes('DESC') ||
+              s === 'PRODUTO' ||
+              s === 'NOME' ||
+              s === 'UNIDADE' ||
+              s === 'UND' ||
+              s === 'LOTE' ||
+              s.includes('SALD')
+            );
           });
 
           if (isHeaderRow) {
             for (let c = 0; c < row.length; c++) {
-              const val = String(row[c] || '').toUpperCase().trim();
-              if (val === 'COD' || val === 'CÓD' || val === 'CODIGO' || val === 'CÓDIGO') {
+              const val = normalizeColHeader(row[c]);
+              if (val === 'COD' || val === 'CODIGO' || val === 'ID' || val === 'COD.') {
                 colCod = c;
-              } else if (val.includes('DESC')) {
+              } else if (val.includes('DESC') || val === 'PRODUTO' || val === 'NOME' || val === 'ITEM') {
                 colDesc = c;
-              } else if (val === 'UND' || val === 'UN' || val === 'UNIDADE') {
+              } else if (val === 'UND' || val === 'UN' || val === 'UNIDADE' || val === 'MEDIDA' || val === 'UM') {
                 colUnd = c;
-              } else if (val === 'CUSTO' || val.includes('CUSTO')) {
+              } else if (val === 'LOTE' || val === 'LOT' || val === 'BATCH' || val.includes('LOTE') || val === 'N_LOTE' || val === 'NUMERO_LOTE') {
+                colLote = c;
+              } else if (val === 'VALIDADE' || val === 'VAL' || val === 'VENCIMENTO' || val === 'VENC' || val.includes('VALIDADE') || val.includes('VENC') || val === 'DT_VAL' || val === 'DT_VALIDADE') {
+                colValidade = c;
+              } else if (val === 'SALD' || val === 'SALDO' || val === 'QTD' || val === 'QTDE' || val.includes('SALD') || val.includes('QUANT') || val === 'ESTOQUE') {
+                colSaldo = c;
+              } else if (val.includes('CUSTO') || val === 'VALOR_UNIT' || val === 'VL_UNIT' || val === 'PRECO' || val === 'VALOR') {
                 colCusto = c;
+              } else if (val === 'TOTAL' || val.includes('TOTAL') || val === 'SUBTOTAL') {
+                colTotal = c;
               }
             }
             continue; // Ignora a linha do cabeçalho
           }
 
           // Se as colunas ainda não foram mapeadas pelo cabeçalho, assume índices padrão
+          // Ordem padrão solicitada: codigo(0) | descricao(1) | unidade(2) | lote(3) | validade(4) | sald(5) | custo(6) | total(7)
           const cCodIdx = colCod >= 0 ? colCod : 0;
           const cDescIdx = colDesc >= 0 ? colDesc : 1;
           const cUndIdx = colUnd >= 0 ? colUnd : 2;
-          const cCustoIdx = colCusto >= 0 ? colCusto : 3;
+          const cLoteIdx = colLote >= 0 ? colLote : 3;
+          const cValIdx = colValidade >= 0 ? colValidade : 4;
+          const cSaldoIdx = colSaldo >= 0 ? colSaldo : 5;
+          const cCustoIdx = colCusto >= 0 ? colCusto : 6;
+          const cTotalIdx = colTotal >= 0 ? colTotal : 7;
 
           const rawCod = String(row[cCodIdx] !== undefined ? row[cCodIdx] : '').trim();
           const rawDesc = String(row[cDescIdx] !== undefined ? row[cDescIdx] : '').trim();
-          const rawUnd = String(row[cUndIdx] !== undefined ? row[cUndIdx] : 'UN').trim().toUpperCase() || 'UN';
-          const rawCustoCell = row[cCustoIdx];
+          const rawUnd = String(cUndIdx < row.length && row[cUndIdx] !== undefined ? row[cUndIdx] : 'UN').trim().toUpperCase() || 'UN';
+          const rawLote = cLoteIdx < row.length && row[cLoteIdx] !== undefined ? String(row[cLoteIdx]).trim() : '';
+          const rawValidadeCell = cValIdx < row.length ? row[cValIdx] : undefined;
+          const rawSaldoCell = cSaldoIdx < row.length ? row[cSaldoIdx] : undefined;
+          const rawCustoCell = cCustoIdx < row.length ? row[cCustoIdx] : undefined;
+          const rawTotalCell = cTotalIdx < row.length ? row[cTotalIdx] : undefined;
 
           // Ignora linhas totalmente vazias
           if (!rawCod && !rawDesc) continue;
@@ -359,14 +509,23 @@ export const ImportacaoCadastrosView: React.FC<ImportacaoCadastrosViewProps> = (
 
           if (!rawCod) {
             valido = false;
-            motivoInvalido = 'Código (COD) ausente';
+            motivoInvalido = 'Código (codigo) ausente';
           } else if (!rawDesc) {
             valido = false;
-            motivoInvalido = 'Descrição do Produto ausente';
+            motivoInvalido = 'Descrição (descricao) ausente';
           }
 
-          // Conversão de custo mantendo a precisão decimal original sem arredondamento
+          // Conversão de números e datas
           const custoNum = parseCustoValue(rawCustoCell);
+          const saldoNum = parseSaldoValue(rawSaldoCell);
+          const validadeObj = parseValidadeValue(rawValidadeCell);
+          let totalNum = parseCustoValue(rawTotalCell);
+          if (totalNum === 0 && saldoNum > 0 && custoNum > 0) {
+            totalNum = Number((saldoNum * custoNum).toFixed(2));
+          }
+
+          // Lote normalizado
+          const loteFinal = rawLote ? rawLote.toUpperCase() : 'SEM LOTE';
 
           // Mapeamento de tipo conforme grupo (equipamento/imobilizado = nao_consumivel, demais = consumivel)
           const upperG = currentGrupo.toUpperCase();
@@ -377,13 +536,18 @@ export const ImportacaoCadastrosView: React.FC<ImportacaoCadastrosViewProps> = (
 
           itens.push({
             id_temp: `prod-${rowIndex}-${rawCod}`,
-            codigo: rawCod, // Preservado exatamente como texto original, sem zeros adicionados
+            codigo: rawCod, // Preservado exatamente como texto original
             nome: rawDesc,
             descricao: rawDesc,
             grupo_nome: currentGrupo || 'GERAL',
             unidade_medida: rawUnd,
-            tipo,
+            lote: loteFinal,
+            validade: validadeObj.iso,
+            validade_formatada: validadeObj.formatted,
+            saldo: saldoNum,
             custo_unitario: custoNum,
+            valor_total: totalNum,
+            tipo,
             valido,
             motivo_invalido: motivoInvalido,
             ja_existe_no_banco: jaExiste,
@@ -407,11 +571,11 @@ export const ImportacaoCadastrosView: React.FC<ImportacaoCadastrosViewProps> = (
 
   // Confirmar Importação de Produtos no Banco de Destino
   const handleConfirmarImportacaoProdutos = async () => {
-    // Apenas registros válidos e que NÃO existem no banco
-    const registrosParaGravar = produtosParsed.filter((p) => p.valido && !p.ja_existe_no_banco);
+    // Registros válidos (novos ou existentes para atualizar estoque/lotes)
+    const registrosParaGravar = produtosParsed.filter((p) => p.valido);
 
     if (registrosParaGravar.length === 0) {
-      toast.warning('Nada a Gravar', 'Todos os registros válidos já existem no catálogo da área selecionada ou estão inválidos.');
+      toast.warning('Nada a Gravar', 'Nenhum registro válido encontrado na planilha para importação.');
       return;
     }
 
@@ -435,7 +599,8 @@ export const ImportacaoCadastrosView: React.FC<ImportacaoCadastrosViewProps> = (
 
       // Constrói relatório consolidado
       const incluidos = data.incluidos || [];
-      const ignoradosBanco = produtosParsed.filter((p) => p.ja_existe_no_banco);
+      const atualizados = data.atualizados || [];
+      const ignoradosBanco = data.ignorados || [];
       const invalidos = produtosParsed.filter((p) => !p.valido);
 
       setRelatorioProd({
@@ -445,9 +610,11 @@ export const ImportacaoCadastrosView: React.FC<ImportacaoCadastrosViewProps> = (
         arquivo: arquivoProdNome,
         totalLidos: produtosParsed.length,
         totalIncluidos: incluidos.length,
+        totalAtualizados: atualizados.length,
         totalIgnoradosBanco: ignoradosBanco.length,
         totalInvalidos: invalidos.length,
         incluidos,
+        atualizados,
         ignoradosBanco,
         invalidos,
         avisos: data.avisos || [],
@@ -457,8 +624,8 @@ export const ImportacaoCadastrosView: React.FC<ImportacaoCadastrosViewProps> = (
       setProdutosParsed([]);
       setIsConfirmModalOpen(false);
       toast.success(
-        'Importação Concluída',
-        `${incluidos.length} produtos cadastrados com sucesso no banco da área ${targetArea.nome} (${targetArea.arquivo_db}).`
+        'Produtos Importados',
+        `${incluidos.length} novos produtos e ${atualizados.length} atualizados/lotes incorporados na base ${targetArea.nome} (${targetArea.arquivo_db}).`
       );
       onRefresh();
       carregarBaseExistente();
@@ -846,22 +1013,25 @@ export const ImportacaoCadastrosView: React.FC<ImportacaoCadastrosViewProps> = (
 
     let startY = 62;
 
-    // Tabela 1: Registros Incluídos com Sucesso
-    if (rel.incluidos && rel.incluidos.length > 0) {
+    // Tabela 1: Registros Incluídos / Atualizados com Sucesso
+    const todosProcessados = [...(rel.incluidos || []), ...(rel.atualizados || [])];
+    if (todosProcessados.length > 0) {
       doc.setFont('helvetica', 'bold');
       doc.setFontSize(11);
       doc.setTextColor(15, 118, 110);
-      doc.text(`1. Registros Incluídos com Sucesso (${rel.incluidos.length})`, 14, startY);
+      doc.text(`1. Registros Processados com Sucesso (${todosProcessados.length})`, 14, startY);
 
-      const tableData = rel.incluidos.map((item: any) => {
+      const tableData = todosProcessados.map((item: any) => {
         if (rel.tipo === 'produtos') {
           return [
             item.codigo,
             item.nome,
-            item.grupo || '-',
             item.unidade || 'UN',
-            item.tipo === 'nao_consumivel' ? 'Não Consumível' : 'Consumível',
+            item.lote || 'SEM LOTE',
+            item.validade ? new Date(item.validade + 'T00:00:00').toLocaleDateString('pt-BR') : '-',
+            Number(item.saldo || 0).toLocaleString('pt-BR'),
             Number(item.custo || 0).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' }),
+            Number(item.total || 0).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' }),
           ];
         }
         return [
@@ -875,7 +1045,7 @@ export const ImportacaoCadastrosView: React.FC<ImportacaoCadastrosViewProps> = (
 
       const tableHeaders =
         rel.tipo === 'produtos'
-          ? [['Código', 'Descrição do Produto', 'Grupo', 'UND', 'Tipo', 'Custo Unit.']]
+          ? [['Código', 'Descrição', 'UND', 'Lote', 'Validade', 'Saldo', 'Custo Unit.', 'Total']]
           : [['Código', 'Razão Social / Entidade', 'CNPJ', 'Telefone', 'Classificação']];
 
       autoTable(doc, {
@@ -1079,26 +1249,40 @@ export const ImportacaoCadastrosView: React.FC<ImportacaoCadastrosViewProps> = (
               </div>
             </div>
 
-            <div className="bg-slate-50 rounded-lg p-3.5 border border-slate-200 text-xs text-slate-600 space-y-2">
+            <div className="bg-slate-50 rounded-lg p-3.5 border border-slate-200 text-xs text-slate-600 space-y-2.5">
               <div className="font-semibold text-slate-700 flex items-center gap-1.5">
                 <HelpCircle className="w-3.5 h-3.5 text-teal-600" />
-                <span>Regras de Leitura do Arquivo de Produtos:</span>
+                <span>Colunas Obrigatórias da Planilha (.CSV / .XLS / .XLSX):</span>
+              </div>
+              <div className="bg-[#24478f] text-white font-mono text-[11px] p-2 rounded-lg flex flex-wrap gap-x-2.5 gap-y-1 font-bold shadow-sm items-center">
+                <span>codigo</span>
+                <span className="text-blue-300 font-light">|</span>
+                <span>descricao</span>
+                <span className="text-blue-300 font-light">|</span>
+                <span>unidade</span>
+                <span className="text-blue-300 font-light">|</span>
+                <span>lote</span>
+                <span className="text-blue-300 font-light">|</span>
+                <span>validade</span>
+                <span className="text-blue-300 font-light">|</span>
+                <span>sald</span>
+                <span className="text-blue-300 font-light">|</span>
+                <span>custo</span>
+                <span className="text-blue-300 font-light">|</span>
+                <span>total</span>
               </div>
               <ul className="list-disc pl-4 space-y-1 text-[11px] text-slate-600">
                 <li>
-                  Lê a aba <strong>saldo_estoque_data</strong> (colunas COD, DESCRIÇÃO DO PRODUTO, UND, CUSTO) ou arquivo <strong>.CSV</strong>.
+                  Suporta arquivos <strong>.CSV</strong>, <strong>.XLS</strong> ou <strong>.XLSX</strong> com os 8 campos acima.
                 </li>
                 <li>
-                  Associa o produto ao grupo da linha anterior com <strong>GRUPO DE PRODUTO:</strong>.
+                  <strong>Carga de Estoque e Lotes:</strong> cadastra os lotes com validade e quantidade, atualiza o saldo físico do item e gera movimentação de entrada inicial para o Kardex.
                 </li>
                 <li>
-                  <strong>Código original preservado:</strong> como texto (4 a 7 dígitos), sem preencher zeros à esquerda.
+                  <strong>Produtos Existentes:</strong> se o código já estiver cadastrado, adiciona o lote e incrementa o saldo correspondente.
                 </li>
                 <li>
-                  Custo com precisão decimal original (produtos com custo zero são válidos).
-                </li>
-                <li>
-                  <strong>Sem quantidade inicial:</strong> o cadastro de produto não gera saldo nem lotes automaticamente.
+                  <strong>Código original preservado:</strong> como texto (alfanumérico ou numérico), sem preencher zeros à esquerda.
                 </li>
               </ul>
             </div>
@@ -1206,7 +1390,7 @@ export const ImportacaoCadastrosView: React.FC<ImportacaoCadastrosViewProps> = (
                   Painel de Prévia da Importação de Produtos
                 </h3>
                 <p className="text-xs text-slate-500">
-                  Arquivo: <strong>{arquivoProdNome}</strong> • Revise os números antes da gravação transacional
+                  Arquivo: <strong>{arquivoProdNome}</strong> • Revise as 8 colunas antes da gravação transacional
                 </p>
               </div>
             </div>
@@ -1227,7 +1411,7 @@ export const ImportacaoCadastrosView: React.FC<ImportacaoCadastrosViewProps> = (
                   setConfirmImportType('produtos');
                   setIsConfirmModalOpen(true);
                 }}
-                disabled={isGravandoProd || produtosParsed.filter((p) => p.valido && !p.ja_existe_no_banco).length === 0}
+                disabled={isGravandoProd || produtosParsed.filter((p) => p.valido).length === 0}
                 className="px-4 py-1.5 bg-teal-700 hover:bg-teal-800 text-white font-bold rounded-lg text-xs cursor-pointer shadow flex items-center gap-1.5 disabled:opacity-50"
               >
                 {isGravandoProd ? (
@@ -1254,77 +1438,86 @@ export const ImportacaoCadastrosView: React.FC<ImportacaoCadastrosViewProps> = (
           </div>
 
           {/* Cards de Resumo da Prévia */}
-          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs">
+          <div className="grid grid-cols-2 sm:grid-cols-5 gap-3 text-xs">
             <div className="bg-slate-50 p-3 rounded-lg border border-slate-200">
-              <span className="text-slate-500 font-medium block">Total lidos no arquivo</span>
+              <span className="text-slate-500 font-medium block">Total Linhas</span>
               <span className="text-lg font-bold text-slate-800">{produtosParsed.length}</span>
             </div>
 
             <div className="bg-emerald-50 p-3 rounded-lg border border-emerald-200">
-              <span className="text-emerald-700 font-medium block">Válidos prontos p/ gravar</span>
+              <span className="text-emerald-700 font-medium block">Novos Itens</span>
               <span className="text-lg font-bold text-emerald-800">
                 {produtosParsed.filter((p) => p.valido && !p.ja_existe_no_banco).length}
               </span>
             </div>
 
-            <div className="bg-slate-100 p-3 rounded-lg border border-slate-300">
-              <span className="text-slate-600 font-medium block">Já no banco (serão ignorados)</span>
-              <span className="text-lg font-bold text-slate-700">
-                {produtosParsed.filter((p) => p.ja_existe_no_banco).length}
+            <div className="bg-indigo-50 p-3 rounded-lg border border-indigo-200">
+              <span className="text-indigo-700 font-medium block">Itens Existentes</span>
+              <span className="text-lg font-bold text-indigo-800">
+                {produtosParsed.filter((p) => p.valido && p.ja_existe_no_banco).length}
               </span>
             </div>
 
-            <div className="bg-rose-50 p-3 rounded-lg border border-rose-200">
-              <span className="text-rose-700 font-medium block">Campos obrigatórios ausentes</span>
-              <span className="text-lg font-bold text-rose-800">
-                {produtosParsed.filter((p) => !p.valido).length}
+            <div className="bg-blue-50 p-3 rounded-lg border border-blue-200">
+              <span className="text-blue-700 font-medium block">Saldo Total</span>
+              <span className="text-lg font-bold text-blue-900">
+                {produtosParsed.filter((p) => p.valido).reduce((acc, p) => acc + p.saldo, 0).toLocaleString('pt-BR')}
+              </span>
+            </div>
+
+            <div className="bg-teal-50 p-3 rounded-lg border border-teal-200">
+              <span className="text-teal-700 font-medium block">Valor Total</span>
+              <span className="text-lg font-bold text-teal-900">
+                {produtosParsed
+                  .filter((p) => p.valido)
+                  .reduce((acc, p) => acc + p.valor_total, 0)
+                  .toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}
               </span>
             </div>
           </div>
 
-          {/* Tabela de Amostragem da Prévia */}
-          <div className="border border-slate-200 rounded-lg overflow-x-auto max-h-80">
+          {/* Tabela de Amostragem da Prévia com os 8 CAMPOS EXATOS:
+              codigo | descricao | unidade | lote | validade | sald | custo | total */}
+          <div className="border border-slate-300 rounded-lg overflow-x-auto max-h-96 shadow-inner">
             <table className="w-full text-left text-xs border-collapse">
-              <thead className="bg-slate-100 sticky top-0 border-b border-slate-200 text-slate-700 uppercase font-bold text-[10px]">
+              <thead className="bg-[#24478f] text-white sticky top-0 border-b border-blue-950 uppercase font-bold text-[10px] tracking-wider">
                 <tr>
-                  <th className="py-2 px-3">Código</th>
-                  <th className="py-2 px-3">Descrição do Produto</th>
-                  <th className="py-2 px-3">Grupo</th>
-                  <th className="py-2 px-2 text-center">UND</th>
-                  <th className="py-2 px-3">Tipo</th>
-                  <th className="py-2 px-3 text-right">Custo Unit.</th>
-                  <th className="py-2 px-3 text-center">Status da Prévia</th>
+                  <th className="py-2.5 px-3">codigo</th>
+                  <th className="py-2.5 px-3">descricao</th>
+                  <th className="py-2.5 px-2 text-center">unidade</th>
+                  <th className="py-2.5 px-3">lote</th>
+                  <th className="py-2.5 px-3 text-center">validade</th>
+                  <th className="py-2.5 px-3 text-right">sald</th>
+                  <th className="py-2.5 px-3 text-right">custo</th>
+                  <th className="py-2.5 px-3 text-right">total</th>
+                  <th className="py-2.5 px-3 text-center">status</th>
                 </tr>
               </thead>
-              <tbody className="divide-y divide-slate-100">
-                {produtosParsed.slice(0, 100).map((p) => (
+              <tbody className="divide-y divide-slate-100 font-sans">
+                {produtosParsed.slice(0, 150).map((p) => (
                   <tr
                     key={p.id_temp}
                     className={
                       !p.valido
                         ? 'bg-rose-50/70 text-rose-900'
                         : p.ja_existe_no_banco
-                        ? 'bg-slate-50 text-slate-500'
+                        ? 'bg-indigo-50/40 text-slate-800 hover:bg-indigo-50/70'
                         : 'hover:bg-slate-50'
                     }
                   >
-                    <td className="py-2 px-3 font-mono font-bold">{p.codigo}</td>
-                    <td className="py-2 px-3 font-medium">{p.nome}</td>
-                    <td className="py-2 px-3 text-slate-600">{p.grupo_nome}</td>
-                    <td className="py-2 px-2 text-center font-bold">{p.unidade_medida}</td>
-                    <td className="py-2 px-3">
-                      <span
-                        className={`px-2 py-0.5 rounded text-[10px] font-semibold uppercase ${
-                          p.tipo === 'nao_consumivel'
-                            ? 'bg-purple-100 text-purple-800'
-                            : 'bg-teal-100 text-teal-800'
-                        }`}
-                      >
-                        {p.tipo === 'nao_consumivel' ? 'Não Consumível' : 'Consumível'}
-                      </span>
+                    <td className="py-2 px-3 font-mono font-bold text-slate-900">{p.codigo}</td>
+                    <td className="py-2 px-3 font-medium text-slate-800">{p.nome}</td>
+                    <td className="py-2 px-2 text-center font-bold text-slate-600">{p.unidade_medida}</td>
+                    <td className="py-2 px-3 font-mono text-slate-700">{p.lote || 'SEM LOTE'}</td>
+                    <td className="py-2 px-3 text-center font-mono text-slate-700">{p.validade_formatada || '-'}</td>
+                    <td className="py-2 px-3 text-right font-mono font-bold text-slate-900">
+                      {p.saldo.toLocaleString('pt-BR')}
                     </td>
-                    <td className="py-2 px-3 text-right font-mono">
+                    <td className="py-2 px-3 text-right font-mono text-slate-700">
                       {p.custo_unitario.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}
+                    </td>
+                    <td className="py-2 px-3 text-right font-mono font-bold text-teal-900">
+                      {p.valor_total.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}
                     </td>
                     <td className="py-2 px-3 text-center whitespace-nowrap">
                       {!p.valido ? (
@@ -1333,14 +1526,14 @@ export const ImportacaoCadastrosView: React.FC<ImportacaoCadastrosViewProps> = (
                           <span>{p.motivo_invalido}</span>
                         </span>
                       ) : p.ja_existe_no_banco ? (
-                        <span className="inline-flex items-center gap-1 text-[10px] font-medium text-slate-600 bg-slate-200 px-2 py-0.5 rounded">
-                          <Clock className="w-3 h-3" />
-                          <span>Já cadastrado (Ignorado)</span>
+                        <span className="inline-flex items-center gap-1 text-[10px] font-bold text-indigo-700 bg-indigo-100 px-2 py-0.5 rounded">
+                          <CheckCircle2 className="w-3 h-3" />
+                          <span>{p.saldo > 0 ? 'Já existe (Atualizar Saldo/Lote)' : 'Já existe no Catálogo'}</span>
                         </span>
                       ) : (
                         <span className="inline-flex items-center gap-1 text-[10px] font-bold text-emerald-700 bg-emerald-100 px-2 py-0.5 rounded">
                           <CheckCircle2 className="w-3 h-3" />
-                          <span>Pronto para Gravar</span>
+                          <span>{p.saldo > 0 ? 'Novo + Carga Estoque' : 'Novo Produto'}</span>
                         </span>
                       )}
                     </td>
@@ -1349,9 +1542,9 @@ export const ImportacaoCadastrosView: React.FC<ImportacaoCadastrosViewProps> = (
               </tbody>
             </table>
           </div>
-          {produtosParsed.length > 100 && (
+          {produtosParsed.length > 150 && (
             <p className="text-[11px] text-slate-500 italic text-center">
-              Mostrando os primeiros 100 registros de um total de {produtosParsed.length}.
+              Mostrando os primeiros 150 registros de um total de {produtosParsed.length}. Todos os registros válidos serão gravados.
             </p>
           )}
         </div>
@@ -1661,52 +1854,74 @@ export const ImportacaoCadastrosView: React.FC<ImportacaoCadastrosViewProps> = (
                 </div>
               </div>
 
-              {/* Lista de Itens Incluídos */}
-              {rel.incluidos.length > 0 && (
-                <div className="space-y-2">
-                  <h4 className="text-xs font-bold text-slate-800 flex items-center gap-1.5">
-                    <CheckCircle2 className="w-4 h-4 text-emerald-600" />
-                    <span>Registros Incluídos com Sucesso no Catálogo:</span>
-                  </h4>
-                  <div className="border border-slate-200 rounded-lg overflow-x-auto max-h-60">
-                    <table className="w-full text-left text-xs border-collapse">
-                      <thead className="bg-slate-100 border-b border-slate-200 text-slate-700 uppercase font-bold text-[10px]">
-                        <tr>
-                          <th className="py-2 px-3">Código</th>
-                          <th className="py-2 px-3">Nome / Descrição</th>
-                          {rel.tipo === 'produtos' && <th className="py-2 px-3">Grupo</th>}
-                          {rel.tipo === 'produtos' && <th className="py-2 px-2 text-center">UND</th>}
-                          {rel.tipo === 'produtos' && <th className="py-2 px-3 text-right">Custo Unitário</th>}
-                          {rel.tipo === 'fornecedores' && <th className="py-2 px-3">CNPJ</th>}
-                          {rel.tipo === 'fornecedores' && <th className="py-2 px-3">Telefone</th>}
-                        </tr>
-                      </thead>
-                      <tbody className="divide-y divide-slate-100">
-                        {rel.incluidos.slice(0, 50).map((it: any, idx: number) => (
-                          <tr key={idx} className="hover:bg-slate-50">
-                            <td className="py-2 px-3 font-mono font-bold text-teal-800">{it.codigo}</td>
-                            <td className="py-2 px-3 font-medium text-slate-800">{it.nome || it.razao_social}</td>
-                            {rel.tipo === 'produtos' && <td className="py-2 px-3 text-slate-600">{it.grupo}</td>}
-                            {rel.tipo === 'produtos' && <td className="py-2 px-2 text-center font-bold">{it.unidade}</td>}
-                            {rel.tipo === 'produtos' && (
-                              <td className="py-2 px-3 text-right font-mono">
-                                {Number(it.custo || 0).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}
-                              </td>
-                            )}
-                            {rel.tipo === 'fornecedores' && <td className="py-2 px-3 font-mono">{it.cnpj || '-'}</td>}
-                            {rel.tipo === 'fornecedores' && <td className="py-2 px-3">{it.telefone || '-'}</td>}
+              {/* Lista de Itens Processados (Novos ou Atualizados) */}
+              {(() => {
+                const itensProcessados = [...(rel.incluidos || []), ...(rel.atualizados || [])];
+                if (itensProcessados.length === 0) return null;
+                return (
+                  <div className="space-y-2">
+                    <h4 className="text-xs font-bold text-slate-800 flex items-center gap-1.5">
+                      <CheckCircle2 className="w-4 h-4 text-emerald-600" />
+                      <span>Registros Processados com Sucesso ({itensProcessados.length}):</span>
+                    </h4>
+                    <div className="border border-slate-200 rounded-lg overflow-x-auto max-h-64">
+                      <table className="w-full text-left text-xs border-collapse">
+                        <thead className="bg-[#24478f] text-white border-b border-blue-950 uppercase font-bold text-[10px]">
+                          <tr>
+                            <th className="py-2.5 px-3">Código</th>
+                            <th className="py-2.5 px-3">Descrição do Produto</th>
+                            {rel.tipo === 'produtos' && <th className="py-2.5 px-2 text-center">UND</th>}
+                            {rel.tipo === 'produtos' && <th className="py-2.5 px-3">Lote</th>}
+                            {rel.tipo === 'produtos' && <th className="py-2.5 px-3 text-center">Validade</th>}
+                            {rel.tipo === 'produtos' && <th className="py-2.5 px-3 text-right">Saldo</th>}
+                            {rel.tipo === 'produtos' && <th className="py-2.5 px-3 text-right">Custo Unit.</th>}
+                            {rel.tipo === 'produtos' && <th className="py-2.5 px-3 text-right">Total</th>}
+                            {rel.tipo === 'fornecedores' && <th className="py-2.5 px-3">CNPJ</th>}
+                            {rel.tipo === 'fornecedores' && <th className="py-2.5 px-3">Telefone</th>}
                           </tr>
-                        ))}
-                      </tbody>
-                    </table>
+                        </thead>
+                        <tbody className="divide-y divide-slate-100 font-sans">
+                          {itensProcessados.slice(0, 100).map((it: any, idx: number) => (
+                            <tr key={idx} className="hover:bg-slate-50">
+                              <td className="py-2 px-3 font-mono font-bold text-slate-900">{it.codigo}</td>
+                              <td className="py-2 px-3 font-medium text-slate-800">{it.nome || it.descricao || it.razao_social}</td>
+                              {rel.tipo === 'produtos' && <td className="py-2 px-2 text-center font-bold text-slate-600">{it.unidade || 'UN'}</td>}
+                              {rel.tipo === 'produtos' && <td className="py-2 px-3 font-mono text-slate-700">{it.lote || 'SEM LOTE'}</td>}
+                              {rel.tipo === 'produtos' && (
+                                <td className="py-2 px-3 text-center font-mono text-slate-700">
+                                  {it.validade ? new Date(it.validade + 'T00:00:00').toLocaleDateString('pt-BR') : '-'}
+                                </td>
+                              )}
+                              {rel.tipo === 'produtos' && (
+                                <td className="py-2 px-3 text-right font-mono font-bold text-slate-900">
+                                  {Number(it.saldo || 0).toLocaleString('pt-BR')}
+                                </td>
+                              )}
+                              {rel.tipo === 'produtos' && (
+                                <td className="py-2 px-3 text-right font-mono text-slate-700">
+                                  {Number(it.custo || 0).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}
+                                </td>
+                              )}
+                              {rel.tipo === 'produtos' && (
+                                <td className="py-2 px-3 text-right font-mono font-bold text-teal-900">
+                                  {Number(it.total || 0).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}
+                                </td>
+                              )}
+                              {rel.tipo === 'fornecedores' && <td className="py-2 px-3 font-mono">{it.cnpj || '-'}</td>}
+                              {rel.tipo === 'fornecedores' && <td className="py-2 px-3">{it.telefone || '-'}</td>}
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                    {itensProcessados.length > 100 && (
+                      <p className="text-[11px] text-slate-400 italic text-center">
+                        Exibindo 100 de {itensProcessados.length} itens. Todos os registros constam no PDF exportável.
+                      </p>
+                    )}
                   </div>
-                  {rel.incluidos.length > 50 && (
-                    <p className="text-[11px] text-slate-400 italic text-center">
-                      Exibindo 50 de {rel.incluidos.length} itens. Todos os registros constam no PDF exportável.
-                    </p>
-                  )}
-                </div>
-              )}
+                );
+              })()}
 
               {/* Lista de Registros Ignorados por Já Existirem */}
               {rel.ignoradosBanco.length > 0 && (
@@ -1820,21 +2035,41 @@ export const ImportacaoCadastrosView: React.FC<ImportacaoCadastrosViewProps> = (
                 </span>
               </div>
 
-              <div className="flex justify-between items-center py-1">
-                <span className="text-slate-600 font-semibold">Registros a Inserir:</span>
+              <div className="flex justify-between items-center py-1 border-b border-slate-200">
+                <span className="text-slate-600 font-semibold">Registros a Processar:</span>
                 <span className="font-bold text-teal-800 text-sm">
                   {confirmImportType === 'produtos'
-                    ? produtosParsed.filter((p) => p.valido && !p.ja_existe_no_banco).length
+                    ? produtosParsed.filter((p) => p.valido).length
                     : fornecedoresParsed.filter((f) => f.valido && !f.ja_existe_no_banco && !f.tem_conflito).length}{' '}
                   registros válidos
                 </span>
               </div>
+
+              {confirmImportType === 'produtos' && (
+                <>
+                  <div className="flex justify-between items-center py-1 border-b border-slate-200">
+                    <span className="text-slate-600 font-semibold">Saldo Total a Incorporar:</span>
+                    <span className="font-bold text-blue-900 font-mono text-sm">
+                      {produtosParsed.filter((p) => p.valido).reduce((acc, p) => acc + p.saldo, 0).toLocaleString('pt-BR')} unidades
+                    </span>
+                  </div>
+                  <div className="flex justify-between items-center py-1">
+                    <span className="text-slate-600 font-semibold">Valor Total Estimado:</span>
+                    <span className="font-bold text-teal-900 font-mono text-sm">
+                      {produtosParsed
+                        .filter((p) => p.valido)
+                        .reduce((acc, p) => acc + p.valor_total, 0)
+                        .toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}
+                    </span>
+                  </div>
+                </>
+              )}
             </div>
 
             <div className="p-3 bg-amber-50 rounded-xl border border-amber-200 text-xs text-amber-900 flex items-start gap-2">
               <ShieldAlert className="w-4 h-4 text-amber-700 shrink-0 mt-0.5" />
               <p>
-                Os registros serão inseridos exclusivamente na base <strong>{targetArea.arquivo_db}</strong> utilizando transação atômica no SQLite. Apenas cadastros serão criados (0 saldo e sem estoque).
+                Os registros serão inseridos/atualizados na base <strong>{targetArea.arquivo_db}</strong> utilizando transação atômica no SQLite. Lotes, validades, saldos e movimentações de entrada inicial serão cadastrados em estrita conformidade com as regras FEFO e Kardex.
               </p>
             </div>
 
