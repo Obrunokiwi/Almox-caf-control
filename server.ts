@@ -4,7 +4,7 @@ import { createServer as createViteServer } from 'vite';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { initDatabase, DB_PATH } from './src/server/db.ts';
+import { initDatabase, DB_PATH, CENTRAL_DB_PATH, DB_DIR } from './src/server/db.ts';
 import { apiRouter } from './src/server/routes.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -16,7 +16,9 @@ async function startServer() {
   // Inicializa o banco de dados SQLite com schema e seed se ainda não populado
   try {
     initDatabase();
-    console.log(`[MULTI ALMOX] Banco de dados SQLite pronto em: ${DB_PATH}`);
+    console.log(`[ALMOXCONTROL] Diretório de dados: ${DB_DIR}`);
+    console.log(`[ALMOXCONTROL] Banco Central: ${CENTRAL_DB_PATH}`);
+    console.log(`[ALMOXCONTROL] Banco Almoxarifado: ${DB_PATH}`);
   } catch (err) {
     console.error('Erro na inicialização do banco SQLite:', err);
   }

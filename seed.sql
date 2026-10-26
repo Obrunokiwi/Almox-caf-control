@@ -3,7 +3,7 @@
 -- ============================================================================
 
 -- 1. Centro de Custo Base Inicial
-INSERT OR REPLACE INTO centros_custo (id, codigo, nome, departamento, responsavel, ativo, criado_em) VALUES
+INSERT OR IGNORE INTO centros_custo (id, codigo, nome, departamento, responsavel, ativo, criado_em) VALUES
 (7, '7 - 1.02', 'ALMOXARIFADO CENTRAL', 'ALMOXARIFADO', 'Gestor de Estoque', 1, CURRENT_TIMESTAMP);
 
 -- 2. 15 Grupos Oficiais do Almoxarifado

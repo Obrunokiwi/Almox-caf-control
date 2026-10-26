@@ -20,7 +20,8 @@ import {
   Boxes,
   PackageCheck,
   FileSpreadsheet,
-  Layers
+  Layers,
+  ShoppingBag
 } from 'lucide-react';
 import type { Usuario, EmpresaUnidade } from '../types/index.ts';
 
@@ -68,6 +69,18 @@ export const Sidebar: React.FC<SidebarProps> = ({
       id: 'saldo-estoque',
       label: 'Consulta de Saldo em Estoque',
       icon: PackageCheck,
+      roles: ['admin', 'almoxarife'],
+    },
+    {
+      id: 'kardex',
+      label: 'Kardex do Produto',
+      icon: BookOpen,
+      roles: ['admin', 'almoxarife'],
+    },
+    {
+      id: 'lista-compras',
+      label: 'Lista de Compras / Reposição',
+      icon: ShoppingBag,
       roles: ['admin', 'almoxarife'],
     },
     {

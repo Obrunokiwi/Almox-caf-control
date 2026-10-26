@@ -1332,7 +1332,8 @@ apiRouter.post('/centros-custo', (req, res) => {
   }
 
   try {
-    const stmt = db.prepare(`
+    const central = getCentralDb();
+    const stmt = central.prepare(`
       INSERT INTO centros_custo (codigo, nome, departamento, responsavel, ativo)
       VALUES (?, ?, ?, ?, ?)
     `);
@@ -1344,6 +1345,9 @@ apiRouter.post('/centros-custo', (req, res) => {
       responsavel ? String(responsavel).trim() : '',
       statusAtivo
     );
+    // Sincroniza para todas as áreas ativas
+    syncMirrorsToAllAreas();
+
     const novo = db.prepare(`
       SELECT cc.*
       FROM centros_custo cc 
@@ -1381,8 +1385,9 @@ apiRouter.put('/centros-custo/:id', (req, res) => {
   }
 
   try {
+    const central = getCentralDb();
     const statusAtivo = ativo === 0 || ativo === false || ativo === '0' || ativo === 'Não' ? 0 : 1;
-    db.prepare(`
+    central.prepare(`
       UPDATE centros_custo
       SET codigo = ?, nome = ?, departamento = ?, responsavel = ?, ativo = ?
       WHERE id = ?
@@ -1394,6 +1399,9 @@ apiRouter.put('/centros-custo/:id', (req, res) => {
       statusAtivo,
       id
     );
+
+    // Sincroniza para todas as áreas ativas
+    syncMirrorsToAllAreas();
 
     const atualizado = db.prepare(`
       SELECT cc.*
@@ -1418,14 +1426,17 @@ apiRouter.patch('/centros-custo/:id/toggle', (req, res) => {
   }
 
   const { id } = req.params;
-  const atual = db.prepare('SELECT ativo, nome FROM centros_custo WHERE id = ?').get(id) as { ativo: number; nome: string } | undefined;
+  const central = getCentralDb();
+  const atual = central.prepare('SELECT ativo, nome FROM centros_custo WHERE id = ?').get(id) as { ativo: number; nome: string } | undefined;
   if (!atual) {
     res.status(404).json({ error: 'Centro de custo não encontrado' });
     return;
   }
 
   const novoAtivo = atual.ativo === 1 ? 0 : 1;
-  db.prepare('UPDATE centros_custo SET ativo = ? WHERE id = ?').run(novoAtivo, id);
+  central.prepare('UPDATE centros_custo SET ativo = ? WHERE id = ?').run(novoAtivo, id);
+  syncMirrorsToAllAreas();
+
   res.json({ id, ativo: novoAtivo, message: novoAtivo ? `Centro de Custo "${atual.nome}" ativado com sucesso.` : `Centro de Custo "${atual.nome}" inativado com sucesso.` });
 });
 
@@ -1448,7 +1459,10 @@ apiRouter.delete('/centros-custo/:id', (req, res) => {
   const reqCount = db.prepare('SELECT COUNT(*) as count FROM requisicoes WHERE centro_custo_id = ?').get(id) as { count: number };
   const invCount = db.prepare('SELECT COUNT(*) as count FROM inventarios_estoque WHERE centro_custo_id = ?').get(id) as { count: number };
   const usrCount = db.prepare('SELECT COUNT(*) as count FROM usuarios WHERE centro_custo_id = ?').get(id) as { count: number };
-  const empCount = db.prepare('SELECT COUNT(*) as count FROM emprestimos WHERE centro_custo_id = ?').get(id) as { count: number };
+  let empCount = { count: 0 };
+  try {
+    empCount = db.prepare('SELECT COUNT(*) as count FROM emprestimos WHERE centro_custo_id = ?').get(id) as { count: number };
+  } catch {}
 
   const motivos: string[] = [];
   if (movCount?.count > 0) motivos.push(`${movCount.count} movimentação(ões) no histórico`);
@@ -1466,7 +1480,11 @@ apiRouter.delete('/centros-custo/:id', (req, res) => {
   }
 
   try {
+    const central = getCentralDb();
+    central.prepare('DELETE FROM centros_custo WHERE id = ?').run(id);
     db.prepare('DELETE FROM centros_custo WHERE id = ?').run(id);
+    syncMirrorsToAllAreas();
+
     res.json({
       id: Number(id),
       message: `Centro de Custo "${cc.codigo} - ${cc.nome}" excluído com sucesso.`,
@@ -1565,7 +1583,7 @@ apiRouter.post('/usuarios', (req, res) => {
     return;
   }
 
-  const { codigo, nome, login, senha, cpf, email, perfil, centro_custo_id, permissoes, modulos } = req.body;
+  const { codigo, nome, login, senha, cpf, email, perfil, centro_custo_id, permissoes, modulos, area_ids } = req.body;
   if (!nome || !login || !senha || !perfil) {
     res.status(400).json({ error: 'Nome, login, senha e perfil são obrigatórios' });
     return;
@@ -1583,8 +1601,9 @@ apiRouter.post('/usuarios', (req, res) => {
     const cargoNome = perfil;
     const permissoesJson = Array.isArray(permissoes) ? JSON.stringify(permissoes) : JSON.stringify([]);
 
+    const central = getCentralDb();
     const info = runInTransaction(() => {
-      const stmt = db.prepare(`
+      const stmt = central.prepare(`
         INSERT INTO usuarios (codigo, nome, login, senha_hash, cpf, email, perfil, cargo_nome, permissoes, centro_custo_id, ativo)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
       `);
@@ -1613,13 +1632,26 @@ apiRouter.post('/usuarios', (req, res) => {
         modsToSave = modsToSave.filter((m) => m !== 'aprovacao-requisicoes');
       }
 
-      const insertModStmt = db.prepare('INSERT OR IGNORE INTO usuario_modulos (usuario_id, modulo_chave) VALUES (?, ?)');
+      const insertModStmt = central.prepare('INSERT OR IGNORE INTO usuario_modulos (usuario_id, modulo_chave) VALUES (?, ?)');
       for (const m of modsToSave) {
         insertModStmt.run(novoId, m);
       }
 
+      // Vincula áreas de acesso no banco central (usuario_areas)
+      if (perfil === 'admin' || perfil === 'ti_dpo') {
+        central.prepare('INSERT OR IGNORE INTO usuario_areas (usuario_id, area_id) VALUES (?, 1), (?, 2)').run(novoId, novoId);
+      } else {
+        const allowedAreas = Array.isArray(area_ids) && area_ids.length > 0 ? area_ids : [1];
+        for (const aId of allowedAreas) {
+          central.prepare('INSERT OR IGNORE INTO usuario_areas (usuario_id, area_id) VALUES (?, ?)').run(novoId, Number(aId));
+        }
+      }
+
       return resStmt;
-    });
+    }, central);
+
+    // Sincroniza o novo usuário para os bancos de área locais
+    syncMirrorsToAllAreas();
 
     const novo = getUserById(Number(info.lastInsertRowid));
     res.status(201).json(novo);
@@ -1641,17 +1673,18 @@ apiRouter.put('/usuarios/:id', (req, res) => {
   }
 
   const { id } = req.params;
-  const { codigo, nome, login, senha, cpf, email, perfil, centro_custo_id, ativo, permissoes, modulos } = req.body;
+  const { codigo, nome, login, senha, cpf, email, perfil, centro_custo_id, ativo, permissoes, modulos, area_ids } = req.body;
 
   try {
     const dbPerfil = perfil === 'ti_dpo' ? 'admin' : perfil;
     const cargoNome = perfil || null;
     const permissoesJson = Array.isArray(permissoes) ? JSON.stringify(permissoes) : null;
+    const central = getCentralDb();
 
     runInTransaction(() => {
       if (senha && senha.trim()) {
         const senha_hash = hashPassword(senha);
-        db.prepare(`
+        central.prepare(`
           UPDATE usuarios
           SET codigo = ?, nome = ?, login = ?, senha_hash = ?, cpf = ?, email = ?, 
               perfil = ?, cargo_nome = ?, permissoes = COALESCE(?, permissoes), centro_custo_id = ?, ativo = ?
@@ -1671,7 +1704,7 @@ apiRouter.put('/usuarios/:id', (req, res) => {
           id
         );
       } else {
-        db.prepare(`
+        central.prepare(`
           UPDATE usuarios
           SET codigo = ?, nome = ?, login = ?, cpf = ?, email = ?, 
               perfil = ?, cargo_nome = ?, permissoes = COALESCE(?, permissoes), centro_custo_id = ?, ativo = ?
@@ -1691,7 +1724,7 @@ apiRouter.put('/usuarios/:id', (req, res) => {
         );
       }
 
-      const targetUser = db.prepare('SELECT id, login FROM usuarios WHERE id = ?').get(id) as any;
+      const targetUser = central.prepare('SELECT id, login FROM usuarios WHERE id = ?').get(id) as any;
       if (targetUser && targetUser.id !== 1 && targetUser.login !== 'admin' && Array.isArray(modulos)) {
         let modsToSave = [...modulos];
         const effectivePerfil = cargoNome || dbPerfil;
@@ -1705,13 +1738,24 @@ apiRouter.put('/usuarios/:id', (req, res) => {
           modsToSave = modsToSave.filter((m) => m !== 'aprovacao-requisicoes');
         }
 
-        db.prepare('DELETE FROM usuario_modulos WHERE usuario_id = ?').run(id);
-        const insertModStmt = db.prepare('INSERT OR IGNORE INTO usuario_modulos (usuario_id, modulo_chave) VALUES (?, ?)');
+        central.prepare('DELETE FROM usuario_modulos WHERE usuario_id = ?').run(id);
+        const insertModStmt = central.prepare('INSERT OR IGNORE INTO usuario_modulos (usuario_id, modulo_chave) VALUES (?, ?)');
         for (const m of modsToSave) {
           insertModStmt.run(id, m);
         }
       }
-    });
+
+      if (Array.isArray(area_ids) && targetUser && targetUser.id !== 1 && targetUser.login !== 'admin') {
+        central.prepare('DELETE FROM usuario_areas WHERE usuario_id = ?').run(id);
+        const insArea = central.prepare('INSERT OR IGNORE INTO usuario_areas (usuario_id, area_id) VALUES (?, ?)');
+        for (const aId of area_ids) {
+          insArea.run(id, Number(aId));
+        }
+      }
+    }, central);
+
+    // Sincroniza espelhos para todos os bancos de área
+    syncMirrorsToAllAreas();
 
     const atualizado = getUserById(Number(id));
     res.json(atualizado);
@@ -1728,14 +1772,17 @@ apiRouter.patch('/usuarios/:id/toggle', (req, res) => {
   }
 
   const { id } = req.params;
-  const atual = db.prepare('SELECT ativo FROM usuarios WHERE id = ?').get(id) as { ativo: number } | undefined;
+  const central = getCentralDb();
+  const atual = central.prepare('SELECT ativo FROM usuarios WHERE id = ?').get(id) as { ativo: number } | undefined;
   if (!atual) {
     res.status(404).json({ error: 'Usuário não encontrado' });
     return;
   }
 
   const novoAtivo = atual.ativo === 1 ? 0 : 1;
-  db.prepare('UPDATE usuarios SET ativo = ? WHERE id = ?').run(novoAtivo, id);
+  central.prepare('UPDATE usuarios SET ativo = ? WHERE id = ?').run(novoAtivo, id);
+  syncMirrorsToAllAreas();
+
   res.json({ id, ativo: novoAtivo, message: novoAtivo ? 'Usuário ativado' : 'Usuário inativado' });
 });
 
@@ -1747,7 +1794,8 @@ apiRouter.delete('/usuarios/:id', (req, res) => {
   }
 
   const { id } = req.params;
-  const alvo = db.prepare('SELECT * FROM usuarios WHERE id = ?').get(id) as any;
+  const central = getCentralDb();
+  const alvo = central.prepare('SELECT * FROM usuarios WHERE id = ?').get(id) as any;
   if (!alvo) {
     res.status(404).json({ error: 'Usuário não encontrado' });
     return;
@@ -1781,7 +1829,14 @@ apiRouter.delete('/usuarios/:id', (req, res) => {
       db.prepare('UPDATE emprestimos SET almoxarife_liberacao_id = ? WHERE almoxarife_liberacao_id = ?').run(user.id, id);
       db.prepare('UPDATE emprestimos SET almoxarife_recebimento_id = ? WHERE almoxarife_recebimento_id = ?').run(user.id, id);
       db.prepare('DELETE FROM usuarios WHERE id = ?').run(id);
+
+      // Deleta do central
+      central.prepare('DELETE FROM usuario_areas WHERE usuario_id = ?').run(id);
+      central.prepare('DELETE FROM usuario_modulos WHERE usuario_id = ?').run(id);
+      central.prepare('DELETE FROM usuarios WHERE id = ?').run(id);
     });
+
+    syncMirrorsToAllAreas();
 
     res.json({
       id: Number(id),
@@ -7735,6 +7790,553 @@ apiRouter.delete('/inventarios/:id', (req, res) => {
 // ============================================================================
 // 9. IMPORTAÇÃO DE CADASTROS (PRODUTOS E FORNECEDORES / ENTIDADES)
 // ============================================================================
+
+// ============================================================================
+// 10.1 MÓDULO KARDEX DO PRODUTO (SOMENTE LEITURA)
+// ============================================================================
+
+apiRouter.get('/kardex', (req, res) => {
+  const user = authenticateRequest(req);
+  if (!user || user.perfil === 'requisitante') {
+    res.status(403).json({ error: 'Acesso restrito. Requisitantes não possuem autorização para visualizar o Kardex de estoque.' });
+    return;
+  }
+
+  const { produto_id, data_inicio, data_fim } = req.query;
+
+  if (!produto_id) {
+    res.status(400).json({ error: 'Informe o produto para visualizar o Kardex' });
+    return;
+  }
+
+  try {
+    const prod = db.prepare('SELECT id, codigo, nome, unidade_medida, tipo, quantidade_atual FROM produtos WHERE id = ?').get(Number(produto_id)) as any;
+    if (!prod) {
+      res.status(404).json({ error: 'Produto não encontrado no catálogo da área' });
+      return;
+    }
+
+    const hoje = new Date();
+    const data30DiasAtras = new Date(hoje.getTime() - 30 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+    const dataHojeStr = hoje.toISOString().slice(0, 10);
+
+    const dtIniStr = data_inicio && String(data_inicio).trim() ? String(data_inicio).trim() : data30DiasAtras;
+    const dtFimStr = data_fim && String(data_fim).trim() ? String(data_fim).trim() : dataHojeStr;
+
+    const startTs = `${dtIniStr} 00:00:00`;
+    const endTs = `${dtFimStr} 23:59:59`;
+
+    // 1. Calcula Saldo Inicial anterior ao início do período
+    const sumEntradasAntes = db.prepare(`
+      SELECT COALESCE(SUM(quantidade), 0) as total
+      FROM movimentacoes
+      WHERE produto_id = ? AND tipo IN ('entrada', 'estorno_saida')
+        AND datetime(data_movimentacao) < datetime(?)
+    `).get(prod.id, startTs) as { total: number };
+
+    const sumSaidasAntes = db.prepare(`
+      SELECT COALESCE(SUM(quantidade), 0) as total
+      FROM movimentacoes
+      WHERE produto_id = ? AND tipo IN ('saida', 'estorno_entrada')
+        AND datetime(data_movimentacao) < datetime(?)
+    `).get(prod.id, startTs) as { total: number };
+
+    const saldoInicial = Number(sumEntradasAntes.total || 0) - Number(sumSaidasAntes.total || 0);
+
+    // 2. Busca movimentações do período em ordem cronológica
+    const movs = db.prepare(`
+      SELECT m.id, m.tipo, m.motivo_diverso, m.quantidade, m.documento_referencia,
+             m.numero_lote, m.data_validade, m.valor_unitario, m.observacao, m.data_movimentacao,
+             u.nome as usuario_nome, u.login as usuario_login,
+             cc.nome as centro_custo_nome, cc.codigo as centro_custo_codigo,
+             f.razao_social as fornecedor_nome
+      FROM movimentacoes m
+      JOIN usuarios u ON m.usuario_id = u.id
+      LEFT JOIN centros_custo cc ON m.centro_custo_id = cc.id
+      LEFT JOIN fornecedores f ON m.fornecedor_id = f.id
+      WHERE m.produto_id = ?
+        AND datetime(m.data_movimentacao) >= datetime(?)
+        AND datetime(m.data_movimentacao) <= datetime(?)
+      ORDER BY datetime(m.data_movimentacao) ASC, m.id ASC
+    `).all(prod.id, startTs, endTs) as any[];
+
+    let runningSaldo = saldoInicial;
+    let totalEntradas = 0;
+    let totalSaidas = 0;
+
+    const movimentacoesProcessadas = movs.map((m) => {
+      const qtd = Number(m.quantidade || 0);
+      let entrada = 0;
+      let saida = 0;
+
+      if (['entrada', 'estorno_saida'].includes(m.tipo)) {
+        entrada = qtd;
+        totalEntradas += qtd;
+        runningSaldo += qtd;
+      } else {
+        saida = qtd;
+        totalSaidas += qtd;
+        runningSaldo -= qtd;
+      }
+
+      let dataFormatada = m.data_movimentacao;
+      try {
+        const d = new Date(m.data_movimentacao);
+        if (!isNaN(d.getTime())) {
+          dataFormatada = d.toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo' });
+        }
+      } catch {}
+
+      return {
+        ...m,
+        entrada,
+        saida,
+        saldo_apos: runningSaldo,
+        data_hora_formatada: dataFormatada
+      };
+    });
+
+    res.json({
+      produto: prod,
+      periodo: { data_inicio: dtIniStr, data_fim: dtFimStr },
+      saldo_inicial: saldoInicial,
+      total_entradas: totalEntradas,
+      total_saidas: totalSaidas,
+      saldo_final: runningSaldo,
+      movimentacoes: movimentacoesProcessadas
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: 'Erro ao calcular Kardex do produto: ' + err.message });
+  }
+});
+
+// ============================================================================
+// 10.2 MÓDULO LISTA DE COMPRAS / REPOSIÇÃO DE ESTOQUE
+// ============================================================================
+
+apiRouter.get('/lista-compras/calcular', (req, res) => {
+  const user = authenticateRequest(req);
+  if (!user || user.perfil === 'requisitante') {
+    res.status(403).json({ error: 'Acesso restrito. Requisitantes não possuem autorização para o relatório de reposição.' });
+    return;
+  }
+
+  const { data_inicio, data_fim, grupo_id, produto_id, somente_sugeridos, tipos_saida } = req.query;
+
+  const hoje = new Date();
+  const data30DiasAtras = new Date(hoje.getTime() - 30 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+  const dataHojeStr = hoje.toISOString().slice(0, 10);
+
+  const dtIniStr = data_inicio && String(data_inicio).trim() ? String(data_inicio).trim() : data30DiasAtras;
+  const dtFimStr = data_fim && String(data_fim).trim() ? String(data_fim).trim() : dataHojeStr;
+
+  const startTs = `${dtIniStr} 00:00:00`;
+  const endTs = `${dtFimStr} 23:59:59`;
+
+  const apenasSugeridos = somente_sugeridos !== 'false';
+
+  try {
+    let queryProd = `
+      SELECT p.id, p.codigo, p.nome, p.unidade_medida, p.quantidade_atual, p.grupo_id,
+             gp.nome as grupo_nome
+      FROM produtos p
+      LEFT JOIN grupos_produtos gp ON p.grupo_id = gp.id
+      WHERE p.ativo = 1
+    `;
+    const paramsProd: any[] = [];
+
+    if (grupo_id && String(grupo_id).trim()) {
+      queryProd += ' AND p.grupo_id = ?';
+      paramsProd.push(Number(grupo_id));
+    }
+
+    if (produto_id && String(produto_id).trim()) {
+      queryProd += ' AND p.id = ?';
+      paramsProd.push(Number(produto_id));
+    }
+
+    queryProd += ' ORDER BY p.nome ASC';
+
+    const produtos = db.prepare(queryProd).all(...paramsProd) as any[];
+
+    let allowedTiposArr: string[] = [];
+    if (typeof tipos_saida === 'string' && tipos_saida.trim()) {
+      allowedTiposArr = tipos_saida.split(',').map((t) => t.trim());
+    }
+
+    const itensCalculados: any[] = [];
+
+    for (const p of produtos) {
+      let querySaidas = `
+        SELECT COALESCE(SUM(quantidade), 0) as total
+        FROM movimentacoes
+        WHERE produto_id = ? AND tipo = 'saida'
+          AND datetime(data_movimentacao) >= datetime(?)
+          AND datetime(data_movimentacao) <= datetime(?)
+      `;
+      const paramsSaidas: any[] = [p.id, startTs, endTs];
+
+      if (allowedTiposArr.length > 0) {
+        querySaidas += ` AND (motivo_diverso IN (${allowedTiposArr.map(() => '?').join(',')}) OR motivo_diverso IS NULL)`;
+        paramsSaidas.push(...allowedTiposArr);
+      }
+
+      const rowSaidas = db.prepare(querySaidas).get(...paramsSaidas) as { total: number };
+      const saidasBrutas = Number(rowSaidas?.total || 0);
+
+      const rowDev = db.prepare(`
+        SELECT COALESCE(SUM(quantidade), 0) as total
+        FROM movimentacoes
+        WHERE produto_id = ? AND tipo = 'entrada' AND motivo_diverso = 'Devolução de Setor'
+          AND datetime(data_movimentacao) >= datetime(?)
+          AND datetime(data_movimentacao) <= datetime(?)
+      `).get(p.id, startTs, endTs) as { total: number };
+      const devolucoes = Number(rowDev?.total || 0);
+
+      const saidasLiquidas = Math.max(0, saidasBrutas - devolucoes);
+
+      if (saidasLiquidas <= 0 && saidasBrutas <= 0) {
+        continue;
+      }
+
+      const saldoAtual = Number(p.quantidade_atual || 0);
+      const quantidadeSugerida = Math.max(0, saidasLiquidas - saldoAtual);
+
+      if (apenasSugeridos && quantidadeSugerida <= 0) {
+        continue;
+      }
+
+      itensCalculados.push({
+        produto_id: p.id,
+        produto_codigo: p.codigo,
+        produto_nome: p.nome,
+        unidade_medida: p.unidade_medida,
+        grupo_nome: p.grupo_nome,
+        saldo_atual: saldoAtual,
+        saidas_periodo: saidasLiquidas,
+        quantidade_sugerida: quantidadeSugerida,
+        quantidade_repor: quantidadeSugerida
+      });
+    }
+
+    const areaSigla = ((req as any).areaSigla || user.area_sigla || 'ALM').toUpperCase();
+
+    res.json({
+      area_sigla: areaSigla,
+      periodo: { data_inicio: dtIniStr, data_fim: dtFimStr },
+      total_itens: itensCalculados.length,
+      itens: itensCalculados
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: 'Erro ao calcular lista de compras/reposição: ' + err.message });
+  }
+});
+
+apiRouter.post('/lista-compras', (req, res) => {
+  const user = authenticateRequest(req);
+  if (!user || user.perfil === 'requisitante') {
+    res.status(403).json({ error: 'Acesso restrito. Requisitantes não podem criar ou alterar listas de compras.' });
+    return;
+  }
+
+  const { data_inicio, data_fim, grupo_id, observacao, status, itens } = req.body || {};
+
+  if (!Array.isArray(itens) || itens.length === 0) {
+    res.status(400).json({ error: 'A lista de reposição deve conter pelo menos 1 item.' });
+    return;
+  }
+
+  const areaSigla = ((req as any).areaSigla || user.area_sigla || 'ALM').toUpperCase();
+  const year = new Date().getFullYear();
+
+  const countRow = db.prepare(`
+    SELECT COUNT(*) as count FROM listas_reposicao WHERE numero_documento LIKE ?
+  `).get(`LREP-${areaSigla}-${year}-%`) as { count: number };
+
+  const nextSeq = String((countRow?.count || 0) + 1).padStart(4, '0');
+  const numero_documento = `LREP-${areaSigla}-${year}-${nextSeq}`;
+
+  const dtIniStr = data_inicio ? String(data_inicio).trim() : new Date().toISOString().slice(0, 10);
+  const dtFimStr = data_fim ? String(data_fim).trim() : new Date().toISOString().slice(0, 10);
+  const finalStatus = status === 'FECHADA' ? 'FECHADA' : 'RASCUNHO';
+
+  try {
+    const result = runInTransaction(() => {
+      const insHeader = db.prepare(`
+        INSERT INTO listas_reposicao (
+          numero_documento, area_sigla, data_inicio, data_fim, grupo_id, status, observacao, usuario_id, usuario_nome
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `);
+
+      const infoHeader = insHeader.run(
+        numero_documento,
+        areaSigla,
+        dtIniStr,
+        dtFimStr,
+        grupo_id ? Number(grupo_id) : null,
+        finalStatus,
+        observacao ? String(observacao).trim() : null,
+        user.id,
+        user.nome
+      );
+
+      const listaId = Number(infoHeader.lastInsertRowid);
+
+      const insItem = db.prepare(`
+        INSERT INTO itens_lista_reposicao (
+          lista_id, produto_id, produto_codigo, produto_nome, unidade_medida,
+          saldo_atual, saidas_periodo, quantidade_sugerida, quantidade_repor
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `);
+
+      for (const it of itens) {
+        insItem.run(
+          listaId,
+          Number(it.produto_id),
+          String(it.produto_codigo),
+          String(it.produto_nome),
+          String(it.unidade_medida),
+          Number(it.saldo_atual || 0),
+          Number(it.saidas_periodo || 0),
+          Number(it.quantidade_sugerida || 0),
+          Number(it.quantidade_repor || 0)
+        );
+      }
+
+      return { id: listaId, numero_documento, status: finalStatus };
+    });
+
+    res.status(201).json({
+      message: finalStatus === 'FECHADA' ? 'Lista de reposição finalizada e fechada com sucesso.' : 'Lista de reposição salva como rascunho.',
+      ...result
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: 'Erro ao salvar lista de reposição: ' + err.message });
+  }
+});
+
+apiRouter.get('/lista-compras', (req, res) => {
+  const user = authenticateRequest(req);
+  if (!user || user.perfil === 'requisitante') {
+    res.status(403).json({ error: 'Acesso restrito.' });
+    return;
+  }
+
+  try {
+    const rows = db.prepare(`
+      SELECT l.*,
+             (SELECT COUNT(*) FROM itens_lista_reposicao il WHERE il.lista_id = l.id) as total_itens,
+             (SELECT COALESCE(SUM(il.quantidade_repor), 0) FROM itens_lista_reposicao il WHERE il.lista_id = l.id) as total_repor
+      FROM listas_reposicao l
+      ORDER BY l.id DESC
+    `).all();
+
+    res.json(rows);
+  } catch (err: any) {
+    res.status(500).json({ error: 'Erro ao listar listas de reposição: ' + err.message });
+  }
+});
+
+apiRouter.get('/lista-compras/:id', (req, res) => {
+  const user = authenticateRequest(req);
+  if (!user || user.perfil === 'requisitante') {
+    res.status(403).json({ error: 'Acesso restrito.' });
+    return;
+  }
+
+  const { id } = req.params;
+
+  try {
+    const lista = db.prepare('SELECT * FROM listas_reposicao WHERE id = ?').get(Number(id)) as any;
+    if (!lista) {
+      res.status(404).json({ error: 'Lista de reposição não encontrada.' });
+      return;
+    }
+
+    const itens = db.prepare(`
+      SELECT * FROM itens_lista_reposicao WHERE lista_id = ? ORDER BY id ASC
+    `).all(Number(id));
+
+    res.json({ lista, itens });
+  } catch (err: any) {
+    res.status(500).json({ error: 'Erro ao buscar lista de reposição: ' + err.message });
+  }
+});
+
+apiRouter.put('/lista-compras/:id', (req, res) => {
+  const user = authenticateRequest(req);
+  if (!user || user.perfil === 'requisitante') {
+    res.status(403).json({ error: 'Acesso restrito.' });
+    return;
+  }
+
+  const { id } = req.params;
+  const { observacao, status, itens } = req.body || {};
+
+  try {
+    const existing = db.prepare('SELECT * FROM listas_reposicao WHERE id = ?').get(Number(id)) as any;
+    if (!existing) {
+      res.status(404).json({ error: 'Lista de reposição não encontrada.' });
+      return;
+    }
+
+    if (existing.status === 'FECHADA') {
+      res.status(400).json({ error: 'Listas de reposição com status FECHADA não podem ser alteradas.' });
+      return;
+    }
+
+    const finalStatus = status === 'FECHADA' ? 'FECHADA' : 'RASCUNHO';
+
+    runInTransaction(() => {
+      db.prepare(`
+        UPDATE listas_reposicao
+        SET status = ?, observacao = ?, atualizado_em = CURRENT_TIMESTAMP
+        WHERE id = ?
+      `).run(finalStatus, observacao ? String(observacao).trim() : existing.observacao, Number(id));
+
+      if (Array.isArray(itens)) {
+        db.prepare('DELETE FROM itens_lista_reposicao WHERE lista_id = ?').run(Number(id));
+
+        const insItem = db.prepare(`
+          INSERT INTO itens_lista_reposicao (
+            lista_id, produto_id, produto_codigo, produto_nome, unidade_medida,
+            saldo_atual, saidas_periodo, quantidade_sugerida, quantidade_repor
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `);
+
+        for (const it of itens) {
+          insItem.run(
+            Number(id),
+            Number(it.produto_id),
+            String(it.produto_codigo),
+            String(it.produto_nome),
+            String(it.unidade_medida),
+            Number(it.saldo_atual || 0),
+            Number(it.saidas_periodo || 0),
+            Number(it.quantidade_sugerida || 0),
+            Number(it.quantidade_repor || 0)
+          );
+        }
+      }
+    });
+
+    res.json({ message: 'Lista de reposição atualizada com sucesso.', id: Number(id), status: finalStatus });
+  } catch (err: any) {
+    res.status(500).json({ error: 'Erro ao atualizar lista: ' + err.message });
+  }
+});
+
+apiRouter.post('/lista-compras/:id/duplicar', (req, res) => {
+  const user = authenticateRequest(req);
+  if (!user || user.perfil === 'requisitante') {
+    res.status(403).json({ error: 'Acesso restrito.' });
+    return;
+  }
+
+  const { id } = req.params;
+
+  try {
+    const orig = db.prepare('SELECT * FROM listas_reposicao WHERE id = ?').get(Number(id)) as any;
+    if (!orig) {
+      res.status(404).json({ error: 'Lista de origem não encontrada.' });
+      return;
+    }
+
+    const origItens = db.prepare('SELECT * FROM itens_lista_reposicao WHERE lista_id = ?').all(Number(id)) as any[];
+
+    const areaSigla = ((req as any).areaSigla || user.area_sigla || 'ALM').toUpperCase();
+    const year = new Date().getFullYear();
+
+    const countRow = db.prepare(`
+      SELECT COUNT(*) as count FROM listas_reposicao WHERE numero_documento LIKE ?
+    `).get(`LREP-${areaSigla}-${year}-%`) as { count: number };
+
+    const nextSeq = String((countRow?.count || 0) + 1).padStart(4, '0');
+    const novoNum = `LREP-${areaSigla}-${year}-${nextSeq}`;
+
+    const newId = runInTransaction(() => {
+      const info = db.prepare(`
+        INSERT INTO listas_reposicao (
+          numero_documento, area_sigla, data_inicio, data_fim, grupo_id, status, observacao, usuario_id, usuario_nome
+        ) VALUES (?, ?, ?, ?, ?, 'RASCUNHO', ?, ?, ?)
+      `).run(
+        novoNum,
+        areaSigla,
+        orig.data_inicio,
+        orig.data_fim,
+        orig.grupo_id,
+        orig.observacao ? `Cópia de ${orig.numero_documento}. ${orig.observacao}` : `Cópia de ${orig.numero_documento}`,
+        user.id,
+        user.nome
+      );
+
+      const createdId = Number(info.lastInsertRowid);
+
+      const insItem = db.prepare(`
+        INSERT INTO itens_lista_reposicao (
+          lista_id, produto_id, produto_codigo, produto_nome, unidade_medida,
+          saldo_atual, saidas_periodo, quantidade_sugerida, quantidade_repor
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `);
+
+      for (const it of origItens) {
+        insItem.run(
+          createdId,
+          it.produto_id,
+          it.produto_codigo,
+          it.produto_nome,
+          it.unidade_medida,
+          it.saldo_atual,
+          it.saidas_periodo,
+          it.quantidade_sugerida,
+          it.quantidade_repor
+        );
+      }
+
+      return createdId;
+    });
+
+    res.status(201).json({
+      message: `Lista duplicada com sucesso (${novoNum}).`,
+      id: newId,
+      numero_documento: novoNum
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: 'Erro ao duplicar lista: ' + err.message });
+  }
+});
+
+apiRouter.delete('/lista-compras/:id', (req, res) => {
+  const user = authenticateRequest(req);
+  if (!user || user.perfil === 'requisitante') {
+    res.status(403).json({ error: 'Acesso restrito.' });
+    return;
+  }
+
+  const { id } = req.params;
+
+  try {
+    const list = db.prepare('SELECT * FROM listas_reposicao WHERE id = ?').get(Number(id)) as any;
+    if (!list) {
+      res.status(404).json({ error: 'Lista não encontrada.' });
+      return;
+    }
+
+    if (list.status === 'FECHADA') {
+      res.status(400).json({ error: 'Listas com status FECHADA não podem ser excluídas por exigência de auditoria.' });
+      return;
+    }
+
+    runInTransaction(() => {
+      db.prepare('DELETE FROM itens_lista_reposicao WHERE lista_id = ?').run(Number(id));
+      db.prepare('DELETE FROM listas_reposicao WHERE id = ?').run(Number(id));
+    });
+
+    res.json({ message: `Lista rascunho "${list.numero_documento}" excluída com sucesso.` });
+  } catch (err: any) {
+    res.status(500).json({ error: 'Erro ao excluir lista: ' + err.message });
+  }
+});
 
 function handleImportacaoProdutosRoute(req: any, res: any) {
   const user = authenticateRequest(req);

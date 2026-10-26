@@ -104,28 +104,74 @@ O sistema é entregue em estado limpo, sem registros fictícios de demonstraçã
 
 ### Deploy no Ubuntu Server (Rede Local / VPS)
 
-O projeto já está configurado com o arquivo `ecosystem.config.cjs` para execução contínua via **PM2** no Ubuntu Server:
+O projeto está configurado com o arquivo `ecosystem.config.cjs` para execução contínua via **PM2** no Ubuntu Server com usuário dedicado (ex: `almoxapp`):
 
-1. **Clonar ou copiar os arquivos para o servidor e instalar dependências:**
+1. **Remover arquivos de banco do controle de versão (Git):**
+   Para evitar que atualizações via `git pull` ou `git reset --hard` sobrescrevam os bancos de dados de produção, os arquivos `.db` foram adicionados ao `.gitignore`. Se o repositório já tinha bancos versionados, execute no servidor:
+   ```bash
+   git rm --cached -r *.db *.db-wal *.db-shm *.sqlite *.sqlite3
+   git commit -m "fix(db): remove bancos sqlite do controle de versao"
+   ```
+
+2. **Permissões de Arquivo e Diretório (SQLite WAL):**
+   O SQLite opera em modo Write-Ahead Logging (`WAL`), o que exige permissão de escrita não apenas no arquivo `.db`, mas também no diretório pai (para criação e deleção dinâmica dos arquivos temporários `-wal` e `-shm`).
+   ```bash
+   # Supondo que a aplicação rode sob o usuário e grupo 'almoxapp':
+   sudo chown -R almoxapp:almoxapp /caminho/para/o/projeto
+   sudo chmod -R 775 /caminho/para/o/projeto
+   # Garanta permissão de escrita para grupo em todos os arquivos de banco:
+   chmod 664 *.db *.db-wal *.db-shm 2>/dev/null || true
+   ```
+   *Dica de umask no PM2:* No `ecosystem.config.cjs`, configure `umask: '002'` para que novos arquivos criados pelo processo herdem automaticamente permissão `664`.
+
+3. **Diretório de Banco Configurável (`DB_DIR`):**
+   Por padrão, os bancos ficam na raiz do projeto. Caso deseje isolar os dados em um diretório do sistema (ex: `/var/lib/almoxcontrol/data`), defina no `.env`:
+   ```bash
+   DB_DIR=/var/lib/almoxcontrol/data
+   PORT=3005
+   ```
+   O sistema cria o diretório automaticamente com permissões `0775` na inicialização.
+
+4. **Instalar dependências e compilar:**
    ```bash
    npm install
    npm run build
    ```
 
-2. **Configurar a Porta (caso a `3000` já esteja em uso por outro sistema):**
-   - Crie um arquivo `.env` baseado no `.env.example` (`cp .env.example .env`) e defina a porta desejada (ex: `PORT=3010`), **ou**
-   - Altere o valor de `PORT` diretamente no arquivo `ecosystem.config.cjs`.
-
-3. **Iniciar com PM2 (mantém o sistema ativo 24/7 e reinicia junto com o Ubuntu):**
+5. **Iniciar com PM2 (reinicia automaticamente após reboot):**
    ```bash
    pm2 start ecosystem.config.cjs
    pm2 save
    ```
-   *(Caso não use PM2, você também pode iniciar diretamente com `npm start` ou `PORT=3010 npm start`).*
 
-4. **Acesso pelas estações na Rede Local:**
-   - Os computadores da mesma rede poderão acessar pelo IP do servidor Ubuntu:
-     **`http://IP-DO-SERVIDOR:3000`** (ou na porta configurada).
+---
+
+## 5.1 Arquitetura Multi-Banco de Dados SQLite
+
+O sistema opera com separação limpa entre o **Banco Central** e os **Bancos Operacionais de Área**:
+
+### 1. Banco Central (`sistema.db`)
+- **Autenticação Centralizada**: Credenciais seguras (`senha_hash` com SHA-256) na tabela `usuarios`.
+- **Tabela de Áreas (`areas`)**: Registra as áreas ativas (`ALM`, `CAF` e áreas customizadas).
+- **Controle de Acesso Modular (`usuario_modulos`)**: Módulos visíveis e liberados por usuário.
+- **Vínculo Usuário x Áreas (`usuario_areas`)**: Tabela de junção muitos-para-muitos definindo a quais áreas cada operador tem acesso.
+- **Relatórios Cruzados (`area_relatorios_cruzados`)**: Matriz de autorização de leitura cruzada (ex: CAF pode consultar saldos do ALM).
+- **Cadastros Compartilhados**: `centros_custo` e `empresas_unidades`.
+- **Auditoria Global (`logs_acesso`)**: Registro unificado de tentativas e logins com IP e data/hora.
+
+### 2. Bancos de Área (`almoxarifado.db`, `caf.db`, etc.)
+- **Operação de Estoque**: Catálogo de `produtos`, `lotes_estoque`, `movimentacoes`, `notas_fiscais`, `requisicoes`, `itens_requisicao`, `consumos`, `inventarios_estoque` e `emprestimos_institucionais`.
+- **Garantia de Colunas Críticas**:
+  - `movimentacoes`: `nota_fiscal_id`, `requisicao_id`, `consumo_id`, `emprestimo_institucional_id`.
+  - `itens_requisicao`: `lote_id`, `numero_lote`, `data_validade`, `lotes_atendidos`.
+- **Espelho Local Sincronizado**: Tabelas `usuarios` (com `permissoes` e `cargo_nome`, sem senha) e `centros_custo` espelhadas automaticamente a cada inicialização e alteração para integridade referencial e joins locais.
+
+### 3. Migração Idempotente Automática
+A camada `src/server/db.ts` executa migrações automáticas e idempotentes em todo início de processo:
+- Inspeciona tabelas reais via `PRAGMA table_info(...)`.
+- Adiciona colunas ausentes em bancos existentes via `ALTER TABLE ... ADD COLUMN ...`.
+- Versiona o schema usando `PRAGMA user_version` (versão atual: 3).
+- **Preservação de Dados**: Nenhuma migração executa `DROP TABLE`, `DELETE` ou substitui dados existentes.
 
 ---
 

@@ -1,3 +1,32 @@
+/**
+ * ============================================================================
+ * ALMOXCONTROL - ARQUITETURA DE BANCO DE DADOS (MULTI-BANCO SQLITE)
+ * ============================================================================
+ * 
+ * BANCO CENTRAL (sistema.db):
+ *  - Autenticação e credenciais de acesso (senha_hash).
+ *  - Tabela `usuarios` com todas as colunas: id, codigo, nome, login, senha_hash,
+ *    cpf, email, perfil, cargo_nome, permissoes, centro_custo_id, empresa_id, ativo, criado_em, ultimo_acesso.
+ *  - Tabela `usuario_modulos`: permissões modulares de acesso por usuário.
+ *  - Tabela `areas`: definição de áreas operacionais ativas (ALM, CAF e dinâmicas).
+ *  - Tabela `area_relatorios_cruzados`: permissões de leitura cruzada entre áreas.
+ *  - Tabela `usuario_areas`: junção muitos-para-muitos definindo acesso a cada área.
+ *  - Tabela `empresas_unidades` e `centros_custo`: cadastro unificado de setores e empresas.
+ *  - Tabela `logs_acesso`: registro centralizado de auditoria de acessos e logins.
+ * 
+ * BANCOS DE ÁREA (almoxarifado.db, caf.db, etc.):
+ *  - Catálogo de produtos, lotes, estoque físico e contábil.
+ *  - Movimentações, notas fiscais, itens de notas, requisições, consumos,
+ *    inventários, empréstimos, fornecedores e grupos.
+ *  - Espelhos locais (somente leitura / integridade referencial):
+ *    - `usuarios`: espelho completo (incluindo cargo_nome e permissoes), sem senha_hash.
+ *    - `centros_custo`: espelho de setores.
+ *    - `empresas_unidades`: espelho de unidades.
+ *  - Colunas críticas garantidas:
+ *    - `movimentacoes`: nota_fiscal_id, requisicao_id, consumo_id, emprestimo_institucional_id.
+ *    - `itens_requisicao`: lote_id, numero_lote, data_validade, lotes_atendidos.
+ */
+
 import { DatabaseSync } from 'node:sqlite';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -7,8 +36,33 @@ import { AsyncLocalStorage } from 'node:async_hooks';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 export const PROJECT_ROOT = path.resolve(__dirname, '../..');
 
-export const CENTRAL_DB_PATH = path.resolve(PROJECT_ROOT, 'sistema.db');
-export const DB_PATH = path.resolve(PROJECT_ROOT, 'almoxarifado.db');
+// Diretório de banco de dados configurável via variável de ambiente DB_DIR
+export const DB_DIR = process.env.DB_DIR ? path.resolve(process.env.DB_DIR) : PROJECT_ROOT;
+
+// Cria o diretório de dados com permissão 0o775 se não existir
+try {
+  if (!fs.existsSync(DB_DIR)) {
+    fs.mkdirSync(DB_DIR, { recursive: true, mode: 0o775 });
+  } else {
+    fs.chmodSync(DB_DIR, 0o775);
+  }
+} catch {
+  // Ignora se o sistema de arquivos não permitir chmod
+}
+
+/**
+ * Resolve o caminho físico do arquivo SQLite
+ */
+export function resolveDbPath(filename: string): string {
+  // Se SQLITE_DB_PATH foi definido e o arquivo for o almoxarifado.db, aceita como override
+  if (filename === 'almoxarifado.db' && process.env.SQLITE_DB_PATH) {
+    return path.resolve(process.env.SQLITE_DB_PATH);
+  }
+  return path.resolve(DB_DIR, filename);
+}
+
+export const CENTRAL_DB_PATH = resolveDbPath('sistema.db');
+export const DB_PATH = resolveDbPath('almoxarifado.db');
 
 export const currentAreaStorage = new AsyncLocalStorage<{
   areaSigla: string;
@@ -16,37 +70,113 @@ export const currentAreaStorage = new AsyncLocalStorage<{
   db: DatabaseSync;
 }>();
 
-// Cache de conexões SQLite ativas
+// Cache de conexões SQLite ativas por arquivo
 let centralDbInstance: DatabaseSync | null = null;
 const areaDbConnections = new Map<string, DatabaseSync>();
 
+/**
+ * Garante permissões adequadas (0o664) no arquivo .db e nos arquivos WAL/SHM associados,
+ * e 0o775 no diretório pai.
+ */
+export function ensureFilePermissions(filePath: string) {
+  try {
+    const dir = path.dirname(filePath);
+    if (fs.existsSync(dir)) {
+      try { fs.chmodSync(dir, 0o775); } catch {}
+    }
+    const candidates = [filePath, `${filePath}-wal`, `${filePath}-shm`];
+    for (const p of candidates) {
+      if (fs.existsSync(p)) {
+        try { fs.chmodSync(p, 0o664); } catch {}
+      }
+    }
+  } catch {}
+}
+
+/**
+ * Diagnóstico detalhado de erro de escrita SQLite (especialmente SQLITE_READONLY)
+ */
+export function diagnoseDbWriteError(actionName: string, dbPath: string, err: any) {
+  const isReadonly = err?.message?.includes('readonly') || err?.message?.includes('SQLITE_READONLY');
+  let diagInfo = `\n[DB DIAGNÓSTICO] Erro em "${actionName}" no banco "${dbPath}": ${err?.message}\n`;
+  try {
+    const processUid = process.getuid ? process.getuid() : 'N/A';
+    const processGid = process.getgid ? process.getgid() : 'N/A';
+    const processUser = process.env.USER || process.env.USERNAME || 'desconhecido';
+    diagInfo += `  Processo Node: UID=${processUid}, GID=${processGid}, Usuário=${processUser}\n`;
+
+    const dir = path.dirname(dbPath);
+    if (fs.existsSync(dir)) {
+      const dStat = fs.statSync(dir);
+      diagInfo += `  Diretório: ${dir} (Permissões: ${dStat.mode.toString(8)}, UID: ${dStat.uid}, GID: ${dStat.gid})\n`;
+    } else {
+      diagInfo += `  Diretório: ${dir} NÃO EXISTE!\n`;
+    }
+
+    if (fs.existsSync(dbPath)) {
+      const fStat = fs.statSync(dbPath);
+      diagInfo += `  Arquivo DB: ${dbPath} (Permissões: ${fStat.mode.toString(8)}, UID: ${fStat.uid}, GID: ${fStat.gid})\n`;
+    } else {
+      diagInfo += `  Arquivo DB: ${dbPath} NÃO EXISTE\n`;
+    }
+
+    const wal = `${dbPath}-wal`;
+    if (fs.existsSync(wal)) {
+      const wStat = fs.statSync(wal);
+      diagInfo += `  Arquivo WAL: ${wal} (Permissões: ${wStat.mode.toString(8)}, UID: ${wStat.uid}, GID: ${wStat.gid})\n`;
+    }
+    const shm = `${dbPath}-shm`;
+    if (fs.existsSync(shm)) {
+      const sStat = fs.statSync(shm);
+      diagInfo += `  Arquivo SHM: ${shm} (Permissões: ${sStat.mode.toString(8)}, UID: ${sStat.uid}, GID: ${sStat.gid})\n`;
+    }
+
+    if (isReadonly) {
+      diagInfo += `  CAUSA COMUM: SQLite precisa de permissão de escrita (664) no arquivo .db E na pasta (775) para criar arquivos temporários -wal e -shm.\n`;
+      diagInfo += `  SOLUÇÃO UBUNTU/PM2: execute 'sudo chown -R almoxapp:almoxapp ${dir} && sudo chmod -R 775 ${dir}' e adicione 'umask: "002"' no ecosystem.config.cjs.\n`;
+    }
+  } catch (e: any) {
+    diagInfo += `  Falha ao inspecionar estatísticas de arquivo: ${e?.message}\n`;
+  }
+  console.error(diagInfo);
+}
+
+/**
+ * Obtém ou cria a conexão com o banco central (sistema.db)
+ */
 export function getCentralDb(): DatabaseSync {
   if (!centralDbInstance) {
-    const isNew = !fs.existsSync(CENTRAL_DB_PATH);
+    ensureFilePermissions(CENTRAL_DB_PATH);
     centralDbInstance = new DatabaseSync(CENTRAL_DB_PATH);
-    centralDbInstance.exec('PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL;');
+    (centralDbInstance as any).__dbPath = CENTRAL_DB_PATH;
 
-    if (isNew) {
-      initCentralDb(centralDbInstance);
-    } else {
-      ensureCentralSchema(centralDbInstance);
-    }
+    centralDbInstance.exec('PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL;');
+    ensureFilePermissions(CENTRAL_DB_PATH);
+
+    // Aplica schema base e migrações idempotentes
+    migrateCentralDb(centralDbInstance, CENTRAL_DB_PATH);
   }
   return centralDbInstance;
 }
 
-function initCentralDb(db: DatabaseSync) {
+/**
+ * Migração Idempotente do Banco Central (sistema.db)
+ */
+function migrateCentralDb(db: DatabaseSync, dbFilePath: string) {
+  let appliedMigrations = 0;
+
+  // 1. Garante tabelas base via schema_central.sql se presente
   const schemaPath = path.resolve(PROJECT_ROOT, 'schema_central.sql');
   if (fs.existsSync(schemaPath)) {
-    const sql = fs.readFileSync(schemaPath, 'utf-8');
-    db.exec(sql);
+    try {
+      const sql = fs.readFileSync(schemaPath, 'utf-8');
+      db.exec(sql);
+    } catch (e: any) {
+      console.warn('[DB Central] Aviso ao aplicar schema_central.sql:', e.message);
+    }
   }
 
-  ensureCentralSchema(db);
-}
-
-function ensureCentralSchema(db: DatabaseSync) {
-  // 1. Garante tabela de áreas
+  // 2. Garante tabela de áreas
   db.exec(`
     CREATE TABLE IF NOT EXISTS areas (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -68,6 +198,7 @@ function ensureCentralSchema(db: DatabaseSync) {
       INSERT INTO areas (id, sigla, nome, arquivo_db, descricao, ativa)
       VALUES (1, 'ALM', 'Almoxarifado', 'almoxarifado.db', 'Estoque de Insumos e Materiais Médicos-Hospitalares', 1)
     `).run();
+    appliedMigrations++;
   }
 
   const caf = db.prepare('SELECT id FROM areas WHERE sigla = ?').get('CAF') as any;
@@ -76,9 +207,10 @@ function ensureCentralSchema(db: DatabaseSync) {
       INSERT INTO areas (id, sigla, nome, arquivo_db, descricao, ativa)
       VALUES (2, 'CAF', 'CAF', 'caf.db', 'Central de Abastecimento Farmacêutico (Medicamentos)', 1)
     `).run();
+    appliedMigrations++;
   }
 
-  // 2. Garante tabela de relatórios cruzados
+  // 3. Garante tabela de relatórios cruzados
   db.exec(`
     CREATE TABLE IF NOT EXISTS area_relatorios_cruzados (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -91,7 +223,6 @@ function ensureCentralSchema(db: DatabaseSync) {
     CREATE INDEX IF NOT EXISTS idx_rel_cruz_alvo ON area_relatorios_cruzados (area_alvo_id);
   `);
 
-  // Regra padrão: CAF (2) pode consultar ALM (1)
   try {
     const hasRule = db.prepare('SELECT id FROM area_relatorios_cruzados WHERE area_origem_id = 2 AND area_alvo_id = 1').get();
     if (!hasRule) {
@@ -99,7 +230,7 @@ function ensureCentralSchema(db: DatabaseSync) {
     }
   } catch {}
 
-  // 3. Garante empresas_unidades, centros de custo, usuários, usuario_areas, usuario_modulos, logs_acesso
+  // 4. Garante empresas_unidades, centros_custo, usuarios, usuario_areas, usuario_modulos, logs_acesso
   db.exec(`
     CREATE TABLE IF NOT EXISTS empresas_unidades (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -181,6 +312,36 @@ function ensureCentralSchema(db: DatabaseSync) {
     CREATE INDEX IF NOT EXISTS idx_logs_acesso_login ON logs_acesso (login);
   `);
 
+  // 5. Comparação e adição idempotente de colunas via PRAGMA table_info
+  const userCols = new Set((db.prepare("PRAGMA table_info('usuarios')").all() as Array<{ name: string }>).map((c) => c.name));
+  if (!userCols.has('permissoes')) {
+    db.exec('ALTER TABLE usuarios ADD COLUMN permissoes TEXT;');
+    appliedMigrations++;
+  }
+  if (!userCols.has('cargo_nome')) {
+    db.exec('ALTER TABLE usuarios ADD COLUMN cargo_nome TEXT;');
+    appliedMigrations++;
+  }
+  if (!userCols.has('empresa_id')) {
+    db.exec('ALTER TABLE usuarios ADD COLUMN empresa_id INTEGER REFERENCES empresas_unidades(id) ON DELETE SET NULL;');
+    appliedMigrations++;
+  }
+  if (!userCols.has('area_id')) {
+    db.exec('ALTER TABLE usuarios ADD COLUMN area_id INTEGER REFERENCES areas(id) ON DELETE SET NULL;');
+    appliedMigrations++;
+  }
+  if (!userCols.has('ultimo_acesso')) {
+    db.exec('ALTER TABLE usuarios ADD COLUMN ultimo_acesso DATETIME;');
+    appliedMigrations++;
+  }
+
+  const ccCols = new Set((db.prepare("PRAGMA table_info('centros_custo')").all() as Array<{ name: string }>).map((c) => c.name));
+  if (!ccCols.has('empresa_id')) {
+    db.exec('ALTER TABLE centros_custo ADD COLUMN empresa_id INTEGER REFERENCES empresas_unidades(id) ON DELETE SET NULL;');
+    appliedMigrations++;
+  }
+
+  // Garante unidade padrão se vazia
   try {
     const empCount = (db.prepare('SELECT COUNT(*) as c FROM empresas_unidades').get() as any)?.c || 0;
     if (empCount === 0) {
@@ -191,80 +352,42 @@ function ensureCentralSchema(db: DatabaseSync) {
     }
   } catch {}
 
-  // Migra dados de usuários e centros de custo existentes do almoxarifado.db se central estiver vazio
-  migrateLegacyUsersAndCentrosCusto(db);
-}
-
-function migrateLegacyUsersAndCentrosCusto(centralDb: DatabaseSync) {
-  const userCount = (centralDb.prepare('SELECT count(*) as c FROM usuarios').get() as any).c;
-  if (userCount > 0) return;
-
-  const legacyDbPath = path.resolve(PROJECT_ROOT, 'almoxarifado.db');
-  if (!fs.existsSync(legacyDbPath)) {
-    // Insere usuário padrão admin se não existir almoxarifado.db
-    centralDb.prepare(`
-      INSERT INTO usuarios (id, codigo, nome, login, senha_hash, perfil, ativo)
-      VALUES (1, 'USR-001', 'Administrador do Sistema', 'admin', '240be518fabd2724ddb6f04eeb1da5967448d7e831c08c8fa822809f74c720a9', 'admin', 1)
+  // Garante usuário admin inicial SE não existir nenhum usuário
+  const userCount = (db.prepare('SELECT count(*) as c FROM usuarios').get() as any)?.c || 0;
+  if (userCount === 0) {
+    db.prepare(`
+      INSERT INTO usuarios (id, codigo, nome, login, senha_hash, perfil, cargo_nome, permissoes, ativo)
+      VALUES (1, 'USR-001', 'Administrador do Sistema', 'admin', '240be518fabd2724ddb6f04eeb1da5967448d7e831c08c8fa822809f74c720a9', 'admin', 'admin', '[]', 1)
     `).run();
-    centralDb.prepare('INSERT OR IGNORE INTO usuario_areas (usuario_id, area_id) VALUES (1, 1), (1, 2)').run();
-    return;
+    db.prepare('INSERT OR IGNORE INTO usuario_areas (usuario_id, area_id) VALUES (1, 1), (1, 2)').run();
+    appliedMigrations++;
+  } else {
+    // Garante que o usuário admin tenha vinculo com áreas 1 e 2
+    try {
+      const adminUser = db.prepare("SELECT id FROM usuarios WHERE login = 'admin' OR id = 1").get() as any;
+      if (adminUser) {
+        db.prepare('INSERT OR IGNORE INTO usuario_areas (usuario_id, area_id) VALUES (?, 1), (?, 2)').run(adminUser.id, adminUser.id);
+      }
+    } catch {}
   }
 
-  try {
-    const legacy = new DatabaseSync(legacyDbPath);
-    legacy.exec('PRAGMA foreign_keys = OFF;');
-
-    // Centros de custo
-    try {
-      const ccs = legacy.prepare('SELECT id, codigo, nome, departamento, responsavel, ativo, criado_em FROM centros_custo').all() as any[];
-      const insCc = centralDb.prepare(`
-        INSERT OR IGNORE INTO centros_custo (id, codigo, nome, departamento, responsavel, ativo, criado_em)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
-      `);
-      for (const cc of ccs) {
-        insCc.run(cc.id, cc.codigo, cc.nome, cc.departamento, cc.responsavel, cc.ativo ?? 1, cc.criado_em || new Date().toISOString());
-      }
-    } catch {}
-
-    // Usuários
-    try {
-      const users = legacy.prepare('SELECT id, codigo, nome, login, senha_hash, cpf, email, perfil, cargo_nome, permissoes, centro_custo_id, ativo, criado_em, ultimo_acesso FROM usuarios').all() as any[];
-      const insUser = centralDb.prepare(`
-        INSERT OR IGNORE INTO usuarios (id, codigo, nome, login, senha_hash, cpf, email, perfil, cargo_nome, permissoes, centro_custo_id, ativo, criado_em, ultimo_acesso)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `);
-      for (const u of users) {
-        insUser.run(
-          u.id, u.codigo, u.nome, u.login, u.senha_hash,
-          u.cpf, u.email, u.perfil || 'almoxarife',
-          u.cargo_nome, u.permissoes, u.centro_custo_id,
-          u.ativo ?? 1, u.criado_em || new Date().toISOString(), u.ultimo_acesso
-        );
-
-        // Vincula áreas: Admin e TI acessam ALM (1) e CAF (2); outros acessam ALM (1)
-        if (u.perfil === 'admin' || u.perfil === 'ti_dpo' || u.id === 1 || u.login === 'admin') {
-          centralDb.prepare('INSERT OR IGNORE INTO usuario_areas (usuario_id, area_id) VALUES (?, 1), (?, 2)').run(u.id, u.id);
-        } else {
-          centralDb.prepare('INSERT OR IGNORE INTO usuario_areas (usuario_id, area_id) VALUES (?, 1)').run(u.id);
-        }
-      }
-    } catch {}
-
-    // Módulos
-    try {
-      const mods = legacy.prepare('SELECT usuario_id, modulo_chave FROM usuario_modulos').all() as any[];
-      const insMod = centralDb.prepare('INSERT OR IGNORE INTO usuario_modulos (usuario_id, modulo_chave) VALUES (?, ?)');
-      for (const m of mods) {
-        insMod.run(m.usuario_id, m.modulo_chave);
-      }
-    } catch {}
-
-    legacy.close();
-  } catch (err) {
-    console.error('[DB] Erro ao migrar usuários para o banco central:', err);
+  // Atualiza user_version
+  const currVer = (db.prepare('PRAGMA user_version;').get() as any)?.user_version || 0;
+  if (currVer < 3) {
+    db.exec('PRAGMA user_version = 3;');
   }
+
+  ensureFilePermissions(dbFilePath);
+
+  // Diagnóstico
+  const finalVer = (db.prepare('PRAGMA user_version;').get() as any)?.user_version || 0;
+  const jMode = (db.prepare('PRAGMA journal_mode;').get() as any)?.journal_mode;
+  console.log(`[DB Central] Conectado: ${dbFilePath} | user_version: ${finalVer} | journal_mode: ${jMode} | Migrações aplicadas: ${appliedMigrations}`);
 }
 
+/**
+ * Obtém todas as áreas ativas do sistema
+ */
 export function getAllActiveAreas(): Array<{
   id: number;
   sigla: string;
@@ -277,6 +400,9 @@ export function getAllActiveAreas(): Array<{
   return central.prepare('SELECT id, sigla, nome, arquivo_db, descricao, ativa FROM areas WHERE ativa = 1 ORDER BY id ASC').all() as any[];
 }
 
+/**
+ * Busca uma área por sigla ou ID no banco central
+ */
 export function getAreaBySiglaOrId(siglaOrId: string | number): {
   id: number;
   sigla: string;
@@ -298,9 +424,9 @@ export function getAreaBySiglaOrId(siglaOrId: string | number): {
 
 /**
  * Obtém conexão com o banco de dados da área desejada.
- * Se readOnly for true, abre com PRAGMA query_only = ON;
+ * Utiliza conexão única por arquivo para evitar conflitos de bloqueio SQLite.
  */
-export function getAreaDb(siglaOrId: string | number, readOnly = false): DatabaseSync {
+export function getAreaDb(siglaOrId: string | number, _readOnly = false): DatabaseSync {
   const area = getAreaBySiglaOrId(siglaOrId) || {
     id: 1,
     sigla: 'ALM',
@@ -309,66 +435,202 @@ export function getAreaDb(siglaOrId: string | number, readOnly = false): Databas
     ativa: 1
   };
 
-  const cacheKey = `${area.arquivo_db}:${readOnly ? 'ro' : 'rw'}`;
+  const cacheKey = area.arquivo_db;
   let conn = areaDbConnections.get(cacheKey);
   if (conn) {
     return conn;
   }
 
-  const dbFilePath = path.resolve(PROJECT_ROOT, area.arquivo_db);
+  const dbFilePath = resolveDbPath(area.arquivo_db);
+  ensureFilePermissions(dbFilePath);
 
   conn = new DatabaseSync(dbFilePath);
-  conn.exec('PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL;');
+  (conn as any).__dbPath = dbFilePath;
+  (conn as any).__areaSigla = area.sigla;
 
-  // Garante que a área possui todas as tabelas operacionais do schema_area.sql
-  ensureAreaSchema(conn);
+  conn.exec('PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL;');
+  ensureFilePermissions(dbFilePath);
+
+  // Garante que a área possui todas as tabelas operacionais e colunas atualizadas
+  migrateAreaDb(conn, area.sigla, dbFilePath);
 
   // Sincroniza espelhos imediatamente
   syncMirrorsToArea(conn);
-
-  if (readOnly) {
-    conn.exec('PRAGMA query_only = ON;');
-  }
 
   areaDbConnections.set(cacheKey, conn);
   return conn;
 }
 
-function ensureAreaSchema(areaDb: DatabaseSync) {
+/**
+ * Migração Idempotente do Banco de Área (almoxarifado.db, caf.db, etc.)
+ */
+function migrateAreaDb(areaDb: DatabaseSync, areaSigla: string, dbFilePath: string) {
+  let appliedMigrations = 0;
+
   try {
-    // Executa schema_area.sql para garantir todas as tabelas (produtos, fornecedores, requisicoes, etc.)
+    // 1. Executa schema_area.sql para criar tabelas ausentes
     const schemaAreaSqlPath = path.resolve(PROJECT_ROOT, 'schema_area.sql');
     if (fs.existsSync(schemaAreaSqlPath)) {
       const sql = fs.readFileSync(schemaAreaSqlPath, 'utf-8');
-      areaDb.exec(sql);
+      try {
+        areaDb.exec(sql);
+      } catch (e: any) {
+        console.warn(`[DB Área ${areaSigla}] Aviso ao executar schema_area.sql:`, e.message);
+      }
     }
 
-    try {
-      areaDb.exec('INSERT OR IGNORE INTO versao_schema (versao) VALUES (1);');
-    } catch {}
+    // 2. Garante tabela versao_schema
+    areaDb.exec(`
+      CREATE TABLE IF NOT EXISTS versao_schema (
+          versao INTEGER PRIMARY KEY,
+          atualizado_em DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+      );
+    `);
 
-    // Atualiza colunas em movimentacoes
+    // 3. Garante tabela usuario_modulos no banco local caso consultas façam join
+    areaDb.exec(`
+      CREATE TABLE IF NOT EXISTS usuario_modulos (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          usuario_id INTEGER NOT NULL REFERENCES usuarios(id) ON DELETE CASCADE,
+          modulo_chave TEXT NOT NULL,
+          UNIQUE(usuario_id, modulo_chave)
+      );
+      CREATE INDEX IF NOT EXISTS idx_usuario_modulos_user ON usuario_modulos (usuario_id);
+    `);
+
+    // 4. Verificação e adição idempotente de colunas na tabela 'usuarios'
+    const userCols = new Set((areaDb.prepare("PRAGMA table_info('usuarios')").all() as Array<{ name: string }>).map((c) => c.name));
+    if (!userCols.has('permissoes')) {
+      areaDb.exec('ALTER TABLE usuarios ADD COLUMN permissoes TEXT;');
+      appliedMigrations++;
+    }
+    if (!userCols.has('cargo_nome')) {
+      areaDb.exec('ALTER TABLE usuarios ADD COLUMN cargo_nome TEXT;');
+      appliedMigrations++;
+    }
+    if (!userCols.has('empresa_id')) {
+      areaDb.exec('ALTER TABLE usuarios ADD COLUMN empresa_id INTEGER REFERENCES empresas_unidades(id) ON DELETE SET NULL;');
+      appliedMigrations++;
+    }
+    if (!userCols.has('centro_custo_id')) {
+      areaDb.exec('ALTER TABLE usuarios ADD COLUMN centro_custo_id INTEGER REFERENCES centros_custo(id) ON DELETE SET NULL;');
+      appliedMigrations++;
+    }
+    if (!userCols.has('ultimo_acesso')) {
+      areaDb.exec('ALTER TABLE usuarios ADD COLUMN ultimo_acesso DATETIME;');
+      appliedMigrations++;
+    }
+
+    // 5. Verificação e adição idempotente de colunas na tabela 'movimentacoes'
     const movCols = new Set((areaDb.prepare("PRAGMA table_info('movimentacoes')").all() as Array<{ name: string }>).map((c) => c.name));
+    if (!movCols.has('nota_fiscal_id')) {
+      areaDb.exec('ALTER TABLE movimentacoes ADD COLUMN nota_fiscal_id INTEGER REFERENCES notas_fiscais(id) ON DELETE SET NULL;');
+      appliedMigrations++;
+    }
     if (!movCols.has('requisicao_id')) {
-      areaDb.exec("ALTER TABLE movimentacoes ADD COLUMN requisicao_id INTEGER REFERENCES requisicoes(id) ON DELETE SET NULL;");
+      areaDb.exec('ALTER TABLE movimentacoes ADD COLUMN requisicao_id INTEGER REFERENCES requisicoes(id) ON DELETE SET NULL;');
+      appliedMigrations++;
     }
     if (!movCols.has('consumo_id')) {
-      areaDb.exec("ALTER TABLE movimentacoes ADD COLUMN consumo_id INTEGER REFERENCES consumos(id) ON DELETE SET NULL;");
+      areaDb.exec('ALTER TABLE movimentacoes ADD COLUMN consumo_id INTEGER REFERENCES consumos(id) ON DELETE SET NULL;');
+      appliedMigrations++;
+    }
+    if (!movCols.has('emprestimo_institucional_id')) {
+      areaDb.exec('ALTER TABLE movimentacoes ADD COLUMN emprestimo_institucional_id INTEGER REFERENCES emprestimos_institucionais(id) ON DELETE SET NULL;');
+      appliedMigrations++;
+    }
+    if (!movCols.has('marca')) {
+      areaDb.exec('ALTER TABLE movimentacoes ADD COLUMN marca TEXT;');
+      appliedMigrations++;
+    }
+    if (!movCols.has('nomenclatura_fornecedor')) {
+      areaDb.exec('ALTER TABLE movimentacoes ADD COLUMN nomenclatura_fornecedor TEXT;');
+      appliedMigrations++;
+    }
+    if (!movCols.has('valor_unitario')) {
+      areaDb.exec('ALTER TABLE movimentacoes ADD COLUMN valor_unitario REAL;');
+      appliedMigrations++;
+    }
+    if (!movCols.has('documento_referencia')) {
+      areaDb.exec('ALTER TABLE movimentacoes ADD COLUMN documento_referencia TEXT;');
+      appliedMigrations++;
+    }
+    if (!movCols.has('numero_lote')) {
+      areaDb.exec('ALTER TABLE movimentacoes ADD COLUMN numero_lote TEXT;');
+      appliedMigrations++;
+    }
+    if (!movCols.has('data_validade')) {
+      areaDb.exec('ALTER TABLE movimentacoes ADD COLUMN data_validade DATE;');
+      appliedMigrations++;
     }
 
-    // Atualiza colunas em itens_requisicao
+    // 6. Verificação e adição idempotente de colunas na tabela 'itens_requisicao'
     const itemReqCols = new Set((areaDb.prepare("PRAGMA table_info('itens_requisicao')").all() as Array<{ name: string }>).map((c) => c.name));
     if (!itemReqCols.has('lote_id')) {
-      areaDb.exec("ALTER TABLE itens_requisicao ADD COLUMN lote_id INTEGER REFERENCES lotes_estoque(id) ON DELETE SET NULL;");
+      areaDb.exec('ALTER TABLE itens_requisicao ADD COLUMN lote_id INTEGER REFERENCES lotes_estoque(id) ON DELETE SET NULL;');
+      appliedMigrations++;
     }
     if (!itemReqCols.has('numero_lote')) {
-      areaDb.exec("ALTER TABLE itens_requisicao ADD COLUMN numero_lote TEXT;");
+      areaDb.exec('ALTER TABLE itens_requisicao ADD COLUMN numero_lote TEXT;');
+      appliedMigrations++;
     }
     if (!itemReqCols.has('data_validade')) {
-      areaDb.exec("ALTER TABLE itens_requisicao ADD COLUMN data_validade DATE;");
+      areaDb.exec('ALTER TABLE itens_requisicao ADD COLUMN data_validade DATE;');
+      appliedMigrations++;
     }
-  } catch (err) {
-    console.error('[DB] Erro ao assegurar schema da área:', err);
+    if (!itemReqCols.has('lotes_atendidos')) {
+      areaDb.exec('ALTER TABLE itens_requisicao ADD COLUMN lotes_atendidos TEXT;');
+      appliedMigrations++;
+    }
+    if (!itemReqCols.has('motivo_decisao')) {
+      areaDb.exec('ALTER TABLE itens_requisicao ADD COLUMN motivo_decisao TEXT;');
+      appliedMigrations++;
+    }
+
+    // 7. Verificação e adição de colunas em produtos
+    const prodCols = new Set((areaDb.prepare("PRAGMA table_info('produtos')").all() as Array<{ name: string }>).map((c) => c.name));
+    if (!prodCols.has('custo_unitario')) {
+      areaDb.exec('ALTER TABLE produtos ADD COLUMN custo_unitario REAL NOT NULL DEFAULT 0;');
+      appliedMigrations++;
+    }
+    if (!prodCols.has('localizacao')) {
+      areaDb.exec('ALTER TABLE produtos ADD COLUMN localizacao TEXT;');
+      appliedMigrations++;
+    }
+
+    // 8. Verificação e adição de colunas em centros_custo
+    const ccCols = new Set((areaDb.prepare("PRAGMA table_info('centros_custo')").all() as Array<{ name: string }>).map((c) => c.name));
+    if (!ccCols.has('empresa_id')) {
+      areaDb.exec('ALTER TABLE centros_custo ADD COLUMN empresa_id INTEGER REFERENCES empresas_unidades(id) ON DELETE SET NULL;');
+      appliedMigrations++;
+    }
+
+    // 9. Índices de performance essenciais (Kardex, Notas Fiscais e Movimentações)
+    areaDb.exec(`
+      CREATE INDEX IF NOT EXISTS idx_movimentacoes_prod_data ON movimentacoes (produto_id, data_movimentacao);
+      CREATE INDEX IF NOT EXISTS idx_movimentacoes_nf ON movimentacoes (nota_fiscal_id);
+      CREATE INDEX IF NOT EXISTS idx_movimentacoes_req ON movimentacoes (requisicao_id);
+      CREATE INDEX IF NOT EXISTS idx_movimentacoes_cons ON movimentacoes (consumo_id);
+      CREATE INDEX IF NOT EXISTS idx_itens_req_lote ON itens_requisicao (lote_id);
+    `);
+
+    // 10. Atualiza user_version
+    const currVer = (areaDb.prepare('PRAGMA user_version;').get() as any)?.user_version || 0;
+    if (currVer < 3) {
+      areaDb.exec('PRAGMA user_version = 3;');
+    }
+    try {
+      areaDb.exec('INSERT OR IGNORE INTO versao_schema (versao) VALUES (3);');
+      areaDb.exec('UPDATE versao_schema SET versao = MAX(versao, 3);');
+    } catch {}
+
+    ensureFilePermissions(dbFilePath);
+
+    const finalVer = (areaDb.prepare('PRAGMA user_version;').get() as any)?.user_version || 0;
+    const jMode = (areaDb.prepare('PRAGMA journal_mode;').get() as any)?.journal_mode;
+    console.log(`[DB Área ${areaSigla}] Conectado: ${dbFilePath} | user_version: ${finalVer} | journal_mode: ${jMode} | Migrações aplicadas: ${appliedMigrations}`);
+  } catch (err: any) {
+    diagnoseDbWriteError(`migrateAreaDb(${areaSigla})`, dbFilePath, err);
   }
 }
 
@@ -389,21 +651,33 @@ export function syncMirrorsToArea(areaDb: DatabaseSync) {
       insCc.run(c.id, c.codigo, c.nome, c.departamento, c.responsavel, c.ativo ?? 1, c.criado_em || new Date().toISOString());
     }
 
-    // 2. Usuários (sem senha_hash)
-    const users = central.prepare('SELECT id, codigo, nome, login, cpf, email, perfil, cargo_nome, centro_custo_id, ativo, criado_em FROM usuarios').all() as any[];
+    // 2. Usuários (espelho completo para consultas e integridade, sem senha_hash)
+    const users = central.prepare(`
+      SELECT id, codigo, nome, login, cpf, email, perfil, cargo_nome, permissoes, centro_custo_id, ativo, criado_em, ultimo_acesso
+      FROM usuarios
+    `).all() as any[];
     const insUser = areaDb.prepare(`
-      INSERT OR REPLACE INTO usuarios (id, codigo, nome, login, senha_hash, cpf, email, perfil, cargo_nome, centro_custo_id, ativo, criado_em)
-      VALUES (?, ?, ?, ?, '', ?, ?, ?, ?, ?, ?, ?)
+      INSERT OR REPLACE INTO usuarios (id, codigo, nome, login, senha_hash, cpf, email, perfil, cargo_nome, permissoes, centro_custo_id, ativo, criado_em, ultimo_acesso)
+      VALUES (?, ?, ?, ?, '', ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
     for (const u of users) {
       insUser.run(
         u.id, u.codigo, u.nome, u.login, u.cpf, u.email,
-        u.perfil, u.cargo_nome, u.centro_custo_id,
-        u.ativo ?? 1, u.criado_em || new Date().toISOString()
+        u.perfil, u.cargo_nome, u.permissoes, u.centro_custo_id,
+        u.ativo ?? 1, u.criado_em || new Date().toISOString(), u.ultimo_acesso
       );
     }
 
-    // 3. Empresas / Unidades
+    // 3. Módulos do usuário
+    try {
+      const mods = central.prepare('SELECT usuario_id, modulo_chave FROM usuario_modulos').all() as any[];
+      const insMod = areaDb.prepare('INSERT OR IGNORE INTO usuario_modulos (usuario_id, modulo_chave) VALUES (?, ?)');
+      for (const m of mods) {
+        insMod.run(m.usuario_id, m.modulo_chave);
+      }
+    } catch {}
+
+    // 4. Empresas / Unidades
     try {
       const emps = central.prepare('SELECT id, codigo, nome, cnpj, endereco, cidade, uf, ativo, criado_em FROM empresas_unidades').all() as any[];
       const insEmp = areaDb.prepare(`
@@ -414,8 +688,9 @@ export function syncMirrorsToArea(areaDb: DatabaseSync) {
         insEmp.run(e.id, e.codigo, e.nome, e.cnpj || null, e.endereco || null, e.cidade || null, e.uf || null, e.ativo ?? 1, e.criado_em || new Date().toISOString());
       }
     } catch {}
-  } catch (err) {
-    console.error('[DB Mirror] Erro ao sincronizar espelhos para área:', err);
+  } catch (err: any) {
+    const dbPath = (areaDb as any).__dbPath || 'area.db';
+    diagnoseDbWriteError('syncMirrorsToArea', dbPath, err);
   }
 }
 
@@ -428,8 +703,8 @@ export function syncMirrorsToAllAreas() {
     try {
       const areaDb = getAreaDb(a.sigla);
       syncMirrorsToArea(areaDb);
-    } catch (e) {
-      console.error(`[DB Mirror] Falha ao sincronizar espelhos para área ${a.sigla}:`, e);
+    } catch (e: any) {
+      console.error(`[DB Mirror] Falha ao sincronizar espelhos para área ${a.sigla}:`, e.message);
     }
   }
 }
@@ -515,20 +790,28 @@ export function registrarLogAcesso(
       acao,
       detalhes || null
     );
-  } catch (err) {
-    console.error('[DB] Falha ao registrar log de acesso:', err);
+  } catch (err: any) {
+    console.error('[DB] Falha ao registrar log de acesso:', err.message);
   }
 }
 
+/**
+ * Executa uma operação em transação atômica SQLite (BEGIN/COMMIT/ROLLBACK)
+ * com captura e diagnóstico detalhado em caso de erro de escrita/permissão.
+ */
 export function runInTransaction<T>(fn: () => T, targetDb?: DatabaseSync): T {
   const conn = targetDb || db;
+  const dbPath = (conn as any).__dbPath || 'banco_ativo';
   conn.exec('BEGIN TRANSACTION;');
   try {
     const res = fn();
     conn.exec('COMMIT;');
     return res;
-  } catch (err) {
-    conn.exec('ROLLBACK;');
+  } catch (err: any) {
+    try {
+      conn.exec('ROLLBACK;');
+    } catch {}
+    diagnoseDbWriteError('runInTransaction', dbPath, err);
     throw err;
   }
 }
@@ -544,7 +827,7 @@ export function updateOverdueLoans(targetDb?: DatabaseSync) {
         AND data_prevista_devolucao IS NOT NULL
         AND date(data_prevista_devolucao) < date(?)
     `).run(hojeStr);
-  } catch (_e) {}
+  } catch {}
 }
 
 export function getSchemaSql(): string {
@@ -566,17 +849,36 @@ export function resetDatabase() {
   clearAccessLogs();
 }
 
+/**
+ * Inicialização completa da camada de banco de dados com diagnóstico detalhado
+ */
 export function initDatabase() {
+  const processUid = process.getuid ? process.getuid() : 'N/A';
+  const processGid = process.getgid ? process.getgid() : 'N/A';
+  const processUser = process.env.USER || process.env.USERNAME || 'desconhecido';
+
+  console.log(`\n============================================================================`);
+  console.log(`[ALMOXCONTROL] INICIALIZANDO CAMADA DE BANCO DE DADOS (SQLite node:sqlite)`);
+  console.log(`  Processo: Usuário=${processUser} | UID=${processUid} | GID=${processGid}`);
+  console.log(`  Diretório de Dados (DB_DIR): ${DB_DIR}`);
+  console.log(`============================================================================`);
+
+  // 1. Inicializa Central
   getCentralDb();
+
+  // 2. Inicializa Áreas Padrão
   getAreaDb('ALM');
   getAreaDb('CAF');
+
+  // 3. Sincroniza espelhos para todas as áreas ativas
   syncMirrorsToAllAreas();
+
+  console.log(`[ALMOXCONTROL] Camada de banco inicializada com sucesso!\n`);
 }
 
 // Inicialização automática ao carregar o módulo
 try {
   initDatabase();
-} catch (e) {
-  console.error('[DB Init Error]:', e);
+} catch (e: any) {
+  console.error('[DB Init Error]:', e.message);
 }
-

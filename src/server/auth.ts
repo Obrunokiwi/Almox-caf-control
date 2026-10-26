@@ -33,7 +33,7 @@ export interface UserSession {
 
 export const ALL_SYSTEM_MODULES = [
   'fornecedores', 'produtos', 'saldo-estoque', 'entradas', 'movimentacoes',
-  'inventario', 'consumo', 'emprestimos', 'requisicoes', 'aprovacao-requisicoes',
+  'inventario', 'consumo', 'kardex', 'lista-compras', 'emprestimos', 'requisicoes', 'aprovacao-requisicoes',
   'centros-custo', 'usuarios', 'areas', 'relatorios', 'relatorios-outras-areas',
   'perfil', 'importacao-cadastros', 'backup'
 ];
@@ -43,7 +43,7 @@ export const MODULOS_PADRAO_SISTEMA: Record<string, string[]> = {
   ti_dpo: [...ALL_SYSTEM_MODULES],
   almoxarife: [
     'fornecedores', 'produtos', 'saldo-estoque', 'entradas', 'movimentacoes',
-    'inventario', 'consumo', 'emprestimos', 'requisicoes', 'aprovacao-requisicoes',
+    'inventario', 'consumo', 'kardex', 'lista-compras', 'emprestimos', 'requisicoes', 'aprovacao-requisicoes',
     'relatorios', 'relatorios-outras-areas', 'perfil'
   ],
   requisitante: [
@@ -119,13 +119,13 @@ function attachUserModulesAndAreas(row: any, activeAreaSigla?: string) {
 
     // Regras restritivas de perfil
     if (row.perfil === 'requisitante') {
-      list = list.filter((m) => !['saldo-estoque', 'aprovacao-requisicoes', 'backup', 'importacao-cadastros', 'usuarios', 'areas', 'consumo'].includes(m));
+      list = list.filter((m) => !['saldo-estoque', 'aprovacao-requisicoes', 'backup', 'importacao-cadastros', 'usuarios', 'areas', 'consumo', 'kardex', 'lista-compras'].includes(m));
     }
     if (row.perfil !== 'admin' && row.perfil !== 'ti_dpo') {
       list = list.filter((m) => !['backup', 'importacao-cadastros', 'usuarios', 'areas'].includes(m));
     }
     if (row.perfil !== 'admin' && row.perfil !== 'ti_dpo' && row.perfil !== 'almoxarife') {
-      list = list.filter((m) => !['aprovacao-requisicoes', 'consumo'].includes(m));
+      list = list.filter((m) => !['aprovacao-requisicoes', 'consumo', 'kardex', 'lista-compras'].includes(m));
     }
 
     row.modulos = list;
@@ -316,7 +316,7 @@ export function hasModulePermission(user: UserSession, modulo: string): boolean 
   const moduloNorm = modulo === 'inventarios' ? 'inventario' : modulo;
 
   if (user.perfil === 'requisitante') {
-    if (['saldo-estoque', 'aprovacao-requisicoes', 'backup', 'importacao-cadastros', 'usuarios', 'areas', 'consumo'].includes(moduloNorm)) {
+    if (['saldo-estoque', 'aprovacao-requisicoes', 'backup', 'importacao-cadastros', 'usuarios', 'areas', 'consumo', 'kardex', 'lista-compras'].includes(moduloNorm)) {
       return false;
     }
   }
@@ -326,7 +326,7 @@ export function hasModulePermission(user: UserSession, modulo: string): boolean 
     }
   }
   if (user.perfil !== 'admin' && user.perfil !== 'ti_dpo' && user.perfil !== 'almoxarife') {
-    if (['aprovacao-requisicoes', 'consumo'].includes(moduloNorm)) {
+    if (['aprovacao-requisicoes', 'consumo', 'kardex', 'lista-compras'].includes(moduloNorm)) {
       return false;
     }
   }

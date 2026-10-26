@@ -36,7 +36,9 @@ import {
   ClipboardList,
   FileBarChart,
   HardDriveDownload,
-  FileSpreadsheet
+  FileSpreadsheet,
+  BookOpen,
+  ShoppingBag
 } from 'lucide-react';
 import type { Usuario, CentroCusto, PerfilUsuario, EmpresaUnidade } from '../types/index.ts';
 
@@ -44,6 +46,8 @@ export const TODOS_MODULOS_SISTEMA = [
   { id: 'fornecedores', label: 'Fornecedores / Entidades', desc: 'Cadastro de fornecedores comerciais e hospitais parceiros', icon: Truck },
   { id: 'produtos', label: 'Produtos / Catálogo', desc: 'Catálogo de materiais, código único e lotes', icon: Package },
   { id: 'saldo-estoque', label: 'Consulta de Saldo em Estoque', desc: 'Conferência de saldos físicos e lotes FEFO', icon: PackageCheck },
+  { id: 'kardex', label: 'Kardex do Produto', desc: 'Extrato analítico e movimentações em ordem cronológica', icon: BookOpen },
+  { id: 'lista-compras', label: 'Lista de Compras / Reposição', desc: 'Relatório de reposição baseado no consumo e saldo atual', icon: ShoppingBag },
   { id: 'entradas', label: 'Entrada por Nota Fiscal', desc: 'Lançamento de notas fiscais e recebimento', icon: PackagePlus },
   { id: 'movimentacoes', label: 'Movimentações Diversas', desc: 'Devoluções de setor, perdas e saídas por vencimento', icon: ArrowLeftRight },
   { id: 'inventario', label: 'Inventário do Estoque', desc: 'Contagem física e ajustes de saldo', icon: Boxes },
@@ -62,7 +66,7 @@ export const MODULOS_PADRAO_POR_PERFIL: Record<string, string[]> = {
   admin: TODOS_MODULOS_SISTEMA.map((m) => m.id),
   ti_dpo: TODOS_MODULOS_SISTEMA.map((m) => m.id),
   almoxarife: [
-    'fornecedores', 'produtos', 'saldo-estoque', 'entradas', 'movimentacoes',
+    'fornecedores', 'produtos', 'saldo-estoque', 'kardex', 'lista-compras', 'entradas', 'movimentacoes',
     'inventario', 'emprestimos', 'requisicoes', 'aprovacao-requisicoes',
     'relatorios', 'perfil'
   ],
@@ -75,6 +79,8 @@ export function getModuloRestrictionReason(moduloId: string, perfil: PerfilUsuar
   if (isMainAdmin) return null;
   if (perfil === 'requisitante') {
     if (moduloId === 'saldo-estoque') return 'Restrito: Requisitantes não possuem acesso ao saldo de estoque';
+    if (moduloId === 'kardex') return 'Restrito: Requisitantes não possuem acesso ao Kardex do Produto';
+    if (moduloId === 'lista-compras') return 'Restrito: Requisitantes não possuem acesso à Lista de Compras';
     if (moduloId === 'aprovacao-requisicoes') return 'Restrito: Exclusivo para Almoxarife e Administrador';
     if (['backup', 'importacao-cadastros', 'usuarios'].includes(moduloId)) return 'Restrito: Exclusivo para perfil Administrador';
   }
@@ -82,7 +88,7 @@ export function getModuloRestrictionReason(moduloId: string, perfil: PerfilUsuar
     if (['backup', 'importacao-cadastros', 'usuarios'].includes(moduloId)) return 'Restrito: Exclusivo para perfil Administrador';
   }
   if (perfil !== 'admin' && perfil !== 'almoxarife') {
-    if (moduloId === 'aprovacao-requisicoes') return 'Restrito: Exclusivo para Almoxarife e Administrador';
+    if (['aprovacao-requisicoes', 'kardex', 'lista-compras'].includes(moduloId)) return 'Restrito: Exclusivo para Almoxarife e Administrador';
   }
   return null;
 }
@@ -264,7 +270,7 @@ export const UsuariosView: React.FC<UsuariosViewProps> = ({
 
   // Paginação
   const [currentPage, setCurrentPage] = useState(1);
-  const pageSize = 8;
+  const pageSize = 15;
   const [isProcessing, setIsProcessing] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [deletingUser, setDeletingUser] = useState<Usuario | null>(null);

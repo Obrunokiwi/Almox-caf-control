@@ -128,6 +128,8 @@ export const TopBar: React.FC<TopBarProps> = ({
   const getTabTitle = (tab: string) => {
     switch (tab) {
       case 'consumo': return 'Consumo Direto';
+      case 'kardex': return 'Kardex do Produto';
+      case 'lista-compras': return 'Lista de Compras / Reposição';
       case 'areas': return 'Áreas Operacionais';
       case 'relatorios-outras-areas': return 'Relatórios de Outras Áreas';
       case 'fornecedores': return 'Fornecedores e Entidades';

@@ -76,13 +76,18 @@ export const SaldoEstoqueView: React.FC<SaldoEstoqueViewProps> = ({
 
   // Carrega grupos de produto
   useEffect(() => {
+    const token = localStorage.getItem('multi_almox_token');
+    const areaSigla = localStorage.getItem('multi_almox_area_sigla') || currentUser?.area_sigla || 'ALM';
     fetch('/api/grupos-produtos', {
-      headers: currentUser?.id ? { Authorization: `user:${currentUser.id}` } : {},
+      headers: {
+        'Authorization': `Bearer ${token}`,
+        'X-Area-Sigla': areaSigla,
+      },
     })
       .then((res) => (res.ok ? res.json() : []))
       .then((data) => setGrupos(data))
       .catch((err) => console.error('Erro ao buscar grupos de produtos:', err));
-  }, [currentUser?.id]);
+  }, [currentUser?.area_sigla]);
 
   // Função para alternar expansão de lotes
   const toggleRowExpansion = (prodId: number) => {

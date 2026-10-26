@@ -21,6 +21,8 @@ import { BackupConfirmationModal } from './components/BackupConfirmationModal.ts
 import { ConfirmDeleteModal } from './components/ConfirmDeleteModal.tsx';
 import { SaldoEstoqueView } from './components/SaldoEstoqueView.tsx';
 import { ImportacaoCadastrosView } from './components/ImportacaoCadastrosView.tsx';
+import { KardexView } from './components/KardexView.tsx';
+import { ListaComprasView } from './components/ListaComprasView.tsx';
 import { useToast } from './context/ToastContext.tsx';
 import { Lock } from 'lucide-react';
 import type { 
@@ -323,8 +325,8 @@ export default function App() {
     // Documentação do sistema é livre ou para administradores
     if (moduloChave === 'documentacao') return true;
 
-    // Regra A: Requisitante NUNCA vê saldo em estoque
-    if (moduloChave === 'saldo-estoque' && currentUser.perfil === 'requisitante') {
+    // Regra A: Requisitante NUNCA vê saldo em estoque, Kardex ou Lista de Compras
+    if (['saldo-estoque', 'kardex', 'lista-compras'].includes(moduloChave) && currentUser.perfil === 'requisitante') {
       return false;
     }
 
@@ -467,7 +469,7 @@ export default function App() {
               </button>
             </div>
           ) : (
-            <>
+            <div key={currentTab} className="animate-slide-right">
               {currentTab === 'requisicoes' && (
                 <RequisicoesView
                   requisicoes={requisicoes}
@@ -519,6 +521,24 @@ export default function App() {
                   currentUser={currentUser}
                   onRefresh={loadData}
                   onVoltar={handleReturnToGrid}
+                />
+              )}
+
+              {currentTab === 'kardex' && (
+                <KardexView
+                  produtos={produtos}
+                  currentUser={currentUser}
+                  onVoltar={handleReturnToGrid}
+                  onNavigate={(tab) => setCurrentTab(tab)}
+                />
+              )}
+
+              {currentTab === 'lista-compras' && (
+                <ListaComprasView
+                  produtos={produtos}
+                  currentUser={currentUser}
+                  onVoltar={handleReturnToGrid}
+                  onNavigate={(tab) => setCurrentTab(tab)}
                 />
               )}
 
@@ -640,7 +660,7 @@ export default function App() {
                   onRefreshDb={handleResetDb}
                 />
               )}
-            </>
+            </div>
           )}
           </main>
           <footer className="py-3 px-6 text-center text-xs text-slate-400 font-normal border-t border-slate-200/60 bg-transparent print:hidden shrink-0">

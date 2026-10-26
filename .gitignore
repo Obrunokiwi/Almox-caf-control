@@ -4,8 +4,11 @@ dist/
 coverage/
 .DS_Store
 *.log
+*.db
 *.db-shm
 *.db-wal
+*.sqlite
+*.sqlite3
 temp_*.db
 .env*
 !.env.example

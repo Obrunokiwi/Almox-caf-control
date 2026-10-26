@@ -141,9 +141,16 @@ export const ProdutosView: React.FC<ProdutosViewProps> = ({
   const { toast } = useToast();
   const canEdit = currentUser && (currentUser.perfil === 'admin' || currentUser.perfil === 'almoxarife');
 
-  // Carrega lista de 15 grupos oficiais do backend
+  // Carrega lista de grupos oficiais do backend para a área ativa
   useEffect(() => {
-    fetch('/api/grupos-produtos')
+    const token = localStorage.getItem('multi_almox_token');
+    const areaSigla = localStorage.getItem('multi_almox_area_sigla') || currentUser?.area_sigla || 'ALM';
+    fetch('/api/grupos-produtos', {
+      headers: {
+        'Authorization': `Bearer ${token}`,
+        'X-Area-Sigla': areaSigla,
+      },
+    })
       .then((r) => r.json())
       .then((data) => {
         if (Array.isArray(data)) {
@@ -153,7 +160,7 @@ export const ProdutosView: React.FC<ProdutosViewProps> = ({
       .catch((err) => {
         console.error('Erro ao carregar grupos de produtos:', err);
       });
-  }, []);
+  }, [currentUser?.area_sigla]);
 
   const grupoFormOptions: SearchableOption[] = useMemo(() => [
     { value: '', label: 'Selecione o Grupo de Produto...' },

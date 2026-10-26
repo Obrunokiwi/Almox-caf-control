@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useMemo } from 'react';
 import {
   Users,
   Building2,
@@ -21,7 +21,11 @@ import {
   PackageCheck,
   AlertCircle,
   FileSpreadsheet,
-  Layers
+  Layers,
+  BookOpen,
+  ShoppingBag,
+  ChevronLeft,
+  ChevronRight
 } from 'lucide-react';
 import type { Usuario, EmpresaUnidade, Produto, Requisicao } from '../types/index.ts';
 import { NotificationsDropdown } from './NotificationsDropdown.tsx';
@@ -94,6 +98,24 @@ export const ModuleGridView: React.FC<ModuleGridViewProps> = ({
       icon: PackageCheck,
       badge: 'Consulta',
       badgeColor: 'bg-teal-600 text-white',
+      allowedRoles: ['admin', 'almoxarife'],
+    },
+    {
+      id: 'kardex',
+      label: 'Kardex do Produto',
+      descricao: 'Extrato cronológico detalhado de entradas, saídas e evolução de saldo',
+      icon: BookOpen,
+      badge: 'Físico/Financeiro',
+      badgeColor: 'bg-indigo-600 text-white',
+      allowedRoles: ['admin', 'almoxarife'],
+    },
+    {
+      id: 'lista-compras',
+      label: 'Lista de Compras / Reposição',
+      descricao: 'Relatório gerencial de estimativa e sugestão de reposição de estoque',
+      icon: ShoppingBag,
+      badge: 'Reposição',
+      badgeColor: 'bg-[#00237D] text-white',
       allowedRoles: ['admin', 'almoxarife'],
     },
     {
@@ -205,25 +227,59 @@ export const ModuleGridView: React.FC<ModuleGridViewProps> = ({
   const isMainAdmin = currentUser.id === 1 || currentUser.login.toLowerCase() === 'admin';
   const userModulos = currentUser.modulos || [];
 
-  const filteredModules = allModules
-    .filter((mod) => {
-      // Regra 1: Administrador principal possui acesso irrestrito
-      if (isMainAdmin) return true;
-      // Regra 2: Saldo de estoque nunca é liberado ao requisitante
-      if (currentUser.perfil === 'requisitante' && mod.id === 'saldo-estoque') return false;
-      // Regra 3: Checagem de perfil base
-      if (!mod.allowedRoles.includes(currentUser.perfil)) return false;
-      // Regra 4: Checagem da matriz de módulos liberados configurada no cadastro do usuário
-      if (userModulos.length > 0) {
-        const modKeyNorm = mod.id === 'inventarios' ? 'inventario' : mod.id;
-        return userModulos.includes(modKeyNorm) || userModulos.includes(mod.id);
-      }
-      return true;
-    })
-    .filter((mod) => 
-      mod.label.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      mod.descricao.toLowerCase().includes(searchTerm.toLowerCase())
-    );
+  const filteredModules = useMemo(() => {
+    return allModules
+      .filter((mod) => {
+        // Regra 1: Administrador principal possui acesso irrestrito
+        if (isMainAdmin) return true;
+        // Regra 2: Saldo de estoque nunca é liberado ao requisitante
+        if (currentUser.perfil === 'requisitante' && mod.id === 'saldo-estoque') return false;
+        // Regra 3: Checagem de perfil base
+        if (!mod.allowedRoles.includes(currentUser.perfil)) return false;
+        // Regra 4: Checagem da matriz de módulos liberados configurada no cadastro do usuário
+        if (userModulos.length > 0) {
+          const modKeyNorm = mod.id === 'inventarios' ? 'inventario' : mod.id;
+          return userModulos.includes(modKeyNorm) || userModulos.includes(mod.id);
+        }
+        return true;
+      })
+      .filter((mod) => 
+        mod.label.toLowerCase().includes(searchTerm.toLowerCase()) ||
+        mod.descricao.toLowerCase().includes(searchTerm.toLowerCase())
+      );
+  }, [allModules, isMainAdmin, currentUser.perfil, userModulos, searchTerm]);
+
+  // Paginação de Módulos (15 por página)
+  const [currentPage, setCurrentPage] = useState(1);
+  const [slideDirection, setSlideDirection] = useState<'right' | 'left'>('right');
+  const pageSize = 15;
+
+  const totalPages = useMemo(() => Math.ceil(filteredModules.length / pageSize) || 1, [filteredModules.length, pageSize]);
+
+  const paginatedModules = useMemo(() => {
+    const start = (currentPage - 1) * pageSize;
+    return filteredModules.slice(start, start + pageSize);
+  }, [filteredModules, currentPage, pageSize]);
+
+  const handleNextPage = () => {
+    if (currentPage < totalPages) {
+      setSlideDirection('right');
+      setCurrentPage((p) => p + 1);
+    }
+  };
+
+  const handlePrevPage = () => {
+    if (currentPage > 1) {
+      setSlideDirection('left');
+      setCurrentPage((p) => p - 1);
+    }
+  };
+
+  const handleSearchChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    setSearchTerm(e.target.value);
+    setSlideDirection('right');
+    setCurrentPage(1);
+  };
 
   const getPerfilLabel = (p: string) => {
     switch (p) {
@@ -266,7 +322,7 @@ export const ModuleGridView: React.FC<ModuleGridViewProps> = ({
           <input
             type="text"
             value={searchTerm}
-            onChange={(e) => setSearchTerm(e.target.value)}
+            onChange={handleSearchChange}
             placeholder="Filtrar módulos..."
             className="w-full pl-8 pr-3 py-1.5 bg-white/8 border border-white/12 rounded-lg text-xs text-white placeholder-blue-200/45 focus:outline-none focus:bg-white/15 focus:border-white/30 transition-all"
           />
@@ -380,9 +436,14 @@ export const ModuleGridView: React.FC<ModuleGridViewProps> = ({
           </div>
         )}
 
-        {/* Grid de Ícones em Quadrados Arredondados */}
-        <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-6 sm:gap-8 justify-items-center">
-          {filteredModules.map((mod) => {
+        {/* Grid de Ícones em Quadrados Arredondados com Animação de Deslize */}
+        <div
+          key={`page-${currentPage}-${slideDirection}`}
+          className={`grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-6 sm:gap-8 justify-items-center ${
+            slideDirection === 'left' ? 'animate-slide-left' : 'animate-slide-right'
+          }`}
+        >
+          {paginatedModules.map((mod) => {
             const Icon = mod.icon;
             return (
               <button
@@ -415,6 +476,35 @@ export const ModuleGridView: React.FC<ModuleGridViewProps> = ({
             );
           })}
         </div>
+
+        {/* Paginação de Módulos (15 por página) */}
+        {totalPages > 1 && (
+          <div className="mt-8 flex items-center justify-center gap-4 animate-fadeIn">
+            <button
+              type="button"
+              disabled={currentPage === 1}
+              onClick={handlePrevPage}
+              className="px-3.5 py-2 rounded-xl bg-white/10 hover:bg-white/20 active:bg-white/30 disabled:opacity-30 disabled:cursor-not-allowed text-xs font-semibold text-white border border-white/20 flex items-center gap-1.5 transition-all shadow-md cursor-pointer"
+            >
+              <ChevronLeft className="w-4 h-4" />
+              <span>Anterior</span>
+            </button>
+
+            <span className="text-xs font-semibold text-blue-100 bg-white/10 px-3.5 py-2 rounded-xl border border-white/15 backdrop-blur-xs">
+              Página {currentPage} de {totalPages} ({filteredModules.length} módulos)
+            </span>
+
+            <button
+              type="button"
+              disabled={currentPage === totalPages}
+              onClick={handleNextPage}
+              className="px-3.5 py-2 rounded-xl bg-white/10 hover:bg-white/20 active:bg-white/30 disabled:opacity-30 disabled:cursor-not-allowed text-xs font-semibold text-white border border-white/20 flex items-center gap-1.5 transition-all shadow-md cursor-pointer"
+            >
+              <span>Próxima</span>
+              <ChevronRight className="w-4 h-4" />
+            </button>
+          </div>
+        )}
 
         {filteredModules.length === 0 && (
           <div className="text-center py-12 text-blue-200/70">

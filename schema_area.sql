@@ -35,9 +35,12 @@ CREATE TABLE IF NOT EXISTS usuarios (
     email TEXT,
     perfil TEXT NOT NULL,
     cargo_nome TEXT,
+    permissoes TEXT,
     centro_custo_id INTEGER REFERENCES centros_custo(id) ON DELETE SET NULL,
+    empresa_id INTEGER REFERENCES empresas_unidades(id) ON DELETE SET NULL,
     ativo INTEGER NOT NULL DEFAULT 1,
-    criado_em DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+    criado_em DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    ultimo_acesso DATETIME
 );
 CREATE INDEX IF NOT EXISTS idx_usuarios_login ON usuarios (login);
 CREATE INDEX IF NOT EXISTS idx_usuarios_perfil ON usuarios (perfil);
@@ -433,4 +436,41 @@ CREATE INDEX IF NOT EXISTS idx_emprestimos_produto ON emprestimos (produto_id);
 CREATE INDEX IF NOT EXISTS idx_emprestimos_centro_custo ON emprestimos (centro_custo_id);
 CREATE INDEX IF NOT EXISTS idx_emprestimos_solicitante ON emprestimos (solicitante_id);
 CREATE INDEX IF NOT EXISTS idx_emprestimos_status ON emprestimos (status);
+
+-- 18. TABELA DE LISTA DE REPOSIÇÃO (LISTA DE COMPRAS - APOIO À REPOSIÇÃO)
+CREATE TABLE IF NOT EXISTS listas_reposicao (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    numero_documento TEXT UNIQUE NOT NULL,
+    area_sigla TEXT NOT NULL,
+    data_inicio DATE NOT NULL,
+    data_fim DATE NOT NULL,
+    grupo_id INTEGER REFERENCES grupos_produtos(id) ON DELETE SET NULL,
+    status TEXT NOT NULL DEFAULT 'RASCUNHO' CHECK (status IN ('RASCUNHO', 'FECHADA')),
+    observacao TEXT,
+    usuario_id INTEGER NOT NULL REFERENCES usuarios(id),
+    usuario_nome TEXT,
+    criado_em DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    atualizado_em DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_listas_rep_numero ON listas_reposicao (numero_documento);
+CREATE INDEX IF NOT EXISTS idx_listas_rep_status ON listas_reposicao (status);
+
+CREATE TABLE IF NOT EXISTS itens_lista_reposicao (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    lista_id INTEGER NOT NULL REFERENCES listas_reposicao(id) ON DELETE CASCADE,
+    produto_id INTEGER NOT NULL REFERENCES produtos(id),
+    produto_codigo TEXT NOT NULL,
+    produto_nome TEXT NOT NULL,
+    unidade_medida TEXT NOT NULL,
+    saldo_atual REAL NOT NULL DEFAULT 0,
+    saidas_periodo REAL NOT NULL DEFAULT 0,
+    quantidade_sugerida REAL NOT NULL DEFAULT 0,
+    quantidade_repor REAL NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_itens_lista_rep_lista ON itens_lista_reposicao (lista_id);
+CREATE INDEX IF NOT EXISTS idx_itens_lista_rep_prod ON itens_lista_reposicao (produto_id);
+
+-- Índice de alta performance para Kardex e Cálculo de Reposição
+CREATE INDEX IF NOT EXISTS idx_movimentacoes_prod_data ON movimentacoes (produto_id, data_movimentacao);
+
 

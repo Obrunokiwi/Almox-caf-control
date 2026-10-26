@@ -23,6 +23,7 @@ import * as XLSX from 'xlsx';
 import { jsPDF } from 'jspdf';
 import autoTable from 'jspdf-autotable';
 import type { Usuario, Produto, Fornecedor, Area } from '../types/index.ts';
+import { AutocompleteSelect } from './AutocompleteSelect.tsx';
 import { useToast } from '../context/ToastContext.tsx';
 
 interface ImportacaoCadastrosViewProps {
@@ -1030,22 +1031,22 @@ export const ImportacaoCadastrosView: React.FC<ImportacaoCadastrosViewProps> = (
           </div>
         </div>
 
-        <div className="w-full md:w-auto shrink-0 bg-white/10 p-2.5 rounded-xl border border-white/15 flex flex-col sm:flex-row items-start sm:items-center gap-3">
+        <div className="w-full md:w-80 shrink-0 bg-white/10 p-2.5 rounded-xl border border-white/15 flex flex-col gap-1.5">
           <label htmlFor="target-area-select" className="text-xs font-bold text-amber-300 uppercase tracking-wider whitespace-nowrap">
             Área de Destino:
           </label>
-          <select
+          <AutocompleteSelect
             id="target-area-select"
+            options={areas.map((a) => ({
+              value: a.sigla,
+              label: `${a.sigla} — ${a.nome}`,
+              secondaryLabel: `Banco: ${a.arquivo_db}`,
+            }))}
             value={selectedTargetSigla}
-            onChange={(e) => handleTargetAreaChange(e.target.value)}
-            className="w-full sm:w-64 px-3 py-2 bg-slate-900 text-white font-bold text-xs rounded-lg border border-indigo-400/50 focus:outline-none focus:ring-2 focus:ring-amber-400 cursor-pointer"
-          >
-            {areas.map((a) => (
-              <option key={a.id} value={a.sigla} className="bg-slate-900 text-white">
-                {a.sigla} — {a.nome} ({a.arquivo_db})
-              </option>
-            ))}
-          </select>
+            onChange={(val) => handleTargetAreaChange(String(val || ''))}
+            allowClear={false}
+            placeholder="Selecione a Área..."
+          />
         </div>
       </div>
 

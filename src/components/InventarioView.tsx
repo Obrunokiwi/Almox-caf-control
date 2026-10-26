@@ -135,13 +135,20 @@ export const InventarioView: React.FC<InventarioViewProps> = ({
 
   // Carrega lista oficial de grupos de produtos para filtragem no inventário
   useEffect(() => {
-    fetch('/api/grupos-produtos')
+    const token = localStorage.getItem('multi_almox_token');
+    const areaSigla = localStorage.getItem('multi_almox_area_sigla') || currentUser?.area_sigla || 'ALM';
+    fetch('/api/grupos-produtos', {
+      headers: {
+        'Authorization': `Bearer ${token}`,
+        'X-Area-Sigla': areaSigla,
+      },
+    })
       .then((r) => r.json())
       .then((data) => {
         if (Array.isArray(data)) setGrupos(data);
       })
       .catch(() => {});
-  }, []);
+  }, [currentUser?.area_sigla]);
 
   // Modal para Adição Manual de Produto/Lote
   const [isAddManualModalOpen, setIsAddManualModalOpen] = useState(false);
