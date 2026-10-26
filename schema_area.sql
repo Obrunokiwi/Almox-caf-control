@@ -350,6 +350,8 @@ CREATE TABLE IF NOT EXISTS inventarios_estoque (
     codigo TEXT UNIQUE NOT NULL,
     data DATE NOT NULL,
     hora TIME NOT NULL,
+    empresa_id INTEGER REFERENCES empresas_unidades(id) ON DELETE SET NULL,
+    area_id INTEGER DEFAULT 1,
     centro_custo_id INTEGER NOT NULL REFERENCES centros_custo(id),
     centro_custo_nome TEXT,
     centro_custo_codigo TEXT,

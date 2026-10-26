@@ -400,17 +400,21 @@ CREATE TABLE IF NOT EXISTS inventarios_estoque (
     area_id INTEGER NOT NULL DEFAULT 1 REFERENCES empresas_unidades(id),
     data DATE NOT NULL,
     hora TIME NOT NULL,
-    empresa_id INTEGER,
+    empresa_id INTEGER REFERENCES empresas_unidades(id) ON DELETE SET NULL,
     centro_custo_id INTEGER NOT NULL REFERENCES centros_custo(id),
+    centro_custo_nome TEXT,
+    centro_custo_codigo TEXT,
     zera_por_lote INTEGER DEFAULT 0,
     zera_nao_listados INTEGER DEFAULT 0,
     observacao TEXT,
     finalizado INTEGER DEFAULT 0,
     usuario_id INTEGER NOT NULL REFERENCES usuarios(id),
+    usuario_nome TEXT,
     criado_em DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 CREATE INDEX IF NOT EXISTS idx_inventarios_codigo ON inventarios_estoque (codigo);
 CREATE INDEX IF NOT EXISTS idx_inventarios_area ON inventarios_estoque (area_id);
+CREATE INDEX IF NOT EXISTS idx_inventarios_empresa ON inventarios_estoque (empresa_id);
 CREATE INDEX IF NOT EXISTS idx_inventarios_data ON inventarios_estoque (data);
 CREATE INDEX IF NOT EXISTS idx_inventarios_centro_custo ON inventarios_estoque (centro_custo_id);
 CREATE INDEX IF NOT EXISTS idx_inventarios_finalizado ON inventarios_estoque (finalizado);

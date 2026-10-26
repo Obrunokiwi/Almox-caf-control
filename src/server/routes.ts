@@ -7258,14 +7258,14 @@ apiRouter.get('/inventarios', (req, res) => {
         i.*,
         COALESCE(e.codigo, '001') as empresa_codigo,
         COALESCE(e.nome, 'Almoxarifado Central') as empresa_nome,
-        cc.codigo as centro_custo_codigo,
-        cc.nome as centro_custo_nome,
-        u.nome as usuario_nome,
+        COALESCE(cc.codigo, i.centro_custo_codigo, '') as centro_custo_codigo,
+        COALESCE(cc.nome, i.centro_custo_nome, 'Centro de Custo') as centro_custo_nome,
+        COALESCE(u.nome, i.usuario_nome, 'Usuário do Sistema') as usuario_nome,
         (SELECT COUNT(*) FROM itens_inventario ii WHERE ii.inventario_id = i.id) as total_itens
       FROM inventarios_estoque i
       LEFT JOIN empresas_unidades e ON i.empresa_id = e.id
-      JOIN centros_custo cc ON i.centro_custo_id = cc.id
-      JOIN usuarios u ON i.usuario_id = u.id
+      LEFT JOIN centros_custo cc ON i.centro_custo_id = cc.id
+      LEFT JOIN usuarios u ON i.usuario_id = u.id
       WHERE 1=1
     `;
     const params: any[] = [];
@@ -7317,13 +7317,13 @@ apiRouter.get('/inventarios/:id', (req, res) => {
         i.*,
         COALESCE(e.codigo, '001') as empresa_codigo,
         COALESCE(e.nome, 'Almoxarifado Central') as empresa_nome,
-        cc.codigo as centro_custo_codigo,
-        cc.nome as centro_custo_nome,
-        u.nome as usuario_nome
+        COALESCE(cc.codigo, i.centro_custo_codigo, '') as centro_custo_codigo,
+        COALESCE(cc.nome, i.centro_custo_nome, 'Centro de Custo') as centro_custo_nome,
+        COALESCE(u.nome, i.usuario_nome, 'Usuário do Sistema') as usuario_nome
       FROM inventarios_estoque i
       LEFT JOIN empresas_unidades e ON i.empresa_id = e.id
-      JOIN centros_custo cc ON i.centro_custo_id = cc.id
-      JOIN usuarios u ON i.usuario_id = u.id
+      LEFT JOIN centros_custo cc ON i.centro_custo_id = cc.id
+      LEFT JOIN usuarios u ON i.usuario_id = u.id
       WHERE i.id = ?
     `).get(invId) as any;
 
@@ -7588,21 +7588,32 @@ apiRouter.post('/inventarios', (req, res) => {
 
   try {
     const result = runInTransaction(() => {
+      // Busca dados do Centro de Custo para armazenar cópias seguras
+      const ccRow = db.prepare('SELECT codigo, nome, empresa_id FROM centros_custo WHERE id = ?').get(Number(centro_custo_id)) as any;
+      const ccCodigo = ccRow?.codigo || null;
+      const ccNome = ccRow?.nome || null;
+      const empId = ccRow?.empresa_id || 1;
+      const uNome = user.nome || null;
+
       // Insere o inventário
       const info = db.prepare(`
         INSERT INTO inventarios_estoque (
-          codigo, data, hora, centro_custo_id,
-          zera_por_lote, zera_nao_listados, observacao, finalizado, usuario_id
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?)
+          codigo, data, hora, empresa_id, centro_custo_id, centro_custo_codigo, centro_custo_nome,
+          zera_por_lote, zera_nao_listados, observacao, finalizado, usuario_id, usuario_nome
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
       `).run(
         codFinal,
         dtFinal,
         hrFinal,
+        empId,
         Number(centro_custo_id),
+        ccCodigo,
+        ccNome,
         zera_por_lote ? 1 : 0,
         zera_nao_listados ? 1 : 0,
         observacao || null,
-        user.id
+        user.id,
+        uNome
       );
 
       const invId = Number(info.lastInsertRowid);
@@ -7684,11 +7695,23 @@ apiRouter.put('/inventarios/:id', (req, res) => {
 
   try {
     runInTransaction(() => {
+      let ccCodigo = existing.centro_custo_codigo;
+      let ccNome = existing.centro_custo_nome;
+      if (centro_custo_id && Number(centro_custo_id) !== existing.centro_custo_id) {
+        const ccRow = db.prepare('SELECT codigo, nome FROM centros_custo WHERE id = ?').get(Number(centro_custo_id)) as any;
+        if (ccRow) {
+          ccCodigo = ccRow.codigo;
+          ccNome = ccRow.nome;
+        }
+      }
+
       db.prepare(`
         UPDATE inventarios_estoque
         SET data = COALESCE(?, data),
             hora = COALESCE(?, hora),
             centro_custo_id = COALESCE(?, centro_custo_id),
+            centro_custo_codigo = ?,
+            centro_custo_nome = ?,
             zera_por_lote = ?,
             zera_nao_listados = ?,
             observacao = ?
@@ -7697,6 +7720,8 @@ apiRouter.put('/inventarios/:id', (req, res) => {
         data || null,
         hora || null,
         centro_custo_id ? Number(centro_custo_id) : null,
+        ccCodigo,
+        ccNome,
         zera_por_lote ? 1 : 0,
         zera_nao_listados ? 1 : 0,
         observacao !== undefined ? observacao : existing.observacao,

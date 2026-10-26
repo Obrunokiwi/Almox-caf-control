@@ -161,6 +161,16 @@ export const InventarioView: React.FC<InventarioViewProps> = ({
   const [isConfirmFecharModalOpen, setIsConfirmFecharModalOpen] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
 
+  // Helper para headers autenticados com token e sigla da área ativa
+  const getAuthHeaders = useCallback(() => {
+    const token = sessionStorage.getItem('multi_almox_token') || localStorage.getItem('multi_almox_token') || localStorage.getItem('token') || `user:${currentUser?.id || 1}`;
+    const areaSigla = sessionStorage.getItem('multi_almox_area_sigla') || localStorage.getItem('multi_almox_area_sigla') || currentUser?.area_sigla || 'ALM';
+    return {
+      'Authorization': token.startsWith('user:') ? token : `Bearer ${token}`,
+      'X-Area-Sigla': areaSigla,
+    };
+  }, [currentUser?.id, currentUser?.area_sigla]);
+
   // Carrega listagem de inventários do servidor
   const carregarInventarios = useCallback(async () => {
     setIsLoading(true);
@@ -173,20 +183,21 @@ export const InventarioView: React.FC<InventarioViewProps> = ({
       if (filtroCentroCustoId) params.append('centro_custo_id', filtroCentroCustoId);
 
       const res = await fetch(`/api/inventarios?${params.toString()}`, {
-        headers: { 'Authorization': `user:${currentUser.id}` }
+        headers: getAuthHeaders(),
       });
       if (res.ok) {
         const data = await res.json();
         setInventarios(data);
       } else {
-        toast.error('Erro', 'Não foi possível carregar os inventários.');
+        const errData = await res.json().catch(() => ({}));
+        toast.error('Erro ao Carregar', errData.error || 'Não foi possível carregar os inventários.');
       }
     } catch {
       toast.error('Falha de Rede', 'Erro de conexão com o servidor.');
     } finally {
       setIsLoading(false);
     }
-  }, [filtroCodigo, filtroDataInicio, filtroDataFim, filtroFinalizado, filtroCentroCustoId, currentUser.id, toast]);
+  }, [filtroCodigo, filtroDataInicio, filtroDataFim, filtroFinalizado, filtroCentroCustoId, getAuthHeaders, toast]);
 
   useEffect(() => {
     carregarInventarios();
@@ -227,7 +238,7 @@ export const InventarioView: React.FC<InventarioViewProps> = ({
     // Obtém sugestão de código do backend
     try {
       const codRes = await fetch('/api/inventarios/sugestao-codigo', {
-        headers: { 'Authorization': `user:${currentUser.id}` }
+        headers: getAuthHeaders(),
       });
       if (codRes.ok) {
         const codData = await codRes.json();
@@ -242,7 +253,7 @@ export const InventarioView: React.FC<InventarioViewProps> = ({
     // Carrega itens base de produtos e lotes
     try {
       const itemsRes = await fetch('/api/inventarios/itens-base', {
-        headers: { 'Authorization': `user:${currentUser.id}` }
+        headers: getAuthHeaders(),
       });
       if (itemsRes.ok) {
         const itemsData = await itemsRes.json();
@@ -275,7 +286,7 @@ export const InventarioView: React.FC<InventarioViewProps> = ({
 
     try {
       const res = await fetch(`/api/inventarios/${inv.id}`, {
-        headers: { 'Authorization': `user:${currentUser.id}` }
+        headers: getAuthHeaders(),
       });
       if (res.ok) {
         const data = await res.json();
@@ -407,7 +418,7 @@ export const InventarioView: React.FC<InventarioViewProps> = ({
         method,
         headers: {
           'Content-Type': 'application/json',
-          'Authorization': `user:${currentUser.id}`,
+          ...getAuthHeaders(),
         },
         body: JSON.stringify(payload),
       });
@@ -443,7 +454,7 @@ export const InventarioView: React.FC<InventarioViewProps> = ({
     try {
       const res = await fetch(`/api/inventarios/${id}`, {
         method: 'DELETE',
-        headers: { 'Authorization': `user:${currentUser.id}` },
+        headers: getAuthHeaders(),
       });
       if (res.ok) {
         toast.success('Excluído', 'Inventário em rascunho excluído com sucesso.');

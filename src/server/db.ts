@@ -609,16 +609,91 @@ function migrateAreaDb(areaDb: DatabaseSync, areaSigla: string, dbFilePath: stri
       appliedMigrations++;
     }
 
-    // 9. Índices de performance essenciais (Kardex, Notas Fiscais e Movimentações)
+    // 9. Verificação e adição idempotente de colunas na tabela 'inventarios_estoque'
+    const invCols = new Set((areaDb.prepare("PRAGMA table_info('inventarios_estoque')").all() as Array<{ name: string }>).map((c) => c.name));
+    if (!invCols.has('empresa_id')) {
+      areaDb.exec('ALTER TABLE inventarios_estoque ADD COLUMN empresa_id INTEGER REFERENCES empresas_unidades(id) ON DELETE SET NULL;');
+      appliedMigrations++;
+    }
+    if (!invCols.has('area_id')) {
+      areaDb.exec('ALTER TABLE inventarios_estoque ADD COLUMN area_id INTEGER DEFAULT 1;');
+      appliedMigrations++;
+    }
+    if (!invCols.has('centro_custo_nome')) {
+      areaDb.exec('ALTER TABLE inventarios_estoque ADD COLUMN centro_custo_nome TEXT;');
+      appliedMigrations++;
+    }
+    if (!invCols.has('centro_custo_codigo')) {
+      areaDb.exec('ALTER TABLE inventarios_estoque ADD COLUMN centro_custo_codigo TEXT;');
+      appliedMigrations++;
+    }
+    if (!invCols.has('usuario_nome')) {
+      areaDb.exec('ALTER TABLE inventarios_estoque ADD COLUMN usuario_nome TEXT;');
+      appliedMigrations++;
+    }
+    if (!invCols.has('observacao')) {
+      areaDb.exec('ALTER TABLE inventarios_estoque ADD COLUMN observacao TEXT;');
+      appliedMigrations++;
+    }
+    if (!invCols.has('zera_por_lote')) {
+      areaDb.exec('ALTER TABLE inventarios_estoque ADD COLUMN zera_por_lote INTEGER DEFAULT 0;');
+      appliedMigrations++;
+    }
+    if (!invCols.has('zera_nao_listados')) {
+      areaDb.exec('ALTER TABLE inventarios_estoque ADD COLUMN zera_nao_listados INTEGER DEFAULT 0;');
+      appliedMigrations++;
+    }
+    if (!invCols.has('finalizado')) {
+      areaDb.exec('ALTER TABLE inventarios_estoque ADD COLUMN finalizado INTEGER DEFAULT 0;');
+      appliedMigrations++;
+    }
+
+    // 10. Verificação e adição idempotente de colunas na tabela 'itens_inventario'
+    const itemInvCols = new Set((areaDb.prepare("PRAGMA table_info('itens_inventario')").all() as Array<{ name: string }>).map((c) => c.name));
+    if (!itemInvCols.has('lote_id')) {
+      areaDb.exec('ALTER TABLE itens_inventario ADD COLUMN lote_id INTEGER REFERENCES lotes_estoque(id) ON DELETE SET NULL;');
+      appliedMigrations++;
+    }
+    if (!itemInvCols.has('numero_lote')) {
+      areaDb.exec('ALTER TABLE itens_inventario ADD COLUMN numero_lote TEXT;');
+      appliedMigrations++;
+    }
+    if (!itemInvCols.has('data_validade')) {
+      areaDb.exec('ALTER TABLE itens_inventario ADD COLUMN data_validade DATE;');
+      appliedMigrations++;
+    }
+    if (!itemInvCols.has('quantidade_sistema')) {
+      areaDb.exec('ALTER TABLE itens_inventario ADD COLUMN quantidade_sistema REAL NOT NULL DEFAULT 0;');
+      appliedMigrations++;
+    }
+    if (!itemInvCols.has('quantidade_fisica')) {
+      areaDb.exec('ALTER TABLE itens_inventario ADD COLUMN quantidade_fisica REAL NOT NULL DEFAULT 0;');
+      appliedMigrations++;
+    }
+    if (!itemInvCols.has('diferenca')) {
+      areaDb.exec('ALTER TABLE itens_inventario ADD COLUMN diferenca REAL NOT NULL DEFAULT 0;');
+      appliedMigrations++;
+    }
+
+    // 11. Índices de performance essenciais (Kardex, Notas Fiscais, Movimentações e Inventários)
     areaDb.exec(`
       CREATE INDEX IF NOT EXISTS idx_movimentacoes_prod_data ON movimentacoes (produto_id, data_movimentacao);
       CREATE INDEX IF NOT EXISTS idx_movimentacoes_nf ON movimentacoes (nota_fiscal_id);
       CREATE INDEX IF NOT EXISTS idx_movimentacoes_req ON movimentacoes (requisicao_id);
       CREATE INDEX IF NOT EXISTS idx_movimentacoes_cons ON movimentacoes (consumo_id);
       CREATE INDEX IF NOT EXISTS idx_itens_req_lote ON itens_requisicao (lote_id);
+      CREATE INDEX IF NOT EXISTS idx_inventarios_codigo ON inventarios_estoque (codigo);
+      CREATE INDEX IF NOT EXISTS idx_inventarios_empresa ON inventarios_estoque (empresa_id);
+      CREATE INDEX IF NOT EXISTS idx_inventarios_area ON inventarios_estoque (area_id);
+      CREATE INDEX IF NOT EXISTS idx_inventarios_data ON inventarios_estoque (data);
+      CREATE INDEX IF NOT EXISTS idx_inventarios_centro_custo ON inventarios_estoque (centro_custo_id);
+      CREATE INDEX IF NOT EXISTS idx_inventarios_finalizado ON inventarios_estoque (finalizado);
+      CREATE INDEX IF NOT EXISTS idx_itens_inv_inventario ON itens_inventario (inventario_id);
+      CREATE INDEX IF NOT EXISTS idx_itens_inv_produto ON itens_inventario (produto_id);
+      CREATE INDEX IF NOT EXISTS idx_itens_inv_lote ON itens_inventario (lote_id);
     `);
 
-    // 10. Atualiza user_version
+    // 12. Atualiza user_version
     const currVer = (areaDb.prepare('PRAGMA user_version;').get() as any)?.user_version || 0;
     if (currVer < 3) {
       areaDb.exec('PRAGMA user_version = 3;');
