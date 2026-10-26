@@ -7948,6 +7948,137 @@ apiRouter.get('/kardex', (req, res) => {
   }
 });
 
+// Relatório Geral de Movimentações por Período (Todos os Produtos Movimentados)
+apiRouter.get('/kardex/geral', (req, res) => {
+  const user = authenticateRequest(req);
+  if (!user || user.perfil === 'requisitante') {
+    res.status(403).json({ error: 'Acesso restrito. Requisitantes não possuem autorização para visualizar o Kardex de estoque.' });
+    return;
+  }
+
+  const { data_inicio, data_fim } = req.query;
+
+  const hoje = new Date();
+  const data30DiasAtras = new Date(hoje.getTime() - 30 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+  const dataHojeStr = hoje.toISOString().slice(0, 10);
+
+  const dtIniStr = data_inicio && String(data_inicio).trim() ? String(data_inicio).trim() : data30DiasAtras;
+  const dtFimStr = data_fim && String(data_fim).trim() ? String(data_fim).trim() : dataHojeStr;
+
+  const startTs = `${dtIniStr} 00:00:00`;
+  const endTs = `${dtFimStr} 23:59:59`;
+
+  try {
+    const produtoIdsMov = db.prepare(`
+      SELECT DISTINCT produto_id
+      FROM movimentacoes
+      WHERE datetime(data_movimentacao) >= datetime(?)
+        AND datetime(data_movimentacao) <= datetime(?)
+    `).all(startTs, endTs) as Array<{ produto_id: number }>;
+
+    const ids = produtoIdsMov.map((r) => r.produto_id);
+    if (ids.length === 0) {
+      res.json({ periodo: { data_inicio: dtIniStr, data_fim: dtFimStr }, total_produtos: 0, produtos: [] });
+      return;
+    }
+
+    const placeholders = ids.map(() => '?').join(',');
+    const produtosMovimentados = db.prepare(`
+      SELECT id, codigo, nome, unidade_medida, tipo, quantidade_atual
+      FROM produtos
+      WHERE id IN (${placeholders})
+      ORDER BY nome ASC
+    `).all(...ids) as any[];
+
+    const resultadoProdutos = [];
+
+    for (const prod of produtosMovimentados) {
+      const sumEntradasAntes = db.prepare(`
+        SELECT COALESCE(SUM(quantidade), 0) as total
+        FROM movimentacoes
+        WHERE produto_id = ? AND tipo IN ('entrada', 'estorno_saida')
+          AND datetime(data_movimentacao) < datetime(?)
+      `).get(prod.id, startTs) as { total: number };
+
+      const sumSaidasAntes = db.prepare(`
+        SELECT COALESCE(SUM(quantidade), 0) as total
+        FROM movimentacoes
+        WHERE produto_id = ? AND tipo IN ('saida', 'estorno_entrada')
+          AND datetime(data_movimentacao) < datetime(?)
+      `).get(prod.id, startTs) as { total: number };
+
+      const saldoInicial = Number(sumEntradasAntes.total || 0) - Number(sumSaidasAntes.total || 0);
+
+      const movs = db.prepare(`
+        SELECT m.id, m.tipo, m.motivo_diverso, m.quantidade, m.documento_referencia,
+               m.numero_lote, m.data_validade, m.valor_unitario, m.observacao, m.data_movimentacao,
+               u.nome as usuario_nome, cc.nome as centro_custo_nome, f.razao_social as fornecedor_nome
+        FROM movimentacoes m
+        JOIN usuarios u ON m.usuario_id = u.id
+        LEFT JOIN centros_custo cc ON m.centro_custo_id = cc.id
+        LEFT JOIN fornecedores f ON m.fornecedor_id = f.id
+        WHERE m.produto_id = ?
+          AND datetime(m.data_movimentacao) >= datetime(?)
+          AND datetime(m.data_movimentacao) <= datetime(?)
+        ORDER BY datetime(m.data_movimentacao) ASC, m.id ASC
+      `).all(prod.id, startTs, endTs) as any[];
+
+      let runningSaldo = saldoInicial;
+      let totalEntradas = 0;
+      let totalSaidas = 0;
+
+      const movimentacoesProcessadas = movs.map((m) => {
+        const qtd = Number(m.quantidade || 0);
+        let entrada = 0;
+        let saida = 0;
+
+        if (['entrada', 'estorno_saida'].includes(m.tipo)) {
+          entrada = qtd;
+          totalEntradas += qtd;
+          runningSaldo += qtd;
+        } else {
+          saida = qtd;
+          totalSaidas += qtd;
+          runningSaldo -= qtd;
+        }
+
+        let dataFormatada = m.data_movimentacao;
+        try {
+          const d = new Date(m.data_movimentacao);
+          if (!isNaN(d.getTime())) {
+            dataFormatada = d.toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo' });
+          }
+        } catch {}
+
+        return {
+          ...m,
+          entrada,
+          saida,
+          saldo_apos: runningSaldo,
+          data_hora_formatada: dataFormatada,
+        };
+      });
+
+      resultadoProdutos.push({
+        produto: prod,
+        saldo_inicial: saldoInicial,
+        total_entradas: totalEntradas,
+        total_saidas: totalSaidas,
+        saldo_final: runningSaldo,
+        movimentacoes: movimentacoesProcessadas,
+      });
+    }
+
+    res.json({
+      periodo: { data_inicio: dtIniStr, data_fim: dtFimStr },
+      total_produtos: resultadoProdutos.length,
+      produtos: resultadoProdutos,
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: 'Erro ao gerar relatório geral de Kardex: ' + err.message });
+  }
+});
+
 // ============================================================================
 // 10.2 MÓDULO LISTA DE COMPRAS / REPOSIÇÃO DE ESTOQUE
 // ============================================================================
