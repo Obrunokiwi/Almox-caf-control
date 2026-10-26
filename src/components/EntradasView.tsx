@@ -1021,7 +1021,7 @@ export const EntradasView: React.FC<EntradasViewProps> = ({
       {/* ========================================================================= */}
       {selectedNotaId && detalheNota && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-slate-900/60 backdrop-blur-xs overflow-y-auto animate-fadeIn">
-          <div className="bg-white rounded-2xl border border-slate-200 shadow-2xl w-full max-w-5xl overflow-hidden my-auto max-h-[92vh] flex flex-col">
+          <div className="bg-white rounded-2xl border border-slate-200 shadow-2xl w-full max-w-5xl overflow-visible my-auto max-h-[92vh] flex flex-col">
             {/* Cabeçalho do Modal */}
             <div className="px-6 py-4 bg-slate-50 border-b border-slate-200 flex items-center justify-between shrink-0">
               <div className="flex items-center gap-3">
@@ -1549,7 +1549,7 @@ export const EntradasView: React.FC<EntradasViewProps> = ({
       {/* ========================================================================= */}
       {isNewNotaOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-slate-900/60 backdrop-blur-xs overflow-y-auto animate-fadeIn">
-          <div className="bg-white rounded-2xl border border-slate-200 shadow-2xl w-full max-w-4xl overflow-hidden my-auto max-h-[92vh] flex flex-col">
+          <div className="bg-white rounded-2xl border border-slate-200 shadow-2xl w-full max-w-4xl overflow-visible my-auto max-h-[92vh] flex flex-col">
             <div className="px-6 py-4 bg-slate-50 border-b border-slate-200 flex items-center justify-between shrink-0">
               <div className="flex items-center gap-2.5">
                 <div className="p-2 bg-teal-100 text-teal-800 rounded-lg">

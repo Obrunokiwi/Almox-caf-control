@@ -1513,7 +1513,7 @@ export const RequisicoesView: React.FC<RequisicoesViewProps> = ({
          ========================================================================= */}
       {selectedReq && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4 animate-fadeIn">
-          <div className="bg-white rounded-xl shadow-2xl border border-slate-300 w-full max-w-5xl max-h-[92vh] flex flex-col overflow-hidden">
+          <div className="bg-white rounded-xl shadow-2xl border border-slate-300 w-full max-w-5xl max-h-[92vh] flex flex-col overflow-visible">
             <div className="px-6 py-4 bg-slate-100 border-b border-slate-200 flex items-center justify-between">
               <div>
                 <span className="text-[10px] font-bold uppercase tracking-wider bg-teal-100 text-teal-800 px-2 py-0.5 rounded">

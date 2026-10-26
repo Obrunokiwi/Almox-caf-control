@@ -745,7 +745,7 @@ export const SaldoEstoqueView: React.FC<SaldoEstoqueViewProps> = ({
       {/* Modal de Extrato de Movimentações do Produto */}
       {extratoProduto && (
         <div className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-4">
-          <div className="bg-white rounded-xl shadow-2xl max-w-4xl w-full max-h-[90vh] flex flex-col overflow-hidden animate-scaleUp">
+          <div className="bg-white rounded-xl shadow-2xl max-w-4xl w-full max-h-[90vh] flex flex-col overflow-visible animate-scaleUp">
             <div className="p-4 bg-slate-900 text-white flex items-center justify-between">
               <div className="flex items-center gap-2">
                 <History className="w-5 h-5 text-teal-400" />

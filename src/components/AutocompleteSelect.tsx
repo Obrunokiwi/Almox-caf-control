@@ -356,10 +356,10 @@ export const AutocompleteSelect: React.FC<AutocompleteSelectProps> = ({
         {/* Dropdown Painel Absoluto Ancorado */}
         {isOpen && !disabled && (
           <div
-            className={`absolute z-50 ${alignRight ? 'right-0' : 'left-0'} min-w-full w-max max-w-[92vw] sm:max-w-[620px] bg-white border border-slate-300 rounded-xl shadow-2xl overflow-hidden text-slate-800 flex flex-col animate-fadeIn ${
+            className={`absolute z-50 ${alignRight ? 'right-0' : 'left-0'} w-full sm:min-w-[500px] md:min-w-[600px] max-w-[92vw] bg-white border border-slate-300 rounded-xl shadow-2xl text-slate-800 flex flex-col animate-fadeIn ${
               openUpwards ? 'bottom-full mb-1.5' : 'top-full mt-1.5'
             }`}
-            style={{ maxHeight: '340px' }}
+            style={{ maxHeight: '360px' }}
           >
             {/* Cabeçalho do painel se houver busca ativa */}
             {searchTerm && (
