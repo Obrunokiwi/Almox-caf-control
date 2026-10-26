@@ -214,6 +214,303 @@ function parseValidadeValue(raw: any): { iso: string | null; formatted: string }
   return { iso: null, formatted: str };
 }
 
+interface RawFornecedorRowData {
+  linha: number;
+  codigo: string;
+  razao_social: string;
+  nome_fantasia?: string;
+  cnpj?: string;
+  telefone?: string;
+  email?: string;
+  endereco?: string;
+  cidade?: string;
+  uf?: string;
+  inscricao_estadual?: string;
+  contato_responsavel?: string;
+  observacoes?: string;
+  tipo_entidade: 'fornecedor_comercial' | 'entidade_parceira';
+}
+
+// Parser especializado para relatórios organizados em blocos (ex: RELAÇÃO DE FORNECEDORES)
+function parseRelacaoFornecedores(rawRows: any[][]): RawFornecedorRowData[] {
+  const items: RawFornecedorRowData[] = [];
+  let cur: {
+    linha: number;
+    codigo: string;
+    razao_social: string;
+    nome_fantasia?: string;
+    cnpj?: string;
+    telefone?: string;
+    email?: string;
+    logradouro?: string;
+    bairro?: string;
+    cep?: string;
+    cidade?: string;
+    uf?: string;
+    inscricao_estadual?: string;
+    contato_responsavel?: string;
+    bancoInfo?: string;
+  } | null = null;
+
+  let startedFornecedoresSection = false;
+
+  const flushCurrent = () => {
+    if (!cur || !cur.codigo) return;
+    let fullEndereco = cur.logradouro ? cur.logradouro.trim() : '';
+    if (cur.bairro && cur.bairro.trim()) {
+      fullEndereco = fullEndereco ? `${fullEndereco} - Bairro: ${cur.bairro.trim()}` : `Bairro: ${cur.bairro.trim()}`;
+    }
+    if (cur.cep && cur.cep.trim()) {
+      fullEndereco = fullEndereco ? `${fullEndereco} - CEP: ${cur.cep.trim()}` : `CEP: ${cur.cep.trim()}`;
+    }
+
+    items.push({
+      linha: cur.linha,
+      codigo: cur.codigo.trim(),
+      razao_social: cur.razao_social.trim(),
+      nome_fantasia: cur.nome_fantasia?.trim() || undefined,
+      cnpj: cur.cnpj?.trim() || undefined,
+      telefone: cur.telefone?.trim() || undefined,
+      email: cur.email?.trim() || undefined,
+      endereco: fullEndereco || undefined,
+      cidade: cur.cidade?.trim() || undefined,
+      uf: cur.uf?.trim().toUpperCase() || undefined,
+      inscricao_estadual: cur.inscricao_estadual?.trim() || undefined,
+      contato_responsavel: cur.contato_responsavel?.trim() || undefined,
+      observacoes: cur.bancoInfo?.trim() || undefined,
+      tipo_entidade: 'fornecedor_comercial',
+    });
+  };
+
+  for (let r = 0; r < rawRows.length; r++) {
+    const row = rawRows[r];
+    if (!row || row.length === 0) continue;
+
+    const line = row
+      .map((c) => (c !== null && c !== undefined ? String(c).trim() : ''))
+      .filter(Boolean)
+      .join(' ')
+      .replace(/\s+/g, ' ');
+
+    if (!line) continue;
+
+    // Detecta início de um novo bloco de fornecedor
+    // Ex: "FORNECEDOR: 303 - 1000 MARCAS SAFETY BRASIL LTDA" ou "FORNECEDOR: 5 - AABA COMERCIO..."
+    const fornMatch = line.match(/FORNECEDOR:\s*([A-Za-z0-9_\.\-\/]+)\s*[-–]\s*(.+)$/i);
+    const fornMatchAlt = !fornMatch ? line.match(/FORNECEDOR:\s*([A-Za-z0-9_\.\-\/]+)(?:\s+(.+))?$/i) : null;
+
+    if (fornMatch || fornMatchAlt) {
+      flushCurrent();
+      startedFornecedoresSection = true;
+
+      const cod = fornMatch ? fornMatch[1] : fornMatchAlt![1];
+      const nome = fornMatch ? fornMatch[2] : (fornMatchAlt![2] || '');
+
+      cur = {
+        linha: r + 1,
+        codigo: cod,
+        razao_social: nome,
+      };
+      continue;
+    }
+
+    // Se ainda não alcançou o primeiro FORNECEDOR:, pula o cabeçalho institucional do relatório
+    if (!startedFornecedoresSection || !cur) continue;
+
+    // 1. ENDEREÇO & BAIRRO
+    if (/ENDEREC/i.test(line)) {
+      const endMatch = line.match(/ENDEREC[OÇ\:]*\s*([^]+?)(?=\s+BAIRRO:|\s+CEP:|\s+CIDADE:|$)/i);
+      if (endMatch && endMatch[1].trim()) {
+        cur.logradouro = endMatch[1].trim();
+      }
+      const bairroMatch = line.match(/BAIRRO:\s*([^]+?)(?=\s+CEP:|\s+CIDADE:|$)/i);
+      if (bairroMatch && bairroMatch[1].trim()) {
+        cur.bairro = bairroMatch[1].trim();
+      }
+    }
+
+    // 2. CIDADE, UF, CEP
+    if (/CIDADE:/i.test(line)) {
+      const cidMatch = line.match(/CIDADE:\s*([^]+?)(?=\s+CEP:|\s+BAIRRO:|$)/i);
+      if (cidMatch && cidMatch[1].trim()) {
+        const rawLoc = cidMatch[1].trim();
+        if (rawLoc.includes('/')) {
+          const parts = rawLoc.split('/');
+          cur.cidade = parts[0].trim();
+          cur.uf = parts[1].trim().slice(0, 2).toUpperCase();
+        } else {
+          cur.cidade = rawLoc;
+        }
+      }
+    }
+
+    if (/CEP:/i.test(line)) {
+      const cepMatch = line.match(/CEP:\s*([0-9\.\-]+)/i);
+      if (cepMatch && cepMatch[1].trim()) {
+        cur.cep = cepMatch[1].trim();
+      }
+    }
+
+    // 3. TELEFONE, CONTATO, EMAIL
+    if (/TELEFON/i.test(line) || /CONTATO/i.test(line) || /EMAIL:/i.test(line)) {
+      const telMatch = line.match(/TELEFON[E\:]*\s*([\(\)0-9\s\.\-\/]+?)(?=\s+CONTATO|\s+EMAIL:|\s+CNPJ:|$)/i);
+      if (telMatch && telMatch[1].trim()) {
+        cur.telefone = telMatch[1].trim();
+      }
+
+      const contatoMatch = line.match(/CONTATO[\:\s]+([^]+?)(?=\s+EMAIL:|\s+TELEFON|\s+TEL:|\s+CNPJ:|$)/i);
+      if (contatoMatch && contatoMatch[1].trim()) {
+        cur.contato_responsavel = contatoMatch[1].trim();
+      }
+
+      const emailMatch = line.match(/EMAIL:\s*([^\s]+@[^\s]+|[a-zA-Z0-9\.\-\_\+]+@[a-zA-Z0-9\.\-\_]+)/i);
+      if (emailMatch && emailMatch[1].trim()) {
+        cur.email = emailMatch[1].trim();
+      }
+    }
+
+    // 4. CNPJ se presente no bloco do fornecedor
+    if (/CNPJ:/i.test(line)) {
+      const cnpjMatch = line.match(/CNPJ:\s*([0-9\.\-\/]{11,18})/i);
+      if (cnpjMatch && cnpjMatch[1].trim()) {
+        cur.cnpj = cnpjMatch[1].trim();
+      }
+    }
+
+    // 5. BANCO / AGÊNCIA / CONTA (salva nas observações)
+    if (/BANCO:/i.test(line)) {
+      const bMatch = line.match(/BANCO:\s*([^]+?)(?=\s+AGENCIA:|\s+AGÊNCIA:|$)/i);
+      const agMatch = line.match(/AG[EÊ]NCIA:\s*([^]+?)(?=\s+CONTA:|$)/i);
+      const ctaMatch = line.match(/CONTA:\s*([^]+?)$/i);
+      const bVal = bMatch ? bMatch[1].trim() : '';
+      const agVal = agMatch ? agMatch[1].trim() : '';
+      const ctaVal = ctaMatch ? ctaMatch[1].trim() : '';
+      const bancoPartes: string[] = [];
+      if (bVal) bancoPartes.push(`Banco: ${bVal}`);
+      if (agVal) bancoPartes.push(`Agência: ${agVal}`);
+      if (ctaVal) bancoPartes.push(`Conta: ${ctaVal}`);
+      if (bancoPartes.length > 0) {
+        cur.bancoInfo = bancoPartes.join(' | ');
+      }
+    }
+  }
+
+  flushCurrent();
+  return items;
+}
+
+// Parser para planilhas tabulares padrão com colunas lineares
+function parseTabularFornecedores(rawRows: any[][]): RawFornecedorRowData[] {
+  let colCod = -1;
+  let colNome = -1;
+  let colFantasia = -1;
+  let colCnpj = -1;
+  let colTel = -1;
+  let colEmail = -1;
+  let colEnd = -1;
+  let colCid = -1;
+  let colUf = -1;
+  let colIe = -1;
+  let colTipo = -1;
+  let colContato = -1;
+
+  let startRow = 0;
+
+  for (let r = 0; r < Math.min(10, rawRows.length); r++) {
+    const row = rawRows[r];
+    if (!row) continue;
+    let hits = 0;
+    for (let c = 0; c < row.length; c++) {
+      const v = String(row[c] || '').toUpperCase().trim();
+      if (v === 'COD' || v === 'CODIGO' || v === 'CÓDIGO' || v === 'ID') {
+        colCod = c;
+        hits++;
+      } else if (v.includes('RAZAO') || v.includes('RAZÃO') || v === 'NOME' || v === 'FORNECEDOR') {
+        colNome = c;
+        hits++;
+      } else if (v.includes('FANTASIA')) {
+        colFantasia = c;
+        hits++;
+      } else if (v.includes('CNPJ') || v.includes('CPF')) {
+        colCnpj = c;
+        hits++;
+      } else if (v.includes('TEL') || v.includes('FONE')) {
+        colTel = c;
+        hits++;
+      } else if (v.includes('EMAIL') || v.includes('E-MAIL')) {
+        colEmail = c;
+        hits++;
+      } else if (v.includes('END') || v.includes('LOGRADOURO')) {
+        colEnd = c;
+        hits++;
+      } else if (v.includes('CIDADE') || v.includes('MUNICIPIO')) {
+        colCid = c;
+        hits++;
+      } else if (v === 'UF' || v === 'ESTADO') {
+        colUf = c;
+        hits++;
+      } else if (v.includes('INSCRIC') || v === 'IE') {
+        colIe = c;
+        hits++;
+      } else if (v.includes('TIPO')) {
+        colTipo = c;
+        hits++;
+      } else if (v.includes('CONTATO') || v.includes('RESP')) {
+        colContato = c;
+        hits++;
+      }
+    }
+
+    if (hits >= 2) {
+      startRow = r + 1;
+      break;
+    }
+  }
+
+  if (colCod === -1) colCod = 0;
+  if (colNome === -1) colNome = 1;
+
+  const items: RawFornecedorRowData[] = [];
+
+  for (let r = startRow; r < rawRows.length; r++) {
+    const row = rawRows[r];
+    if (!row) continue;
+
+    const rawCod = String(row[colCod] !== undefined ? row[colCod] : '').trim();
+    const rawNome = String(row[colNome] !== undefined ? row[colNome] : '').trim();
+    const rawFantasia = colFantasia >= 0 ? String(row[colFantasia] || '').trim() : '';
+    const rawCnpj = colCnpj >= 0 ? String(row[colCnpj] || '').trim() : '';
+    const rawTel = colTel >= 0 ? String(row[colTel] || '').trim() : '';
+    const rawEmail = colEmail >= 0 ? String(row[colEmail] || '').trim() : '';
+    const rawEnd = colEnd >= 0 ? String(row[colEnd] || '').trim() : '';
+    const rawCid = colCid >= 0 ? String(row[colCid] || '').trim() : '';
+    const rawUf = colUf >= 0 ? String(row[colUf] || '').trim().toUpperCase() : '';
+    const rawIe = colIe >= 0 ? String(row[colIe] || '').trim() : '';
+    const rawTipoStr = colTipo >= 0 ? String(row[colTipo] || '').trim().toLowerCase() : '';
+    const rawContato = colContato >= 0 ? String(row[colContato] || '').trim() : '';
+
+    if (!rawCod && !rawNome) continue;
+
+    items.push({
+      linha: r + 1,
+      codigo: rawCod,
+      razao_social: rawNome,
+      nome_fantasia: rawFantasia || undefined,
+      cnpj: rawCnpj || undefined,
+      telefone: rawTel || undefined,
+      email: rawEmail || undefined,
+      endereco: rawEnd || undefined,
+      cidade: rawCid || undefined,
+      uf: rawUf || undefined,
+      inscricao_estadual: rawIe || undefined,
+      contato_responsavel: rawContato || undefined,
+      tipo_entidade: rawTipoStr.includes('parceir') ? 'entidade_parceira' : 'fornecedor_comercial',
+    });
+  }
+
+  return items;
+}
+
 export const ImportacaoCadastrosView: React.FC<ImportacaoCadastrosViewProps> = ({
   currentUser,
   onRefresh,
@@ -677,118 +974,32 @@ export const ImportacaoCadastrosView: React.FC<ImportacaoCadastrosViewProps> = (
           return;
         }
 
-        // Detecta cabeçalhos da planilha
-        let colCod = -1;
-        let colNome = -1;
-        let colFantasia = -1;
-        let colCnpj = -1;
-        let colTel = -1;
-        let colEmail = -1;
-        let colEnd = -1;
-        let colCid = -1;
-        let colUf = -1;
-        let colIe = -1;
-        let colTipo = -1;
-        let colContato = -1;
+        // Detecta se o arquivo é um relatório estruturado em blocos (ex: RELAÇÃO DE FORNECEDORES)
+        // ou se é uma planilha tabular linear (cabeçalhos em colunas)
+        const isReportFormat = rawRows.some((row) =>
+          row.some((cell) => {
+            const s = String(cell || '').toUpperCase();
+            return (
+              s.includes('FORNECEDOR:') ||
+              s.includes('RELACAO DE FORNECEDORES') ||
+              s.includes('RELAÇÃO DE FORNECEDORES')
+            );
+          })
+        );
 
-        let startRow = 0;
+        const rawList = isReportFormat
+          ? parseRelacaoFornecedores(rawRows)
+          : parseTabularFornecedores(rawRows);
 
-        for (let r = 0; r < Math.min(10, rawRows.length); r++) {
-          const row = rawRows[r];
-          if (!row) continue;
-          let hits = 0;
-          for (let c = 0; c < row.length; c++) {
-            const v = String(row[c] || '').toUpperCase().trim();
-            if (v === 'COD' || v === 'CODIGO' || v === 'CÓDIGO' || v === 'ID') {
-              colCod = c;
-              hits++;
-            } else if (v.includes('RAZAO') || v.includes('RAZÃO') || v === 'NOME' || v === 'FORNECEDOR') {
-              colNome = c;
-              hits++;
-            } else if (v.includes('FANTASIA')) {
-              colFantasia = c;
-              hits++;
-            } else if (v.includes('CNPJ') || v.includes('CPF')) {
-              colCnpj = c;
-              hits++;
-            } else if (v.includes('TEL') || v.includes('FONE')) {
-              colTel = c;
-              hits++;
-            } else if (v.includes('EMAIL') || v.includes('E-MAIL')) {
-              colEmail = c;
-              hits++;
-            } else if (v.includes('END') || v.includes('LOGRADOURO')) {
-              colEnd = c;
-              hits++;
-            } else if (v.includes('CIDADE') || v.includes('MUNICIPIO')) {
-              colCid = c;
-              hits++;
-            } else if (v === 'UF' || v === 'ESTADO') {
-              colUf = c;
-              hits++;
-            } else if (v.includes('INSCRIC') || v === 'IE') {
-              colIe = c;
-              hits++;
-            } else if (v.includes('TIPO')) {
-              colTipo = c;
-              hits++;
-            } else if (v.includes('CONTATO') || v.includes('RESP')) {
-              colContato = c;
-              hits++;
-            }
-          }
-
-          if (hits >= 2) {
-            startRow = r + 1;
-            break;
-          }
-        }
-
-        // Se não achou colunas específicas, usa mapeamento posicional seguro
-        if (colCod === -1) colCod = 0;
-        if (colNome === -1) colNome = 1;
-
-        const codigosNoBanco = new Set(bancoFornecedores.map((f) => String(f.codigo).toUpperCase().trim()));
+        const codigosNoBanco = new Set(
+          bancoFornecedores.map((f) => String(f.codigo).toUpperCase().trim())
+        );
 
         // Agrupamento para detecção de códigos repetidos no mesmo arquivo
-        const gruposPorCodigo = new Map<string, any[]>();
+        const gruposPorCodigo = new Map<string, RawFornecedorRowData[]>();
 
-        for (let r = startRow; r < rawRows.length; r++) {
-          const row = rawRows[r];
-          if (!row) continue;
-
-          const rawCod = String(row[colCod] !== undefined ? row[colCod] : '').trim();
-          const rawNome = String(row[colNome] !== undefined ? row[colNome] : '').trim();
-          const rawFantasia = colFantasia >= 0 ? String(row[colFantasia] || '').trim() : '';
-          const rawCnpj = colCnpj >= 0 ? String(row[colCnpj] || '').trim() : '';
-          const rawTel = colTel >= 0 ? String(row[colTel] || '').trim() : '';
-          const rawEmail = colEmail >= 0 ? String(row[colEmail] || '').trim() : '';
-          const rawEnd = colEnd >= 0 ? String(row[colEnd] || '').trim() : '';
-          const rawCid = colCid >= 0 ? String(row[colCid] || '').trim() : '';
-          const rawUf = colUf >= 0 ? String(row[colUf] || '').trim().toUpperCase() : '';
-          const rawIe = colIe >= 0 ? String(row[colIe] || '').trim() : '';
-          const rawTipoStr = colTipo >= 0 ? String(row[colTipo] || '').trim().toLowerCase() : '';
-          const rawContato = colContato >= 0 ? String(row[colContato] || '').trim() : '';
-
-          if (!rawCod && !rawNome) continue;
-
-          const itemObj = {
-            linha: r + 1,
-            codigo: rawCod,
-            razao_social: rawNome,
-            nome_fantasia: rawFantasia || undefined,
-            cnpj: rawCnpj || undefined,
-            telefone: rawTel || undefined,
-            email: rawEmail || undefined,
-            endereco: rawEnd || undefined,
-            cidade: rawCid || undefined,
-            uf: rawUf || undefined,
-            inscricao_estadual: rawIe || undefined,
-            contato_responsavel: rawContato || undefined,
-            tipo_entidade: rawTipoStr.includes('parceir') ? ('entidade_parceira' as const) : ('fornecedor_comercial' as const),
-          };
-
-          const key = rawCod.toUpperCase();
+        for (const itemObj of rawList) {
+          const key = itemObj.codigo.toUpperCase();
           const list = gruposPorCodigo.get(key) || [];
           list.push(itemObj);
           gruposPorCodigo.set(key, list);
@@ -814,7 +1025,6 @@ export const ImportacaoCadastrosView: React.FC<ImportacaoCadastrosViewProps> = (
 
           // Verifica se existem múltiplos registros com o mesmo código e dados divergentes
           if (rowsDoCodigo.length > 1) {
-            // Compara os campos relevantes
             const divergencias: string[] = [];
             const r0 = rowsDoCodigo[0];
             for (let i = 1; i < rowsDoCodigo.length; i++) {
@@ -846,6 +1056,7 @@ export const ImportacaoCadastrosView: React.FC<ImportacaoCadastrosViewProps> = (
             uf: primeiro.uf,
             inscricao_estadual: primeiro.inscricao_estadual,
             contato_responsavel: primeiro.contato_responsavel,
+            observacoes: primeiro.observacoes,
             tipo_entidade: primeiro.tipo_entidade,
             valido,
             motivo_invalido: motivoInvalido,
@@ -859,7 +1070,10 @@ export const ImportacaoCadastrosView: React.FC<ImportacaoCadastrosViewProps> = (
         setFornecedoresParsed(parsedList);
         setIsPreviaFornAberta(true);
         setRelatorioForn(null);
-        toast.info('Planilha Lida', `${parsedList.length} entidades identificadas no arquivo de fornecedores.`);
+        toast.info(
+          'Planilha Lida',
+          `${parsedList.length} entidades identificadas no arquivo (${isReportFormat ? 'Formato Relatório de Fornecedores' : 'Formato Tabular'}).`
+        );
       } catch (err: any) {
         console.error('Erro ao ler arquivo de fornecedores:', err);
         toast.error('Erro na Leitura', 'Falha ao processar arquivo de fornecedores: ' + err.message);
@@ -896,9 +1110,9 @@ export const ImportacaoCadastrosView: React.FC<ImportacaoCadastrosViewProps> = (
 
   // Confirmar Importação de Fornecedores no Banco de Destino
   const handleConfirmarImportacaoFornecedores = async () => {
-    // Apenas válidos, sem conflito e que não existem no banco
+    // Válidos e sem conflito (tanto novos quanto existentes a atualizar)
     const registrosParaGravar = fornecedoresParsed.filter(
-      (f) => f.valido && !f.ja_existe_no_banco && !f.tem_conflito
+      (f) => f.valido && !f.tem_conflito
     );
 
     if (registrosParaGravar.length === 0) {
@@ -925,7 +1139,8 @@ export const ImportacaoCadastrosView: React.FC<ImportacaoCadastrosViewProps> = (
       }
 
       const incluidos = data.incluidos || [];
-      const ignoradosBanco = fornecedoresParsed.filter((f) => f.ja_existe_no_banco);
+      const atualizados = data.atualizados || [];
+      const ignoradosBanco = data.ignorados || [];
       const pendenciasConflito = fornecedoresParsed.filter((f) => f.tem_conflito);
       const invalidos = fornecedoresParsed.filter((f) => !f.valido);
 
@@ -936,10 +1151,12 @@ export const ImportacaoCadastrosView: React.FC<ImportacaoCadastrosViewProps> = (
         arquivo: arquivoFornNome,
         totalLidos: fornecedoresParsed.length,
         totalIncluidos: incluidos.length,
+        totalAtualizados: atualizados.length,
         totalIgnoradosBanco: ignoradosBanco.length,
         totalPendenciasConflito: pendenciasConflito.length,
         totalInvalidos: invalidos.length,
         incluidos,
+        atualizados,
         ignoradosBanco,
         pendenciasConflito,
         invalidos,
@@ -950,8 +1167,8 @@ export const ImportacaoCadastrosView: React.FC<ImportacaoCadastrosViewProps> = (
       setFornecedoresParsed([]);
       setIsConfirmModalOpen(false);
       toast.success(
-        'Fornecedores Importados',
-        `${incluidos.length} entidades cadastradas com sucesso no banco da área ${targetArea.nome} (${targetArea.arquivo_db}).`
+        'Fornecedores Processados',
+        `${incluidos.length} cadastrados e ${atualizados.length} atualizados com sucesso no banco da área ${targetArea.nome} (${targetArea.arquivo_db}).`
       );
       onRefresh();
       carregarBaseExistente();
@@ -1002,12 +1219,14 @@ export const ImportacaoCadastrosView: React.FC<ImportacaoCadastrosViewProps> = (
     doc.setFont('helvetica', 'normal');
     doc.setFontSize(9);
     doc.text(`• Total de registros lidos no arquivo: ${rel.totalLidos}`, 18, 46);
-    doc.text(`• Incluídos com sucesso no banco: ${rel.totalIncluidos}`, 18, 51);
+    doc.text(`• Novos cadastrados com sucesso: ${rel.totalIncluidos}`, 18, 51);
 
-    doc.text(`• Ignorados por código já existente: ${rel.totalIgnoradosBanco}`, 110, 46);
     if (rel.tipo === 'fornecedores') {
+      doc.text(`• Existentes atualizados: ${rel.totalAtualizados || 0}`, 18, 56);
+      doc.text(`• Ignorados no banco: ${rel.totalIgnoradosBanco}`, 110, 46);
       doc.text(`• Pendências não importadas (conflitos): ${rel.totalPendenciasConflito}`, 110, 51);
     } else {
+      doc.text(`• Ignorados por código já existente: ${rel.totalIgnoradosBanco}`, 110, 46);
       doc.text(`• Registros inválidos / campos ausentes: ${rel.totalInvalidos}`, 110, 51);
     }
 
@@ -1037,16 +1256,17 @@ export const ImportacaoCadastrosView: React.FC<ImportacaoCadastrosViewProps> = (
         return [
           item.codigo,
           item.razao_social,
-          item.cnpj || 'Sem CNPJ',
+          item.contato_responsavel || item.cnpj || '-',
           item.telefone || '-',
-          item.tipo === 'entidade_parceira' ? 'Entidade Parceira' : 'Fornecedor Comercial',
+          item.email || '-',
+          item.cidade ? `${item.cidade}/${item.uf || ''}` : '-',
         ];
       });
 
       const tableHeaders =
         rel.tipo === 'produtos'
           ? [['Código', 'Descrição', 'UND', 'Lote', 'Validade', 'Saldo', 'Custo Unit.', 'Total']]
-          : [['Código', 'Razão Social / Entidade', 'CNPJ', 'Telefone', 'Classificação']];
+          : [['Código', 'Razão Social / Entidade', 'Contato / CNPJ', 'Telefone', 'E-mail', 'Cidade/UF']];
 
       autoTable(doc, {
         startY: startY + 3,
@@ -1339,19 +1559,19 @@ export const ImportacaoCadastrosView: React.FC<ImportacaoCadastrosViewProps> = (
               </div>
               <ul className="list-disc pl-4 space-y-1 text-[11px] text-slate-600">
                 <li>
-                  Lê código, razão social, CNPJ, telefone, endereço, cidade e UF (.xls, .xlsx ou .csv).
+                  <strong>Suporte duplo de formato:</strong> lê relatórios estruturados em blocos (ex: <em>RELAÇÃO DE FORNECEDORES</em> com Código, Razão Social, Endereço, Bairro, Cidade/UF, CEP, Telefone, Contato e E-mail) ou planilhas tabulares tradicionais em colunas (.xls, .xlsx, .csv).
                 </li>
                 <li>
                   <strong>Código original preservado</strong> como texto; nomes iguais com códigos diferentes são entidades distintas (ex: filiais).
                 </li>
                 <li>
-                  <strong>Detecção de conflitos:</strong> se o mesmo código tiver dados conflitantes (ex: telefones diferentes), gera pendência para decisão manual.
+                  <strong>Atualização inteligente:</strong> fornecedores já existentes na área têm dados de contato, telefone, e-mail, endereço e cidade/UF enriquecidos/atualizados com segurança.
                 </li>
                 <li>
-                  Campos ausentes ficam em branco (não preenche com dados presumidos).
+                  <strong>Detecção de conflitos:</strong> se o mesmo código tiver dados divergentes no arquivo, gera pendência para decisão manual do usuário na prévia.
                 </li>
                 <li>
-                  Não cria vínculos automáticos entre fornecedores e produtos.
+                  Campos ausentes ficam em branco (não preenche com dados presumidos). Não cria vínculos automáticos entre fornecedores e produtos.
                 </li>
               </ul>
             </div>
@@ -1588,7 +1808,7 @@ export const ImportacaoCadastrosView: React.FC<ImportacaoCadastrosViewProps> = (
                 }}
                 disabled={
                   isGravandoForn ||
-                  fornecedoresParsed.filter((f) => f.valido && !f.ja_existe_no_banco && !f.tem_conflito).length === 0
+                  fornecedoresParsed.filter((f) => f.valido && !f.tem_conflito).length === 0
                 }
                 className="px-4 py-1.5 bg-blue-700 hover:bg-blue-800 text-white font-bold rounded-lg text-xs cursor-pointer shadow flex items-center gap-1.5 disabled:opacity-50"
               >
@@ -1616,30 +1836,37 @@ export const ImportacaoCadastrosView: React.FC<ImportacaoCadastrosViewProps> = (
           </div>
 
           {/* Cards de Resumo da Prévia */}
-          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs">
+          <div className="grid grid-cols-2 sm:grid-cols-5 gap-3 text-xs">
             <div className="bg-slate-50 p-3 rounded-lg border border-slate-200">
-              <span className="text-slate-500 font-medium block">Total lidos no arquivo</span>
+              <span className="text-slate-500 font-medium block">Total lidos</span>
               <span className="text-lg font-bold text-slate-800">{fornecedoresParsed.length}</span>
             </div>
 
-            <div className="bg-blue-50 p-3 rounded-lg border border-blue-200">
-              <span className="text-blue-700 font-medium block">Prontos p/ importar</span>
-              <span className="text-lg font-bold text-blue-800">
+            <div className="bg-emerald-50 p-3 rounded-lg border border-emerald-200">
+              <span className="text-emerald-700 font-medium block">Novos a Gravar</span>
+              <span className="text-lg font-bold text-emerald-800">
                 {fornecedoresParsed.filter((f) => f.valido && !f.ja_existe_no_banco && !f.tem_conflito).length}
               </span>
             </div>
 
+            <div className="bg-blue-50 p-3 rounded-lg border border-blue-200">
+              <span className="text-blue-700 font-medium block">Existentes a Atualizar</span>
+              <span className="text-lg font-bold text-blue-800">
+                {fornecedoresParsed.filter((f) => f.valido && f.ja_existe_no_banco && !f.tem_conflito).length}
+              </span>
+            </div>
+
             <div className="bg-amber-50 p-3 rounded-lg border border-amber-200">
-              <span className="text-amber-700 font-medium block">Pendências com Conflito</span>
+              <span className="text-amber-700 font-medium block">Pendências c/ Conflito</span>
               <span className="text-lg font-bold text-amber-800">
                 {fornecedoresParsed.filter((f) => f.tem_conflito).length}
               </span>
             </div>
 
-            <div className="bg-slate-100 p-3 rounded-lg border border-slate-300">
-              <span className="text-slate-600 font-medium block">Já no banco (serão ignorados)</span>
-              <span className="text-lg font-bold text-slate-700">
-                {fornecedoresParsed.filter((f) => f.ja_existe_no_banco).length}
+            <div className="bg-rose-50 p-3 rounded-lg border border-rose-200">
+              <span className="text-rose-700 font-medium block">Inválidos</span>
+              <span className="text-lg font-bold text-rose-800">
+                {fornecedoresParsed.filter((f) => !f.valido).length}
               </span>
             </div>
           </div>
@@ -1705,17 +1932,19 @@ export const ImportacaoCadastrosView: React.FC<ImportacaoCadastrosViewProps> = (
           {/* Tabela de Fornecedores */}
           <div className="border border-slate-200 rounded-lg overflow-x-auto max-h-80">
             <table className="w-full text-left text-xs border-collapse">
-              <thead className="bg-slate-100 sticky top-0 border-b border-slate-200 text-slate-700 uppercase font-bold text-[10px]">
+              <thead className="bg-[#24478f] text-white sticky top-0 border-b border-blue-950 uppercase font-bold text-[10px]">
                 <tr>
-                  <th className="py-2 px-3">Código</th>
-                  <th className="py-2 px-3">Razão Social / Entidade</th>
-                  <th className="py-2 px-3">CNPJ</th>
-                  <th className="py-2 px-3">Telefone</th>
-                  <th className="py-2 px-3">Cidade/UF</th>
-                  <th className="py-2 px-3 text-center">Status da Prévia</th>
+                  <th className="py-2.5 px-3">Código</th>
+                  <th className="py-2.5 px-3">Razão Social / Entidade</th>
+                  <th className="py-2.5 px-3">Contato</th>
+                  <th className="py-2.5 px-3">Telefone</th>
+                  <th className="py-2.5 px-3">E-mail</th>
+                  <th className="py-2.5 px-3">Cidade/UF</th>
+                  <th className="py-2.5 px-3">Endereço</th>
+                  <th className="py-2.5 px-3 text-center">Status da Prévia</th>
                 </tr>
               </thead>
-              <tbody className="divide-y divide-slate-100">
+              <tbody className="divide-y divide-slate-100 font-sans">
                 {fornecedoresParsed.slice(0, 100).map((f) => (
                   <tr
                     key={f.id_temp}
@@ -1725,16 +1954,20 @@ export const ImportacaoCadastrosView: React.FC<ImportacaoCadastrosViewProps> = (
                         : !f.valido
                         ? 'bg-rose-50 text-rose-900'
                         : f.ja_existe_no_banco
-                        ? 'bg-slate-50 text-slate-500'
+                        ? 'bg-blue-50/40 text-slate-800'
                         : 'hover:bg-slate-50'
                     }
                   >
-                    <td className="py-2 px-3 font-mono font-bold">{f.codigo}</td>
-                    <td className="py-2 px-3 font-medium">{f.razao_social}</td>
-                    <td className="py-2 px-3 font-mono text-slate-600">{f.cnpj || '-'}</td>
+                    <td className="py-2 px-3 font-mono font-bold text-slate-900">{f.codigo}</td>
+                    <td className="py-2 px-3 font-medium text-slate-800">{f.razao_social}</td>
+                    <td className="py-2 px-3 text-slate-600">{f.contato_responsavel || f.cnpj || '-'}</td>
                     <td className="py-2 px-3 text-slate-600">{f.telefone || '-'}</td>
+                    <td className="py-2 px-3 text-slate-600 font-mono text-[11px]">{f.email || '-'}</td>
                     <td className="py-2 px-3 text-slate-600">
                       {f.cidade ? `${f.cidade}/${f.uf || ''}` : '-'}
+                    </td>
+                    <td className="py-2 px-3 text-slate-500 text-[11px] truncate max-w-xs" title={f.endereco}>
+                      {f.endereco || '-'}
                     </td>
                     <td className="py-2 px-3 text-center whitespace-nowrap">
                       {f.tem_conflito ? (
@@ -1748,14 +1981,14 @@ export const ImportacaoCadastrosView: React.FC<ImportacaoCadastrosViewProps> = (
                           <span>{f.motivo_invalido}</span>
                         </span>
                       ) : f.ja_existe_no_banco ? (
-                        <span className="inline-flex items-center gap-1 text-[10px] font-medium text-slate-600 bg-slate-200 px-2 py-0.5 rounded">
-                          <Clock className="w-3 h-3" />
-                          <span>Já cadastrado (Ignorado)</span>
+                        <span className="inline-flex items-center gap-1 text-[10px] font-medium text-blue-800 bg-blue-100 px-2 py-0.5 rounded">
+                          <RotateCcw className="w-3 h-3" />
+                          <span>Já cadastrado (Atualizará dados)</span>
                         </span>
                       ) : (
-                        <span className="inline-flex items-center gap-1 text-[10px] font-bold text-blue-700 bg-blue-100 px-2 py-0.5 rounded">
+                        <span className="inline-flex items-center gap-1 text-[10px] font-bold text-emerald-800 bg-emerald-100 px-2 py-0.5 rounded">
                           <CheckCircle2 className="w-3 h-3" />
-                          <span>Pronto para Gravar</span>
+                          <span>Novo (Pronto para Gravar)</span>
                         </span>
                       )}
                     </td>
@@ -1827,14 +2060,21 @@ export const ImportacaoCadastrosView: React.FC<ImportacaoCadastrosViewProps> = (
               {/* Box de Estatísticas Finais */}
               <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 text-xs">
                 <div className="bg-emerald-50 p-4 rounded-xl border border-emerald-200">
-                  <span className="text-emerald-700 font-semibold block">Incluídos com sucesso</span>
+                  <span className="text-emerald-700 font-semibold block">Novos incluídos</span>
                   <span className="text-2xl font-bold text-emerald-900">{rel.totalIncluidos}</span>
                 </div>
 
-                <div className="bg-slate-100 p-4 rounded-xl border border-slate-300">
-                  <span className="text-slate-600 font-semibold block">Ignorados (já no banco)</span>
-                  <span className="text-2xl font-bold text-slate-800">{rel.totalIgnoradosBanco}</span>
-                </div>
+                {rel.tipo === 'fornecedores' ? (
+                  <div className="bg-blue-50 p-4 rounded-xl border border-blue-200">
+                    <span className="text-blue-700 font-semibold block">Existentes atualizados</span>
+                    <span className="text-2xl font-bold text-blue-900">{rel.totalAtualizados || 0}</span>
+                  </div>
+                ) : (
+                  <div className="bg-slate-100 p-4 rounded-xl border border-slate-300">
+                    <span className="text-slate-600 font-semibold block">Ignorados (já no banco)</span>
+                    <span className="text-2xl font-bold text-slate-800">{rel.totalIgnoradosBanco}</span>
+                  </div>
+                )}
 
                 {rel.tipo === 'fornecedores' ? (
                   <div className="bg-amber-50 p-4 rounded-xl border border-amber-200">
@@ -1875,9 +2115,10 @@ export const ImportacaoCadastrosView: React.FC<ImportacaoCadastrosViewProps> = (
                             {rel.tipo === 'produtos' && <th className="py-2.5 px-3 text-center">Validade</th>}
                             {rel.tipo === 'produtos' && <th className="py-2.5 px-3 text-right">Saldo</th>}
                             {rel.tipo === 'produtos' && <th className="py-2.5 px-3 text-right">Custo Unit.</th>}
-                            {rel.tipo === 'produtos' && <th className="py-2.5 px-3 text-right">Total</th>}
-                            {rel.tipo === 'fornecedores' && <th className="py-2.5 px-3">CNPJ</th>}
+                            {rel.tipo === 'fornecedores' && <th className="py-2.5 px-3">Contato / CNPJ</th>}
                             {rel.tipo === 'fornecedores' && <th className="py-2.5 px-3">Telefone</th>}
+                            {rel.tipo === 'fornecedores' && <th className="py-2.5 px-3">E-mail</th>}
+                            {rel.tipo === 'fornecedores' && <th className="py-2.5 px-3">Cidade/UF</th>}
                           </tr>
                         </thead>
                         <tbody className="divide-y divide-slate-100 font-sans">
@@ -1907,8 +2148,10 @@ export const ImportacaoCadastrosView: React.FC<ImportacaoCadastrosViewProps> = (
                                   {Number(it.total || 0).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}
                                 </td>
                               )}
-                              {rel.tipo === 'fornecedores' && <td className="py-2 px-3 font-mono">{it.cnpj || '-'}</td>}
-                              {rel.tipo === 'fornecedores' && <td className="py-2 px-3">{it.telefone || '-'}</td>}
+                              {rel.tipo === 'fornecedores' && <td className="py-2 px-3 text-slate-700">{it.contato_responsavel || it.cnpj || '-'}</td>}
+                              {rel.tipo === 'fornecedores' && <td className="py-2 px-3 text-slate-700">{it.telefone || '-'}</td>}
+                              {rel.tipo === 'fornecedores' && <td className="py-2 px-3 font-mono text-[11px] text-slate-700">{it.email || '-'}</td>}
+                              {rel.tipo === 'fornecedores' && <td className="py-2 px-3 text-slate-700">{it.cidade ? `${it.cidade}/${it.uf || ''}` : '-'}</td>}
                             </tr>
                           ))}
                         </tbody>
@@ -2040,7 +2283,7 @@ export const ImportacaoCadastrosView: React.FC<ImportacaoCadastrosViewProps> = (
                 <span className="font-bold text-teal-800 text-sm">
                   {confirmImportType === 'produtos'
                     ? produtosParsed.filter((p) => p.valido).length
-                    : fornecedoresParsed.filter((f) => f.valido && !f.ja_existe_no_banco && !f.tem_conflito).length}{' '}
+                    : fornecedoresParsed.filter((f) => f.valido && !f.tem_conflito).length}{' '}
                   registros válidos
                 </span>
               </div>

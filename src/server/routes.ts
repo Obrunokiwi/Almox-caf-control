@@ -8625,10 +8625,11 @@ function handleImportacaoFornecedoresRoute(req: any, res: any) {
 
     const result = runInTransaction(() => {
       const incluidos: any[] = [];
+      const atualizados: any[] = [];
       const ignorados: any[] = [];
       const avisos: string[] = [];
 
-      const stmtCheckCod = targetDb.prepare('SELECT id, codigo, razao_social FROM fornecedores WHERE UPPER(codigo) = UPPER(?)');
+      const stmtCheckCod = targetDb.prepare('SELECT id, codigo, razao_social, telefone, email, endereco, cidade, uf FROM fornecedores WHERE UPPER(codigo) = UPPER(?)');
       const stmtCheckCnpj = targetDb.prepare("SELECT id, codigo, razao_social FROM fornecedores WHERE cnpj = ? AND cnpj IS NOT NULL AND cnpj != ''");
 
       const stmtInsertForn = targetDb.prepare(`
@@ -8636,6 +8637,21 @@ function handleImportacaoFornecedoresRoute(req: any, res: any) {
           codigo, razao_social, nome_fantasia, cnpj, tipo_entidade, inscricao_estadual,
           telefone, email, contato_responsavel, endereco, cidade, uf, observacoes, ativo
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+      `);
+
+      const stmtUpdateForn = targetDb.prepare(`
+        UPDATE fornecedores
+        SET razao_social = ?,
+            nome_fantasia = COALESCE(?, nome_fantasia),
+            cnpj = COALESCE(?, cnpj),
+            telefone = COALESCE(?, telefone),
+            email = COALESCE(?, email),
+            contato_responsavel = COALESCE(?, contato_responsavel),
+            endereco = COALESCE(?, endereco),
+            cidade = COALESCE(?, cidade),
+            uf = COALESCE(?, uf),
+            observacoes = COALESCE(?, observacoes)
+        WHERE id = ?
       `);
 
       for (let i = 0; i < fornecedores.length; i++) {
@@ -8659,28 +8675,47 @@ function handleImportacaoFornecedoresRoute(req: any, res: any) {
           continue;
         }
 
-        // Verifica existência pelo código na área de destino
-        const existeCod = stmtCheckCod.get(rawCod) as any;
-        if (existeCod) {
-          ignorados.push({
-            codigo: rawCod,
-            razao_social: rawNome,
-            motivo: `Código "${rawCod}" já existente na área ${areaRow.sigla} (ID #${existeCod.id} - ${existeCod.razao_social}). Registro ignorado sem alterações.`,
-          });
-          continue;
-        }
-
-        // Se tiver CNPJ, verifica duplicidade de CNPJ na área de destino
+        // Se tiver CNPJ, verifica duplicidade com OUTRO fornecedor cadastrado
         if (rawCnpj) {
           const existeCnpj = stmtCheckCnpj.get(rawCnpj) as any;
-          if (existeCnpj) {
+          if (existeCnpj && String(existeCnpj.codigo).toUpperCase() !== rawCod.toUpperCase()) {
             ignorados.push({
               codigo: rawCod,
               razao_social: rawNome,
-              motivo: `CNPJ "${rawCnpj}" já utilizado por outra entidade na área ${areaRow.sigla} (Código: ${existeCnpj.codigo} - ${existeCnpj.razao_social}).`,
+              motivo: `CNPJ "${rawCnpj}" já cadastrado para o fornecedor código "${existeCnpj.codigo}" (${existeCnpj.razao_social}).`,
             });
             continue;
           }
+        }
+
+        // Verifica existência pelo código na área de destino
+        const existeCod = stmtCheckCod.get(rawCod) as any;
+        if (existeCod) {
+          stmtUpdateForn.run(
+            rawNome,
+            rawFantasia,
+            rawCnpj,
+            rawTel,
+            rawEmail,
+            rawContato,
+            rawEnd,
+            rawCid,
+            rawUf,
+            rawObs,
+            existeCod.id
+          );
+          atualizados.push({
+            id: Number(existeCod.id),
+            codigo: rawCod,
+            razao_social: rawNome,
+            cnpj: rawCnpj || existeCod.cnpj,
+            telefone: rawTel || existeCod.telefone,
+            email: rawEmail || existeCod.email,
+            cidade: rawCid || existeCod.cidade,
+            uf: rawUf || existeCod.uf,
+            tipo: rawTipo,
+          });
+          continue;
         }
 
         const insertInfo = stmtInsertForn.run(
@@ -8705,11 +8740,14 @@ function handleImportacaoFornecedoresRoute(req: any, res: any) {
           razao_social: rawNome,
           cnpj: rawCnpj,
           telefone: rawTel,
+          email: rawEmail,
+          cidade: rawCid,
+          uf: rawUf,
           tipo: rawTipo,
         });
 
         if (!rawCnpj) {
-          avisos.push(`Fornecedor "${rawCod} - ${rawNome}": cadastrado sem CNPJ informado.`);
+          avisos.push(`Fornecedor "${rawCod} - ${rawNome}": cadastrado sem CNPJ.`);
         }
       }
 
@@ -8718,8 +8756,10 @@ function handleImportacaoFornecedoresRoute(req: any, res: any) {
         area: { id: areaRow.id, sigla: areaRow.sigla, nome: areaRow.nome, arquivo_db: areaRow.arquivo_db },
         total_lidos: fornecedores.length,
         total_incluidos: incluidos.length,
+        total_atualizados: atualizados.length,
         total_ignorados: ignorados.length,
         incluidos,
+        atualizados,
         ignorados,
         avisos,
       };
@@ -8730,7 +8770,7 @@ function handleImportacaoFornecedoresRoute(req: any, res: any) {
       user,
       clientIp,
       'importacao_fornecedores',
-      `Importação em massa de ${result.total_incluidos} fornecedores na área ${areaRow.sigla} (${areaRow.arquivo_db})`,
+      `Importação em massa de fornecedores na área ${areaRow.sigla}: ${result.total_incluidos} novos, ${result.total_atualizados} atualizados`,
       areaRow.sigla
     );
 
