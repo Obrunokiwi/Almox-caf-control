@@ -88,14 +88,23 @@ export default function App() {
   // Carrega dados gerais sincronizados com o servidor SQLite (sem loop de re-render)
   const currentUserId = currentUser?.id ?? null;
 
+  // Limpa credenciais persistidas legadas do localStorage para que ao entrar no site NUNCA abra logado
+  useEffect(() => {
+    if (!sessionStorage.getItem('multi_almox_token')) {
+      localStorage.removeItem('multi_almox_token');
+      localStorage.removeItem('multi_almox_user_id');
+      localStorage.removeItem('multi_almox_area_sigla');
+    }
+  }, []);
+
   const loadData = useCallback(async (overrideUserId?: number) => {
     try {
-      const token = localStorage.getItem('multi_almox_token');
+      const token = sessionStorage.getItem('multi_almox_token');
       if (!token) {
         return;
       }
 
-      const areaSigla = localStorage.getItem('multi_almox_area_sigla') || currentUser?.area_sigla || 'ALM';
+      const areaSigla = sessionStorage.getItem('multi_almox_area_sigla') || currentUser?.area_sigla || 'ALM';
       const authHeader: Record<string, string> = { 
         'Authorization': `Bearer ${token}`,
         'X-Area-Sigla': areaSigla
@@ -126,7 +135,7 @@ export default function App() {
       ]);
 
       // Ignora resposta se o usuário deslogou enquanto a requisição estava em andamento
-      if (!localStorage.getItem('multi_almox_token')) {
+      if (!sessionStorage.getItem('multi_almox_token')) {
         return;
       }
 
@@ -155,6 +164,9 @@ export default function App() {
           }
         }
       } else {
+        sessionStorage.removeItem('multi_almox_token');
+        sessionStorage.removeItem('multi_almox_user_id');
+        sessionStorage.removeItem('multi_almox_area_sigla');
         localStorage.removeItem('multi_almox_token');
         localStorage.removeItem('multi_almox_user_id');
         localStorage.removeItem('multi_almox_area_sigla');
@@ -188,6 +200,9 @@ export default function App() {
 
   // Ação de Login Formal
   const handleLoginSuccess = (user: Usuario, token: string, areaSigla: string) => {
+    sessionStorage.setItem('multi_almox_token', token);
+    sessionStorage.setItem('multi_almox_user_id', String(user.id));
+    sessionStorage.setItem('multi_almox_area_sigla', areaSigla);
     localStorage.setItem('multi_almox_token', token);
     localStorage.setItem('multi_almox_user_id', String(user.id));
     localStorage.setItem('multi_almox_area_sigla', areaSigla);
@@ -207,7 +222,7 @@ export default function App() {
   // Alternar Área Operacional (ALM, CAF, etc.)
   const handleSwitchArea = async (newSigla: string) => {
     try {
-      const token = localStorage.getItem('multi_almox_token');
+      const token = sessionStorage.getItem('multi_almox_token') || localStorage.getItem('multi_almox_token');
       if (!token) return;
 
       const res = await fetch('/api/auth/trocar-area', {
@@ -222,8 +237,10 @@ export default function App() {
 
       const data = await res.json();
       if (res.ok && data.user) {
+        sessionStorage.setItem('multi_almox_area_sigla', newSigla);
         localStorage.setItem('multi_almox_area_sigla', newSigla);
         if (data.token) {
+          sessionStorage.setItem('multi_almox_token', data.token);
           localStorage.setItem('multi_almox_token', data.token);
         }
         setCurrentUser(data.user);
@@ -239,6 +256,9 @@ export default function App() {
 
   // Encerrar sessão (obrigatório para trocar de usuário)
   const handleLogout = () => {
+    sessionStorage.removeItem('multi_almox_token');
+    sessionStorage.removeItem('multi_almox_user_id');
+    sessionStorage.removeItem('multi_almox_area_sigla');
     localStorage.removeItem('multi_almox_token');
     localStorage.removeItem('multi_almox_user_id');
     localStorage.removeItem('multi_almox_area_sigla');
@@ -278,7 +298,7 @@ export default function App() {
   const handleConfirmResetDb = async () => {
     setIsResettingDb(true);
     try {
-      const token = localStorage.getItem('multi_almox_token');
+      const token = sessionStorage.getItem('multi_almox_token') || localStorage.getItem('multi_almox_token');
       const res = await fetch('/api/system/reset', {
         method: 'POST',
         headers: { 

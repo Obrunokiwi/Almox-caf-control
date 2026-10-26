@@ -8,7 +8,6 @@ import {
   LogIn, 
   ShieldCheck, 
   Package, 
-  Sparkles,
   CheckCircle2,
   AlertCircle,
   Layers
@@ -265,40 +264,6 @@ export const LoginView: React.FC<LoginViewProps> = ({
               )}
             </button>
           </form>
-
-          {/* Informações de Acesso Inicial */}
-          <div className="mt-8 pt-6 border-t border-slate-200">
-            <div className="flex items-center gap-2 mb-3">
-              <Sparkles className="w-3.5 h-3.5 text-teal-600" />
-              <span className="text-[11px] font-bold text-slate-500 uppercase tracking-wider">
-                Acesso Inicial do Administrador
-              </span>
-            </div>
-
-            <div className="p-3.5 rounded-lg border border-slate-200 bg-white shadow-xs space-y-2">
-              <div className="flex items-center justify-between">
-                <div>
-                  <div className="text-xs font-bold text-slate-800">Administrador Geral</div>
-                  <div className="text-[11px] text-slate-500">
-                    Usuário: <code className="font-mono text-teal-800 font-bold bg-teal-50 px-1 rounded">admin</code> | Senha: <code className="font-mono text-teal-800 font-bold bg-teal-50 px-1 rounded">admin123</code>
-                  </div>
-                </div>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setLogin('admin');
-                    setSenha('admin123');
-                  }}
-                  className="px-2.5 py-1.5 bg-teal-50 hover:bg-teal-100 text-teal-800 border border-teal-200 rounded text-xs font-semibold transition-all cursor-pointer"
-                >
-                  Preencher
-                </button>
-              </div>
-              <p className="text-[10px] text-slate-400 border-t border-slate-100 pt-1.5">
-                O administrador tem permissão irrestrita e pode alternar livremente entre Almoxarifado e CAF no topo da tela.
-              </p>
-            </div>
-          </div>
 
           {/* Rodapé Único */}
           <div className="mt-8 pt-4 text-center border-t border-slate-200">

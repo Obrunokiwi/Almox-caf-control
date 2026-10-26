@@ -112,8 +112,8 @@ export const ListaComprasView: React.FC<ListaComprasViewProps> = ({
 
   // Carrega grupos de produtos
   useEffect(() => {
-    const token = localStorage.getItem('multi_almox_token');
-    const areaSigla = localStorage.getItem('multi_almox_area_sigla') || currentUser?.area_sigla || 'ALM';
+    const token = sessionStorage.getItem('multi_almox_token') || localStorage.getItem('multi_almox_token');
+    const areaSigla = sessionStorage.getItem('multi_almox_area_sigla') || localStorage.getItem('multi_almox_area_sigla') || currentUser?.area_sigla || 'ALM';
     fetch('/api/grupos-produtos', {
       headers: {
         'Authorization': `Bearer ${token}`,
@@ -147,8 +147,8 @@ export const ListaComprasView: React.FC<ListaComprasViewProps> = ({
   const loadHistorico = useCallback(async () => {
     setLoadingHistorico(true);
     try {
-      const token = localStorage.getItem('multi_almox_token');
-      const areaSigla = localStorage.getItem('multi_almox_area_sigla') || currentUser?.area_sigla || 'ALM';
+      const token = sessionStorage.getItem('multi_almox_token') || localStorage.getItem('multi_almox_token');
+      const areaSigla = sessionStorage.getItem('multi_almox_area_sigla') || localStorage.getItem('multi_almox_area_sigla') || currentUser?.area_sigla || 'ALM';
 
       const res = await fetch('/api/lista-compras', {
         headers: {
@@ -178,8 +178,8 @@ export const ListaComprasView: React.FC<ListaComprasViewProps> = ({
   const handleGerarLista = async () => {
     setLoading(true);
     try {
-      const token = localStorage.getItem('multi_almox_token');
-      const areaSigla = localStorage.getItem('multi_almox_area_sigla') || currentUser?.area_sigla || 'ALM';
+      const token = sessionStorage.getItem('multi_almox_token') || localStorage.getItem('multi_almox_token');
+      const areaSigla = sessionStorage.getItem('multi_almox_area_sigla') || localStorage.getItem('multi_almox_area_sigla') || currentUser?.area_sigla || 'ALM';
 
       const selectedTypesStr = Object.keys(typesConsidered)
         .filter((k) => typesConsidered[k])
@@ -233,8 +233,8 @@ export const ListaComprasView: React.FC<ListaComprasViewProps> = ({
 
     setLoading(true);
     try {
-      const token = localStorage.getItem('multi_almox_token');
-      const areaSigla = localStorage.getItem('multi_almox_area_sigla') || currentUser?.area_sigla || 'ALM';
+      const token = sessionStorage.getItem('multi_almox_token') || localStorage.getItem('multi_almox_token');
+      const areaSigla = sessionStorage.getItem('multi_almox_area_sigla') || localStorage.getItem('multi_almox_area_sigla') || currentUser?.area_sigla || 'ALM';
 
       const payload = {
         data_inicio: dataInicio,
@@ -291,8 +291,8 @@ export const ListaComprasView: React.FC<ListaComprasViewProps> = ({
   const handleAbrirLista = async (id: number) => {
     setLoading(true);
     try {
-      const token = localStorage.getItem('multi_almox_token');
-      const areaSigla = localStorage.getItem('multi_almox_area_sigla') || currentUser?.area_sigla || 'ALM';
+      const token = sessionStorage.getItem('multi_almox_token') || localStorage.getItem('multi_almox_token');
+      const areaSigla = sessionStorage.getItem('multi_almox_area_sigla') || localStorage.getItem('multi_almox_area_sigla') || currentUser?.area_sigla || 'ALM';
 
       const res = await fetch(`/api/lista-compras/${id}`, {
         headers: {
@@ -327,8 +327,8 @@ export const ListaComprasView: React.FC<ListaComprasViewProps> = ({
   const handleDuplicarLista = async (id: number) => {
     setLoading(true);
     try {
-      const token = localStorage.getItem('multi_almox_token');
-      const areaSigla = localStorage.getItem('multi_almox_area_sigla') || currentUser?.area_sigla || 'ALM';
+      const token = sessionStorage.getItem('multi_almox_token') || localStorage.getItem('multi_almox_token');
+      const areaSigla = sessionStorage.getItem('multi_almox_area_sigla') || localStorage.getItem('multi_almox_area_sigla') || currentUser?.area_sigla || 'ALM';
 
       const res = await fetch(`/api/lista-compras/${id}/duplicar`, {
         method: 'POST',
@@ -357,8 +357,8 @@ export const ListaComprasView: React.FC<ListaComprasViewProps> = ({
     if (!confirm('Deseja realmente excluir esta lista em rascunho?')) return;
 
     try {
-      const token = localStorage.getItem('multi_almox_token');
-      const areaSigla = localStorage.getItem('multi_almox_area_sigla') || currentUser?.area_sigla || 'ALM';
+      const token = sessionStorage.getItem('multi_almox_token') || localStorage.getItem('multi_almox_token');
+      const areaSigla = sessionStorage.getItem('multi_almox_area_sigla') || localStorage.getItem('multi_almox_area_sigla') || currentUser?.area_sigla || 'ALM';
 
       const res = await fetch(`/api/lista-compras/${id}`, {
         method: 'DELETE',

@@ -83,8 +83,8 @@ export const KardexView: React.FC<KardexViewProps> = ({
     setErrorMsg(null);
 
     try {
-      const token = localStorage.getItem('multi_almox_token');
-      const areaSigla = localStorage.getItem('multi_almox_area_sigla') || currentUser?.area_sigla || 'ALM';
+      const token = sessionStorage.getItem('multi_almox_token') || localStorage.getItem('multi_almox_token');
+      const areaSigla = sessionStorage.getItem('multi_almox_area_sigla') || localStorage.getItem('multi_almox_area_sigla') || currentUser?.area_sigla || 'ALM';
 
       const queryParams = new URLSearchParams({
         produto_id: String(selectedProdutoId),

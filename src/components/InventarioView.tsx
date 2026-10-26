@@ -135,8 +135,8 @@ export const InventarioView: React.FC<InventarioViewProps> = ({
 
   // Carrega lista oficial de grupos de produtos para filtragem no inventário
   useEffect(() => {
-    const token = localStorage.getItem('multi_almox_token');
-    const areaSigla = localStorage.getItem('multi_almox_area_sigla') || currentUser?.area_sigla || 'ALM';
+    const token = sessionStorage.getItem('multi_almox_token') || localStorage.getItem('multi_almox_token');
+    const areaSigla = sessionStorage.getItem('multi_almox_area_sigla') || localStorage.getItem('multi_almox_area_sigla') || currentUser?.area_sigla || 'ALM';
     fetch('/api/grupos-produtos', {
       headers: {
         'Authorization': `Bearer ${token}`,

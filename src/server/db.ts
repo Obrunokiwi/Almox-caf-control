@@ -352,23 +352,27 @@ function migrateCentralDb(db: DatabaseSync, dbFilePath: string) {
     }
   } catch {}
 
-  // Garante usuário admin inicial SE não existir nenhum usuário
-  const userCount = (db.prepare('SELECT count(*) as c FROM usuarios').get() as any)?.c || 0;
-  if (userCount === 0) {
-    db.prepare(`
-      INSERT INTO usuarios (id, codigo, nome, login, senha_hash, perfil, cargo_nome, permissoes, ativo)
-      VALUES (1, 'USR-001', 'Administrador do Sistema', 'admin', '240be518fabd2724ddb6f04eeb1da5967448d7e831c08c8fa822809f74c720a9', 'admin', 'admin', '[]', 1)
-    `).run();
-    db.prepare('INSERT OR IGNORE INTO usuario_areas (usuario_id, area_id) VALUES (1, 1), (1, 2)').run();
-    appliedMigrations++;
-  } else {
-    // Garante que o usuário admin tenha vinculo com áreas 1 e 2
-    try {
-      const adminUser = db.prepare("SELECT id FROM usuarios WHERE login = 'admin' OR id = 1").get() as any;
-      if (adminUser) {
-        db.prepare('INSERT OR IGNORE INTO usuario_areas (usuario_id, area_id) VALUES (?, 1), (?, 2)').run(adminUser.id, adminUser.id);
+  // Garante que o usuário admin exista, esteja ativo e tenha vínculo com as áreas 1 e 2
+  try {
+    const adminUser = db.prepare("SELECT id, senha_hash, ativo FROM usuarios WHERE login = 'admin' OR id = 1").get() as any;
+    if (!adminUser) {
+      db.prepare(`
+        INSERT INTO usuarios (id, codigo, nome, login, senha_hash, perfil, cargo_nome, permissoes, ativo)
+        VALUES (1, 'USR-001', 'Administrador do Sistema', 'admin', '240be518fabd2724ddb6f04eeb1da5967448d7e831c08c8fa822809f74c720a9', 'admin', 'admin', '[]', 1)
+      `).run();
+      db.prepare('INSERT OR IGNORE INTO usuario_areas (usuario_id, area_id) VALUES (1, 1), (1, 2)').run();
+      appliedMigrations++;
+    } else {
+      if (adminUser.ativo !== 1) {
+        db.prepare("UPDATE usuarios SET ativo = 1 WHERE id = ?").run(adminUser.id);
       }
-    } catch {}
+      if (!adminUser.senha_hash) {
+        db.prepare("UPDATE usuarios SET senha_hash = '240be518fabd2724ddb6f04eeb1da5967448d7e831c08c8fa822809f74c720a9' WHERE id = ?").run(adminUser.id);
+      }
+      db.prepare('INSERT OR IGNORE INTO usuario_areas (usuario_id, area_id) VALUES (?, 1), (?, 2)').run(adminUser.id, adminUser.id);
+    }
+  } catch (err: any) {
+    console.warn('[DB Central] Aviso ao verificar usuário admin:', err.message);
   }
 
   // Atualiza user_version
