@@ -757,7 +757,7 @@ export const EntradasView: React.FC<EntradasViewProps> = ({
             className="bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800 text-white font-medium px-4 py-2 rounded-lg text-xs flex items-center gap-1.5 transition-all shadow-sm uppercase tracking-wide cursor-pointer"
           >
             <Plus className="w-4 h-4" />
-            <span>+ NOVA NOTA FISCAL</span>
+            <span className="font-bold">NOVA NOTA FISCAL</span>
           </button>
         </div>
       </div>
@@ -1020,8 +1020,8 @@ export const EntradasView: React.FC<EntradasViewProps> = ({
       {/* MODAL DE DETALHE / EDIÇÃO DA NOTA FISCAL (A.2, A.3, A.4)                 */}
       {/* ========================================================================= */}
       {selectedNotaId && detalheNota && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-slate-900/60 backdrop-blur-xs overflow-y-auto animate-fadeIn">
-          <div className="bg-white rounded-2xl border border-slate-200 shadow-2xl w-full max-w-5xl overflow-visible my-auto max-h-[92vh] flex flex-col">
+        <div className="fixed inset-0 z-50 overflow-y-auto bg-slate-900/60 backdrop-blur-xs flex items-start justify-center p-3 sm:p-6 py-8 sm:py-12 animate-fadeIn">
+          <div className="bg-white rounded-2xl border border-slate-200 shadow-2xl w-full max-w-5xl my-0 overflow-visible flex flex-col">
             {/* Cabeçalho do Modal */}
             <div className="px-6 py-4 bg-slate-50 border-b border-slate-200 flex items-center justify-between shrink-0">
               <div className="flex items-center gap-3">
@@ -1548,8 +1548,8 @@ export const EntradasView: React.FC<EntradasViewProps> = ({
       {/* MODAL DE CRIAÇÃO DE NOVA NOTA FISCAL (COM MÚLTIPLOS ITENS E AUTOCOMPLETE) */}
       {/* ========================================================================= */}
       {isNewNotaOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-slate-900/60 backdrop-blur-xs overflow-y-auto animate-fadeIn">
-          <div className="bg-white rounded-2xl border border-slate-200 shadow-2xl w-full max-w-4xl overflow-visible my-auto max-h-[92vh] flex flex-col">
+        <div className="fixed inset-0 z-50 overflow-y-auto bg-slate-900/60 backdrop-blur-xs flex items-start justify-center p-3 sm:p-6 py-8 sm:py-12 animate-fadeIn">
+          <div className="bg-white rounded-2xl border border-slate-200 shadow-2xl w-full max-w-4xl my-0 overflow-visible flex flex-col">
             <div className="px-6 py-4 bg-slate-50 border-b border-slate-200 flex items-center justify-between shrink-0">
               <div className="flex items-center gap-2.5">
                 <div className="p-2 bg-teal-100 text-teal-800 rounded-lg">
