@@ -813,7 +813,7 @@ export async function generateComprovanteRequisicaoPDF(params: {
       }
     }
 
-    let prodDesc = `${it.produto_codigo || ''} - ${it.produto_nome || ''}`.trim();
+    const prodDesc = `${it.produto_codigo || ''} - ${it.produto_nome || ''}`.trim();
     const und = it.unidade_medida || 'UN';
     const qtdSolic = String(it.quantidade_solicitada);
     const qtdAtend = String(it.quantidade_atendida ?? 0);
@@ -837,12 +837,6 @@ export async function generateComprovanteRequisicaoPDF(params: {
         validadeText = lotes
           .map((l: any) => formatDataValidade(l.data_validade))
           .join('\n');
-
-        // Detalhamento dos lotes e validades diretamente abaixo da descrição do produto
-        const lotesSublinhas = lotes
-          .map((l: any) => `↳ Lote: ${l.numero_lote || 'N/A'} (Val: ${formatDataValidade(l.data_validade)}) • Dispensado: ${l.quantidade} ${und}`)
-          .join('\n');
-        prodDesc += `\n${lotesSublinhas}`;
       }
     } else if (it.numero_lote) {
       lotesText = it.numero_lote;
@@ -851,7 +845,6 @@ export async function generateComprovanteRequisicaoPDF(params: {
 
     const row: any[] = [
       prodDesc,
-      und,
       qtdSolic,
       qtdAtend,
       lotesText,
@@ -867,11 +860,10 @@ export async function generateComprovanteRequisicaoPDF(params: {
   }
 
   const tableHead = !comHistorico
-    ? [['Código / Produto', 'UND', 'Qtd Solicitada', 'Qtd Atendida', 'Lote(s)', 'Validade']]
+    ? [['Código / Produto', 'Qtd Solicitada', 'Qtd Atendida', 'Lote(s)', 'Validade']]
     : [
         [
           'Código / Produto',
-          'UND',
           'Qtd Solicitada',
           'Qtd Atendida',
           'Lote(s)',
@@ -883,28 +875,26 @@ export async function generateComprovanteRequisicaoPDF(params: {
 
   const columnStylesMap: Record<number, any> = !comHistorico
     ? {
-        0: { cellWidth: 70 },
-        1: { halign: 'center', cellWidth: 14 },
-        2: { halign: 'right', cellWidth: 22 },
-        3: { halign: 'right', fontStyle: 'bold', cellWidth: 22 },
-        4: { halign: 'center', fontStyle: 'bold', cellWidth: 30 },
-        5: { halign: 'center', cellWidth: 24 },
+        0: { cellWidth: 84 },
+        1: { halign: 'right', cellWidth: 20 },
+        2: { halign: 'right', fontStyle: 'bold', cellWidth: 20 },
+        3: { halign: 'center', fontStyle: 'bold', cellWidth: 32 },
+        4: { halign: 'center', cellWidth: 26 },
       }
     : {
-        0: { cellWidth: 50 },
-        1: { halign: 'center', cellWidth: 12 },
-        2: { halign: 'right', cellWidth: 16 },
-        3: { halign: 'right', fontStyle: 'bold', cellWidth: 16 },
-        4: { halign: 'center', fontStyle: 'bold', cellWidth: 28 },
-        5: { halign: 'center', cellWidth: 22 },
-        6: { cellWidth: 24 },
-        7: { cellWidth: 14 },
+        0: { cellWidth: 62 },
+        1: { halign: 'right', cellWidth: 16 },
+        2: { halign: 'right', fontStyle: 'bold', cellWidth: 16 },
+        3: { halign: 'center', fontStyle: 'bold', cellWidth: 30 },
+        4: { halign: 'center', cellWidth: 20 },
+        5: { cellWidth: 24 },
+        6: { cellWidth: 14 },
       };
 
   autoTable(doc, {
     startY: currentY,
     head: tableHead,
-    body: itemRows.length > 0 ? itemRows : [['Nenhum item adicionado', '—', '0', '0', '—', '—']],
+    body: itemRows.length > 0 ? itemRows : [['Nenhum item adicionado', '0', '0', '—', '—']],
     margin: { left: 14, right: 14 },
     theme: 'grid',
     styles: {
