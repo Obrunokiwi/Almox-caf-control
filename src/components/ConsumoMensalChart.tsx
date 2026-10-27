@@ -9,7 +9,7 @@ import {
   Tooltip,
   Legend,
 } from 'recharts';
-import { TrendingUp, RefreshCw } from 'lucide-react';
+import { TrendingUp, RefreshCw, ChevronDown, ChevronUp } from 'lucide-react';
 import type { CentroCusto, Produto, Movimentacao } from '../types/index.ts';
 import { SearchableSelect, type SearchableOption } from './SearchableSelect.tsx';
 
@@ -55,6 +55,8 @@ export const ConsumoMensalChart: React.FC<ConsumoMensalChartProps> = ({
   produtos,
   movimentacoes = [],
 }) => {
+  const [isExpanded, setIsExpanded] = useState<boolean>(false);
+  const [apenasComConsumo, setApenasComConsumo] = useState<boolean>(true);
   const [selectedProdutoId, setSelectedProdutoId] = useState<string>('');
   const [selectedCcId, setSelectedCcId] = useState<string>('');
   const [periodoMeses, setPeriodoMeses] = useState<6 | 12>(6);
@@ -240,8 +242,10 @@ export const ConsumoMensalChart: React.FC<ConsumoMensalChartProps> = ({
   };
 
   useEffect(() => {
-    fetchConsumoMensal();
-  }, [selectedProdutoId, selectedCcId, periodoMeses, movimentacoes.length, centrosCusto.length]);
+    if (isExpanded) {
+      fetchConsumoMensal();
+    }
+  }, [isExpanded, selectedProdutoId, selectedCcId, periodoMeses, movimentacoes.length, centrosCusto.length]);
 
   const effectiveData = apiData || fallbackComputed;
   const chartRows = effectiveData.dados_mensais;
@@ -252,6 +256,13 @@ export const ConsumoMensalChart: React.FC<ConsumoMensalChartProps> = ({
     () => produtos.find((p) => String(p.id) === selectedProdutoId) || null,
     [produtos, selectedProdutoId]
   );
+
+  // Filtra as séries para não exibir 40+ botões zerados caso o usuário não queira ver setores sem movimentação
+  const displaySeriesList = useMemo(() => {
+    if (!apenasComConsumo) return seriesList;
+    if (selectedCcId) return seriesList;
+    return seriesList.filter((s) => (metrica === 'valor' ? s.total_valor > 0 : s.total_quantidade > 0));
+  }, [seriesList, apenasComConsumo, selectedCcId, metrica]);
 
   const toggleSeriesVisibility = (id: number) => {
     setHiddenSeriesIds((prev) => ({ ...prev, [id]: !prev[id] }));
@@ -265,12 +276,56 @@ export const ConsumoMensalChart: React.FC<ConsumoMensalChartProps> = ({
     return `${val.toLocaleString('pt-BR')} ${un}`;
   };
 
+  // ESTADO OCULTO POR PADRÃO
+  if (!isExpanded) {
+    return (
+      <section className="bg-white rounded-xl border border-slate-200 shadow-sm p-4 transition-all">
+        <div
+          onClick={() => setIsExpanded(true)}
+          className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 cursor-pointer group"
+        >
+          <div className="flex items-center gap-3">
+            <div className="p-2.5 bg-blue-50 text-[#00237D] rounded-lg group-hover:bg-blue-100 transition-colors shrink-0">
+              <TrendingUp className="w-5 h-5" />
+            </div>
+            <div>
+              <div className="flex items-center gap-2 flex-wrap">
+                <h2 className="text-sm font-bold text-slate-800 tracking-tight">
+                  Histórico de Consumo Mensal por Centro de Custo
+                </h2>
+                <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-slate-100 text-slate-600 border border-slate-200 uppercase tracking-wide">
+                  Oculto por Padrão
+                </span>
+              </div>
+              <p className="text-xs text-slate-500 mt-0.5">
+                Clique para expandir o gráfico interativo e filtrar por produtos ou centros de custo
+              </p>
+            </div>
+          </div>
+
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              setIsExpanded(true);
+            }}
+            className="bg-[#00237D] hover:bg-[#001b61] text-white text-xs font-semibold px-3.5 py-2 rounded flex items-center justify-center gap-1.5 transition-all shadow-xs cursor-pointer uppercase tracking-wide shrink-0"
+          >
+            <ChevronDown className="w-4 h-4 text-[#6EC1E4]" />
+            <span>EXIBIR GRÁFICO DE CONSUMO</span>
+          </button>
+        </div>
+      </section>
+    );
+  }
+
+  // ESTADO EXPANDIDO
   return (
-    <section className="bg-white rounded-xl border border-slate-200 p-6 space-y-6">
+    <section className="bg-white rounded-xl border border-slate-200 p-6 space-y-6 shadow-sm transition-all">
       {/* Cabeçalho e Filtros Interativos */}
       <div className="flex flex-col xl:flex-row xl:items-center justify-between gap-4 pb-4 border-b border-slate-200">
         <div className="space-y-1">
-          <div className="flex items-center gap-2 text-xs text-slate-500">
+          <div className="flex items-center gap-2 text-xs text-slate-500 flex-wrap">
             <TrendingUp className="w-4 h-4 text-[#00237D]" />
             <span>Análise Histórica de Dispensação</span>
             <span aria-hidden="true">·</span>
@@ -289,7 +344,7 @@ export const ConsumoMensalChart: React.FC<ConsumoMensalChartProps> = ({
           </h2>
         </div>
 
-        {/* Barra de Controles */}
+        {/* Barra de Controles e Botão Ocultar */}
         <div className="flex flex-wrap items-center gap-2.5">
           {/* Filtro de Produto */}
           <div className="w-56">
@@ -374,6 +429,16 @@ export const ConsumoMensalChart: React.FC<ConsumoMensalChartProps> = ({
           >
             <RefreshCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin text-[#00237D]' : ''}`} />
           </button>
+
+          <button
+            type="button"
+            onClick={() => setIsExpanded(false)}
+            className="px-3 py-1.5 rounded-lg border border-slate-300 bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-semibold flex items-center gap-1 transition-colors cursor-pointer"
+            title="Recolher e ocultar este gráfico"
+          >
+            <ChevronUp className="w-4 h-4" />
+            <span>OCULTAR</span>
+          </button>
         </div>
       </div>
 
@@ -405,17 +470,29 @@ export const ConsumoMensalChart: React.FC<ConsumoMensalChartProps> = ({
         </div>
 
         <div>
-          <span className="text-xs text-slate-500 block">Centros de Custo Monitorados</span>
+          <span className="text-xs text-slate-500 block">Centros de Custo Exibidos</span>
           <span className="text-lg font-semibold text-slate-900 font-mono tabular-nums">
-            {seriesList.length} setor(es)
+            {displaySeriesList.length} de {seriesList.length} setor(es)
           </span>
         </div>
       </div>
 
-      {/* Seletores Rápidos de Séries (Linhas por Centro de Custo) */}
-      {seriesList.length > 0 && (
-        <div className="flex flex-wrap items-center gap-2">
-          <span className="text-xs text-slate-500 mr-1">Séries visíveis:</span>
+      {/* Seletores Rápidos de Séries e Filtro de "Apenas com Consumo" */}
+      <div className="space-y-2">
+        <div className="flex items-center justify-between gap-2 flex-wrap">
+          <div className="flex items-center gap-2">
+            <span className="text-xs text-slate-500 font-semibold">Séries Visíveis:</span>
+            <label className="flex items-center gap-1.5 text-xs text-slate-600 bg-slate-50 px-2.5 py-1 rounded border border-slate-200 cursor-pointer hover:bg-slate-100 transition-colors">
+              <input
+                type="checkbox"
+                checked={apenasComConsumo}
+                onChange={(e) => setApenasComConsumo(e.target.checked)}
+                className="rounded border-slate-300 text-[#00237D] focus:ring-[#00237D]"
+              />
+              <span>Mostrar apenas setores com consumo no período</span>
+            </label>
+          </div>
+
           <button
             type="button"
             onClick={() => setShowTotalLine((prev) => !prev)}
@@ -426,42 +503,50 @@ export const ConsumoMensalChart: React.FC<ConsumoMensalChartProps> = ({
             }`}
           >
             <span className="w-2 h-2 rounded-full bg-slate-400 inline-block" />
-            <span>Total Consolidado</span>
+            <span>Linha Total Consolidado</span>
           </button>
-
-          {seriesList.map((s, idx) => {
-            const color = LINE_PALETTE[idx % LINE_PALETTE.length];
-            const isHidden = !!hiddenSeriesIds[s.id];
-            const totalSerie = metrica === 'valor' ? s.total_valor : s.total_quantidade;
-
-            return (
-              <button
-                key={s.id}
-                type="button"
-                onClick={() => toggleSeriesVisibility(s.id)}
-                className={`px-2.5 py-1 rounded text-xs font-medium border transition-colors flex items-center gap-1.5 cursor-pointer whitespace-nowrap ${
-                  !isHidden
-                    ? 'bg-slate-50 text-slate-800 border-slate-300'
-                    : 'bg-white text-slate-400 border-slate-200 opacity-60'
-                }`}
-              >
-                <span
-                  className="w-2.5 h-2.5 rounded-full shrink-0"
-                  style={{ backgroundColor: isHidden ? '#cbd5e1' : color }}
-                />
-                <span>
-                  {s.codigo} - {s.nome}
-                </span>
-                <span className="font-mono tabular-nums text-[11px] text-slate-500">
-                  ({metrica === 'valor'
-                    ? totalSerie.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })
-                    : totalSerie.toLocaleString('pt-BR')})
-                </span>
-              </button>
-            );
-          })}
         </div>
-      )}
+
+        {displaySeriesList.length > 0 ? (
+          <div className="flex flex-wrap items-center gap-2 max-h-36 overflow-y-auto pr-1">
+            {displaySeriesList.map((s, idx) => {
+              const color = LINE_PALETTE[idx % LINE_PALETTE.length];
+              const isHidden = !!hiddenSeriesIds[s.id];
+              const totalSerie = metrica === 'valor' ? s.total_valor : s.total_quantidade;
+
+              return (
+                <button
+                  key={s.id}
+                  type="button"
+                  onClick={() => toggleSeriesVisibility(s.id)}
+                  className={`px-2.5 py-1 rounded text-xs font-medium border transition-colors flex items-center gap-1.5 cursor-pointer whitespace-nowrap ${
+                    !isHidden
+                      ? 'bg-slate-50 text-slate-800 border-slate-300'
+                      : 'bg-white text-slate-400 border-slate-200 opacity-60'
+                  }`}
+                >
+                  <span
+                    className="w-2.5 h-2.5 rounded-full shrink-0"
+                    style={{ backgroundColor: isHidden ? '#cbd5e1' : color }}
+                  />
+                  <span>
+                    {s.codigo} - {s.nome}
+                  </span>
+                  <span className="font-mono tabular-nums text-[11px] text-slate-500">
+                    ({metrica === 'valor'
+                      ? totalSerie.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })
+                      : totalSerie.toLocaleString('pt-BR')})
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+        ) : (
+          <div className="p-3 bg-slate-50 rounded text-xs text-slate-500 border border-dashed border-slate-200">
+            Nenhum setor com consumo registrado no período com os filtros atuais. Desmarque a opção "Mostrar apenas setores com consumo" acima para exibir todos os {seriesList.length} centros de custo.
+          </div>
+        )}
+      </div>
 
       {/* Área do Gráfico Recharts LineChart */}
       <div className="w-full h-80 pt-2">
@@ -520,8 +605,8 @@ export const ConsumoMensalChart: React.FC<ConsumoMensalChartProps> = ({
               />
             )}
 
-            {/* Uma Linha para cada Centro de Custo */}
-            {seriesList.map((serie, idx) => {
+            {/* Uma Linha para cada Centro de Custo no displaySeriesList */}
+            {displaySeriesList.map((serie, idx) => {
               if (hiddenSeriesIds[serie.id]) return null;
               const strokeColor = LINE_PALETTE[idx % LINE_PALETTE.length];
               const dataKey = metrica === 'valor' ? serie.key_valor : serie.key_qtd;
