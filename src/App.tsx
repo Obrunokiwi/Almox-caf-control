@@ -280,11 +280,41 @@ export default function App() {
     navigateToTab(target);
   };
 
+  // Sincronização do Histórico e Botão Voltar do Navegador (suporte completo na VPS e Web)
+  useEffect(() => {
+    const handleLocationChange = () => {
+      const hash = window.location.hash;
+      if (hash.startsWith('#module=')) {
+        const mod = hash.replace('#module=', '').trim();
+        if (mod) {
+          setCurrentTab(mod);
+          setIsGridView(false);
+          return;
+        }
+      }
+      if (hash === '#grid' || !hash) {
+        setIsGridView(true);
+      }
+    };
+
+    handleLocationChange();
+
+    window.addEventListener('popstate', handleLocationChange);
+    window.addEventListener('hashchange', handleLocationChange);
+    return () => {
+      window.removeEventListener('popstate', handleLocationChange);
+      window.removeEventListener('hashchange', handleLocationChange);
+    };
+  }, []);
+
   const navigateToTab = useCallback((tab: string) => {
     setCurrentTab(tab);
     setIsGridView(false);
     try {
-      window.history.pushState({ tab, isGridView: false }, '', `#module=${tab}`);
+      const targetHash = `#module=${tab}`;
+      if (window.location.hash !== targetHash) {
+        window.history.pushState({ tab, isGridView: false }, '', targetHash);
+      }
     } catch {}
   }, []);
 
@@ -293,7 +323,9 @@ export default function App() {
     loadData();
     setIsGridView(true);
     try {
-      window.history.pushState({ isGridView: true }, '', '#grid');
+      if (window.location.hash !== '#grid') {
+        window.history.pushState({ isGridView: true }, '', '#grid');
+      }
     } catch {}
   }, [loadData]);
 

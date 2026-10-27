@@ -114,3 +114,27 @@ CREATE TABLE IF NOT EXISTS empresas_unidades (
 CREATE INDEX IF NOT EXISTS idx_empresas_unidades_codigo ON empresas_unidades (codigo);
 CREATE INDEX IF NOT EXISTS idx_empresas_unidades_ativo ON empresas_unidades (ativo);
 
+-- 9. TABELA CENTRAL DE FORNECEDORES E ENTIDADES PARCEIRAS (COMPARTILHADA ENTRE TODAS AS ÁREAS)
+CREATE TABLE IF NOT EXISTS fornecedores (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    codigo TEXT UNIQUE NOT NULL,
+    razao_social TEXT NOT NULL,
+    nome_fantasia TEXT,
+    cnpj TEXT UNIQUE,
+    tipo_entidade TEXT NOT NULL DEFAULT 'fornecedor_comercial' CHECK (tipo_entidade IN ('fornecedor_comercial', 'entidade_parceira')),
+    inscricao_estadual TEXT,
+    telefone TEXT,
+    email TEXT,
+    contato_responsavel TEXT,
+    endereco TEXT,
+    cidade TEXT,
+    uf TEXT,
+    observacoes TEXT,
+    ativo INTEGER NOT NULL DEFAULT 1,
+    criado_em DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_fornecedores_codigo ON fornecedores (codigo);
+CREATE INDEX IF NOT EXISTS idx_fornecedores_cnpj ON fornecedores (cnpj);
+CREATE INDEX IF NOT EXISTS idx_fornecedores_tipo ON fornecedores (tipo_entidade);
+CREATE INDEX IF NOT EXISTS idx_fornecedores_ativo ON fornecedores (ativo);
+

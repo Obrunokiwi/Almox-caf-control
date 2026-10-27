@@ -1416,7 +1416,7 @@ export const ImportacaoCadastrosView: React.FC<ImportacaoCadastrosViewProps> = (
               Destino Selecionado: <span className="text-amber-300">{targetArea.nome} ({targetArea.sigla})</span>
             </h2>
             <p className="text-xs text-slate-300 mt-0.5">
-              Os registros de produtos e fornecedores serão gravados EXCLUSIVAMENTE na base desta área selecionada.
+              Produtos são gravados na área selecionada. O cadastro de <strong>fornecedores é compartilhado centralmente</strong> entre todas as áreas operacionais.
             </p>
           </div>
         </div>
@@ -1540,13 +1540,13 @@ export const ImportacaoCadastrosView: React.FC<ImportacaoCadastrosViewProps> = (
                     <span className="text-[10px] font-bold uppercase tracking-wider text-blue-700 bg-blue-50 px-2 py-0.5 rounded border border-blue-200">
                       Card 2
                     </span>
-                    <span className="text-[10px] font-bold uppercase tracking-wider text-indigo-800 bg-indigo-50 px-2 py-0.5 rounded border border-indigo-200 font-mono">
-                      Destino: {targetArea.nome} ({targetArea.arquivo_db})
+                    <span className="text-[10px] font-bold uppercase tracking-wider text-emerald-800 bg-emerald-50 px-2 py-0.5 rounded border border-emerald-200 font-mono">
+                      Banco Central Compartilhado (sistema.db • Todas as Áreas)
                     </span>
                   </div>
                   <h2 className="text-lg font-bold text-slate-800 mt-1">Importar Fornecedores / Entidades</h2>
                   <p className="text-xs text-slate-500">
-                    Fornecedores comerciais e parceiros na base {targetArea.sigla} com detecção de duplicidades
+                    Catálogo central compartilhado: disponível para Almoxarifado, CAF e todas as áreas operacionais
                   </p>
                 </div>
               </div>
@@ -1828,10 +1828,10 @@ export const ImportacaoCadastrosView: React.FC<ImportacaoCadastrosViewProps> = (
           </div>
 
           {/* Aviso Explícito de Destino na Prévia de Fornecedores */}
-          <div className="p-3 bg-indigo-50 border border-indigo-200 rounded-lg text-xs text-indigo-900 font-medium flex items-center gap-2">
-            <Building2 className="w-4 h-4 text-indigo-700 shrink-0" />
+          <div className="p-3 bg-emerald-50 border border-emerald-200 rounded-lg text-xs text-emerald-900 font-medium flex items-center gap-2">
+            <Building2 className="w-4 h-4 text-emerald-700 shrink-0" />
             <span>
-              Os dados de fornecedores/entidades abaixo serão gravados exclusivamente na base de dados da área: <strong>{targetArea.nome}</strong> (<code className="font-bold text-indigo-950 font-mono">{targetArea.arquivo_db}</code>).
+              Catálogo Compartilhado: Os fornecedores e entidades abaixo serão gravados no <strong>Banco Central (sistema.db)</strong> e sincronizados automaticamente com todas as áreas operacionais (Almoxarifado, CAF, etc.).
             </span>
           </div>
 

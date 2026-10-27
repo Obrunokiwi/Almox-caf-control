@@ -375,6 +375,73 @@ function migrateCentralDb(db: DatabaseSync, dbFilePath: string) {
     console.warn('[DB Central] Aviso ao verificar usuário admin:', err.message);
   }
 
+  // 6. Garante tabela central de fornecedores e entidades (compartilhada entre todas as áreas)
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS fornecedores (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        codigo TEXT UNIQUE NOT NULL,
+        razao_social TEXT NOT NULL,
+        nome_fantasia TEXT,
+        cnpj TEXT UNIQUE,
+        tipo_entidade TEXT NOT NULL DEFAULT 'fornecedor_comercial' CHECK (tipo_entidade IN ('fornecedor_comercial', 'entidade_parceira')),
+        inscricao_estadual TEXT,
+        telefone TEXT,
+        email TEXT,
+        contato_responsavel TEXT,
+        endereco TEXT,
+        cidade TEXT,
+        uf TEXT,
+        observacoes TEXT,
+        ativo INTEGER NOT NULL DEFAULT 1,
+        criado_em DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+    CREATE INDEX IF NOT EXISTS idx_fornecedores_codigo ON fornecedores (codigo);
+    CREATE INDEX IF NOT EXISTS idx_fornecedores_cnpj ON fornecedores (cnpj);
+    CREATE INDEX IF NOT EXISTS idx_fornecedores_tipo ON fornecedores (tipo_entidade);
+    CREATE INDEX IF NOT EXISTS idx_fornecedores_ativo ON fornecedores (ativo);
+  `);
+
+  // Migração inicial dos fornecedores existentes em almoxarifado.db para o banco central
+  try {
+    const centralFornCount = (db.prepare('SELECT COUNT(*) as c FROM fornecedores').get() as any)?.c || 0;
+    if (centralFornCount === 0) {
+      const almPath = resolveDbPath('almoxarifado.db');
+      if (fs.existsSync(almPath)) {
+        const almConn = new DatabaseSync(almPath);
+        try {
+          const rows = almConn.prepare(`
+            SELECT id, codigo, razao_social, nome_fantasia, cnpj, tipo_entidade, inscricao_estadual,
+                   telefone, email, contato_responsavel, endereco, cidade, uf, observacoes, ativo, criado_em
+            FROM fornecedores
+          `).all() as any[];
+          if (rows && rows.length > 0) {
+            const insForn = db.prepare(`
+              INSERT OR REPLACE INTO fornecedores (
+                id, codigo, razao_social, nome_fantasia, cnpj, tipo_entidade, inscricao_estadual,
+                telefone, email, contato_responsavel, endereco, cidade, uf, observacoes, ativo, criado_em
+              ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            `);
+            for (const r of rows) {
+              insForn.run(
+                r.id, r.codigo, r.razao_social, r.nome_fantasia || null, r.cnpj || null,
+                r.tipo_entidade || 'fornecedor_comercial', r.inscricao_estadual || null,
+                r.telefone || null, r.email || null, r.contato_responsavel || null,
+                r.endereco || null, r.cidade || null, r.uf || null, r.observacoes || null,
+                r.ativo ?? 1, r.criado_em || new Date().toISOString()
+              );
+            }
+            console.log(`[DB Central] ${rows.length} fornecedores migrados para o banco central compartilhado.`);
+            appliedMigrations++;
+          }
+        } finally {
+          try { almConn.close(); } catch {}
+        }
+      }
+    }
+  } catch (err: any) {
+    console.warn('[DB Central] Aviso ao migrar fornecedores existentes:', err.message);
+  }
+
   // Atualiza user_version
   const currVer = (db.prepare('PRAGMA user_version;').get() as any)?.user_version || 0;
   if (currVer < 3) {
@@ -801,6 +868,74 @@ export function syncMirrorsToArea(areaDb: DatabaseSync) {
         insEmp.run(e.id, e.codigo, e.nome, e.cnpj || null, e.endereco || null, e.cidade || null, e.uf || null, e.ativo ?? 1, e.criado_em || new Date().toISOString());
       }
     } catch {}
+
+    // 5. Fornecedores e Entidades Parceiras (Compartilhados globalmente em todas as áreas)
+    try {
+      const forns = central.prepare(`
+        SELECT id, codigo, razao_social, nome_fantasia, cnpj, tipo_entidade, inscricao_estadual,
+               telefone, email, contato_responsavel, endereco, cidade, uf, observacoes, ativo, criado_em
+        FROM fornecedores
+      `).all() as any[];
+
+      const insForn = areaDb.prepare(`
+        INSERT OR REPLACE INTO fornecedores (
+          id, codigo, razao_social, nome_fantasia, cnpj, tipo_entidade, inscricao_estadual,
+          telefone, email, contato_responsavel, endereco, cidade, uf, observacoes, ativo, criado_em
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `);
+
+      for (const f of forns) {
+        insForn.run(
+          f.id,
+          f.codigo,
+          f.razao_social,
+          f.nome_fantasia || null,
+          f.cnpj || null,
+          f.tipo_entidade || 'fornecedor_comercial',
+          f.inscricao_estadual || null,
+          f.telefone || null,
+          f.email || null,
+          f.contato_responsavel || null,
+          f.endereco || null,
+          f.cidade || null,
+          f.uf || null,
+          f.observacoes || null,
+          f.ativo ?? 1,
+          f.criado_em || new Date().toISOString()
+        );
+      }
+
+      // Sincroniza também a tabela espelho secundária 'fornecedores_entidades' se existir na área
+      try {
+        const insFornEnt = areaDb.prepare(`
+          INSERT OR REPLACE INTO fornecedores_entidades (
+            id, codigo, razao_social, nome_fantasia, cnpj, tipo_entidade, inscricao_estadual,
+            telefone, email, contato_responsavel, endereco, cidade, uf, observacoes, ativo
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `);
+        for (const f of forns) {
+          insFornEnt.run(
+            f.id,
+            f.codigo,
+            f.razao_social,
+            f.nome_fantasia || null,
+            f.cnpj || null,
+            f.tipo_entidade || 'fornecedor_comercial',
+            f.inscricao_estadual || null,
+            f.telefone || null,
+            f.email || null,
+            f.contato_responsavel || null,
+            f.endereco || null,
+            f.cidade || null,
+            f.uf || null,
+            f.observacoes || null,
+            f.ativo ?? 1
+          );
+        }
+      } catch {}
+    } catch (e: any) {
+      console.warn('[DB Mirror] Aviso ao sincronizar fornecedores:', e.message);
+    }
   } catch (err: any) {
     const dbPath = (areaDb as any).__dbPath || 'area.db';
     diagnoseDbWriteError('syncMirrorsToArea', dbPath, err);

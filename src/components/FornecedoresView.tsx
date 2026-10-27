@@ -19,7 +19,8 @@ import {
   Package,
   PackagePlus,
   Phone,
-  Building2
+  Building2,
+  Share2
 } from 'lucide-react';
 import type { Fornecedor, Usuario } from '../types/index.ts';
 import { useToast } from '../context/ToastContext.tsx';
@@ -301,9 +302,15 @@ export const FornecedoresView: React.FC<FornecedoresViewProps> = ({
             <Truck className="w-5 h-5" />
           </div>
           <div>
-            <h1 className="text-lg font-bold text-slate-800 tracking-tight">Fornecedores / Entidades Parceiras</h1>
+            <div className="flex items-center gap-2 flex-wrap">
+              <h1 className="text-lg font-bold text-slate-800 tracking-tight">Fornecedores / Entidades Parceiras</h1>
+              <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[11px] font-semibold bg-emerald-100 text-emerald-800 border border-emerald-200">
+                <Share2 className="w-3 h-3 text-emerald-600" />
+                Catálogo Compartilhado (Todas as Áreas)
+              </span>
+            </div>
             <p className="text-xs text-slate-500">
-              Cadastro de Fornecedores Comerciais e Outros Hospitais / Entidades Parceiras
+              Banco único compartilhado: fornecedores cadastrados aqui ficam automaticamente disponíveis para Almoxarifado, CAF e demais áreas
             </p>
           </div>
         </div>
@@ -311,10 +318,17 @@ export const FornecedoresView: React.FC<FornecedoresViewProps> = ({
         <div className="flex items-center gap-2">
           <HelpFloatingModal
             title="Ajuda & Fluxo — Fornecedores e Entidades Parceiras"
-            subtitle="Passo 1 do Cadastro • Fornecedores Comerciais e Hospitais Parceiros"
+            subtitle="Catálogo Único Compartilhado • Almoxarifado, CAF e Demais Áreas"
             currentStep={1}
             onNavigate={onNavigate}
             sections={[
+              {
+                title: 'Banco de Fornecedores Compartilhado',
+                badge: 'Multiárea',
+                tone: 'teal',
+                description:
+                  'O banco de fornecedores agora é 100% compartilhado entre todas as áreas operacionais. Qualquer fornecedor ou entidade parceira adicionado, editado ou importado fica instantaneamente disponível em todas as áreas operacionais do sistema.',
+              },
               {
                 title: 'Fluxo Padrão do Almoxarifado (3 Etapas)',
                 badge: 'Etapa 1 de 3',

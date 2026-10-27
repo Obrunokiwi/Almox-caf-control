@@ -1927,10 +1927,11 @@ apiRouter.post('/fornecedores', (req, res) => {
   }
 
   const tipoFinal = tipo_entidade === 'entidade_parceira' ? 'entidade_parceira' : 'fornecedor_comercial';
+  const central = getCentralDb();
 
   let codigoFinal = codigo ? String(codigo).trim().toUpperCase() : '';
   if (!codigoFinal) {
-    const countRow = db.prepare('SELECT COUNT(*) as count FROM fornecedores').get() as { count: number };
+    const countRow = central.prepare('SELECT COUNT(*) as count FROM fornecedores').get() as { count: number };
     const prefix = tipoFinal === 'entidade_parceira' ? 'ENT' : 'FORN';
     codigoFinal = `${prefix}-${String((countRow?.count || 0) + 1).padStart(4, '0')}`;
   }
@@ -1938,7 +1939,7 @@ apiRouter.post('/fornecedores', (req, res) => {
   const cnpjFinal = cnpj && String(cnpj).trim() ? String(cnpj).trim() : null;
 
   try {
-    const info = db.prepare(`
+    const info = central.prepare(`
       INSERT INTO fornecedores (
         codigo, razao_social, nome_fantasia, cnpj, tipo_entidade, inscricao_estadual,
         telefone, email, contato_responsavel, endereco, cidade, uf, observacoes, ativo
@@ -1959,31 +1960,10 @@ apiRouter.post('/fornecedores', (req, res) => {
       observacoes ? String(observacoes).trim() : null
     );
 
-    try {
-      db.prepare(`
-        INSERT OR REPLACE INTO fornecedores_entidades (
-          id, codigo, razao_social, nome_fantasia, cnpj, tipo_entidade, inscricao_estadual,
-          telefone, email, contato_responsavel, endereco, cidade, uf, observacoes, ativo
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
-      `).run(
-        info.lastInsertRowid,
-        codigoFinal,
-        String(razao_social).trim(),
-        nome_fantasia ? String(nome_fantasia).trim() : null,
-        cnpjFinal,
-        tipoFinal,
-        inscricao_estadual ? String(inscricao_estadual).trim() : null,
-        telefone ? String(telefone).trim() : null,
-        email ? String(email).trim() : null,
-        contato_responsavel ? String(contato_responsavel).trim() : null,
-        endereco ? String(endereco).trim() : null,
-        cidade ? String(cidade).trim() : null,
-        uf ? String(uf).trim().toUpperCase() : null,
-        observacoes ? String(observacoes).trim() : null
-      );
-    } catch {}
+    // Propaga imediatamente para todas as áreas operacionais (ALM, CAF, etc.)
+    syncMirrorsToAllAreas();
 
-    const novo = db.prepare('SELECT * FROM fornecedores WHERE id = ?').get(info.lastInsertRowid);
+    const novo = central.prepare('SELECT * FROM fornecedores WHERE id = ?').get(info.lastInsertRowid);
     res.status(201).json(novo);
   } catch (err: any) {
     if (err.message?.includes('UNIQUE constraint failed')) {
@@ -2025,9 +2005,10 @@ apiRouter.put('/fornecedores/:id', (req, res) => {
   }
 
   const tipoFinal = tipo_entidade === 'entidade_parceira' ? 'entidade_parceira' : 'fornecedor_comercial';
+  const central = getCentralDb();
 
   try {
-    db.prepare(`
+    central.prepare(`
       UPDATE fornecedores
       SET codigo = ?, razao_social = ?, nome_fantasia = ?, cnpj = ?, tipo_entidade = ?, inscricao_estadual = ?,
           telefone = ?, email = ?, contato_responsavel = ?, endereco = ?, cidade = ?, uf = ?,
@@ -2051,32 +2032,10 @@ apiRouter.put('/fornecedores/:id', (req, res) => {
       id
     );
 
-    try {
-      db.prepare(`
-        INSERT OR REPLACE INTO fornecedores_entidades (
-          id, codigo, razao_social, nome_fantasia, cnpj, tipo_entidade, inscricao_estadual,
-          telefone, email, contato_responsavel, endereco, cidade, uf, observacoes, ativo
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `).run(
-        Number(id),
-        String(codigo).trim().toUpperCase(),
-        String(razao_social).trim(),
-        nome_fantasia ? String(nome_fantasia).trim() : null,
-        cnpj && String(cnpj).trim() ? String(cnpj).trim() : null,
-        tipoFinal,
-        inscricao_estadual ? String(inscricao_estadual).trim() : null,
-        telefone ? String(telefone).trim() : null,
-        email ? String(email).trim() : null,
-        contato_responsavel ? String(contato_responsavel).trim() : null,
-        endereco ? String(endereco).trim() : null,
-        cidade ? String(cidade).trim() : null,
-        uf ? String(uf).trim().toUpperCase() : null,
-        observacoes ? String(observacoes).trim() : null,
-        ativo ?? 1
-      );
-    } catch {}
+    // Propaga imediatamente para todas as áreas operacionais (ALM, CAF, etc.)
+    syncMirrorsToAllAreas();
 
-    const atualizado = db.prepare('SELECT * FROM fornecedores WHERE id = ?').get(id);
+    const atualizado = central.prepare('SELECT * FROM fornecedores WHERE id = ?').get(id);
     res.json(atualizado);
   } catch (err: any) {
     if (err.message?.includes('UNIQUE constraint failed')) {
@@ -2095,24 +2054,40 @@ apiRouter.delete('/fornecedores/:id', (req, res) => {
   }
 
   const { id } = req.params;
-  const forn = db.prepare('SELECT * FROM fornecedores WHERE id = ?').get(id) as any;
+  const central = getCentralDb();
+  const forn = central.prepare('SELECT * FROM fornecedores WHERE id = ?').get(id) as any;
   if (!forn) {
     res.status(404).json({ error: 'Fornecedor/Entidade não encontrado' });
     return;
   }
 
   try {
-    runInTransaction(() => {
-      db.prepare('UPDATE movimentacoes SET fornecedor_id = NULL WHERE fornecedor_id = ?').run(id);
-      db.prepare('UPDATE lotes_estoque SET fornecedor_id = NULL WHERE fornecedor_id = ?').run(id);
-      db.prepare('DELETE FROM produto_fornecedores WHERE fornecedor_id = ?').run(id);
-      db.prepare('DELETE FROM fornecedores_entidades WHERE id = ?').run(id);
-      db.prepare('DELETE FROM fornecedores WHERE id = ?').run(id);
-    });
+    // Desvincula e remove em todas as áreas operacionais (ALM, CAF, etc.)
+    const areas = getAllActiveAreas();
+    for (const a of areas) {
+      try {
+        const areaDb = getAreaDb(a.sigla);
+        runInTransaction(() => {
+          areaDb.prepare('UPDATE movimentacoes SET fornecedor_id = NULL WHERE fornecedor_id = ?').run(id);
+          areaDb.prepare('UPDATE lotes_estoque SET fornecedor_id = NULL WHERE fornecedor_id = ?').run(id);
+          areaDb.prepare('DELETE FROM produto_fornecedores WHERE fornecedor_id = ?').run(id);
+          try { areaDb.prepare('DELETE FROM fornecedores_entidades WHERE id = ?').run(id); } catch {}
+          areaDb.prepare('DELETE FROM fornecedores WHERE id = ?').run(id);
+        }, areaDb);
+      } catch (areaErr: any) {
+        console.warn(`[Delete Fornecedor] Aviso ao limpar na área ${a.sigla}:`, areaErr.message);
+      }
+    }
+
+    // Exclui do banco central compartilhado
+    central.prepare('DELETE FROM fornecedores WHERE id = ?').run(id);
+
+    // Sincroniza espelhos para garantir consistência
+    syncMirrorsToAllAreas();
 
     res.json({
       id: Number(id),
-      message: `Cadastro "${forn.codigo} - ${forn.razao_social}" excluído com sucesso.`,
+      message: `Cadastro "${forn.codigo} - ${forn.razao_social}" excluído do banco compartilhado com sucesso.`,
     });
   } catch (err: any) {
     res.status(500).json({ error: 'Erro ao excluir fornecedor/entidade: ' + err.message });
@@ -8777,25 +8752,23 @@ function handleImportacaoFornecedoresRoute(req: any, res: any) {
   }
 
   try {
-    const targetDb = getAreaDb(areaRow.sigla);
-
     const result = runInTransaction(() => {
       const incluidos: any[] = [];
       const atualizados: any[] = [];
       const ignorados: any[] = [];
       const avisos: string[] = [];
 
-      const stmtCheckCod = targetDb.prepare('SELECT id, codigo, razao_social, telefone, email, endereco, cidade, uf FROM fornecedores WHERE UPPER(codigo) = UPPER(?)');
-      const stmtCheckCnpj = targetDb.prepare("SELECT id, codigo, razao_social FROM fornecedores WHERE cnpj = ? AND cnpj IS NOT NULL AND cnpj != ''");
+      const stmtCheckCod = central.prepare('SELECT id, codigo, razao_social, telefone, email, endereco, cidade, uf FROM fornecedores WHERE UPPER(codigo) = UPPER(?)');
+      const stmtCheckCnpj = central.prepare("SELECT id, codigo, razao_social FROM fornecedores WHERE cnpj = ? AND cnpj IS NOT NULL AND cnpj != ''");
 
-      const stmtInsertForn = targetDb.prepare(`
+      const stmtInsertForn = central.prepare(`
         INSERT INTO fornecedores (
           codigo, razao_social, nome_fantasia, cnpj, tipo_entidade, inscricao_estadual,
           telefone, email, contato_responsavel, endereco, cidade, uf, observacoes, ativo
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
       `);
 
-      const stmtUpdateForn = targetDb.prepare(`
+      const stmtUpdateForn = central.prepare(`
         UPDATE fornecedores
         SET razao_social = ?,
             nome_fantasia = COALESCE(?, nome_fantasia),
@@ -8844,7 +8817,7 @@ function handleImportacaoFornecedoresRoute(req: any, res: any) {
           }
         }
 
-        // Verifica existência pelo código na área de destino
+        // Verifica existência pelo código no banco central compartilhado
         const existeCod = stmtCheckCod.get(rawCod) as any;
         if (existeCod) {
           stmtUpdateForn.run(
@@ -8909,6 +8882,7 @@ function handleImportacaoFornecedoresRoute(req: any, res: any) {
 
       return {
         sucesso: true,
+        compartilhado: true,
         area: { id: areaRow.id, sigla: areaRow.sigla, nome: areaRow.nome, arquivo_db: areaRow.arquivo_db },
         total_lidos: fornecedores.length,
         total_incluidos: incluidos.length,
@@ -8919,14 +8893,17 @@ function handleImportacaoFornecedoresRoute(req: any, res: any) {
         ignorados,
         avisos,
       };
-    }, targetDb);
+    }, central);
+
+    // Sincroniza o banco compartilhado com todas as áreas ativas (ALM, CAF, etc.)
+    syncMirrorsToAllAreas();
 
     // Auditoria de Acesso no banco central
     registrarLogAcesso(
       user,
       clientIp,
       'importacao_fornecedores',
-      `Importação em massa de fornecedores na área ${areaRow.sigla}: ${result.total_incluidos} novos, ${result.total_atualizados} atualizados`,
+      `Importação em massa de fornecedores no Banco Central Compartilhado: ${result.total_incluidos} novos, ${result.total_atualizados} atualizados (disponíveis para todas as áreas)`,
       areaRow.sigla
     );
 
