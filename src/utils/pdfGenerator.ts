@@ -813,45 +813,57 @@ export async function generateComprovanteRequisicaoPDF(params: {
       }
     }
 
-    const prodDesc = `${it.produto_codigo || ''} - ${it.produto_nome || ''}`.trim();
+    let prodDesc = `${it.produto_codigo || ''} - ${it.produto_nome || ''}`.trim();
     const und = it.unidade_medida || 'UN';
     const qtdSolic = String(it.quantidade_solicitada);
+    const qtdAtend = String(it.quantidade_atendida ?? 0);
     const parecer = it.motivo_decisao || (it.status_item === 'negado' ? 'Item Negado' : 'Item Aprovado');
     const auditadoPor = it.analisado_por_nome || requisicao.almoxarife_nome || '—';
 
+    let lotesText = '—';
+    let validadeText = '—';
+
     if (lotes.length > 0) {
-      // Se dispensado de mais de um lote, listar uma linha por lote com a quantidade de cada um
-      lotes.forEach((l: any, index: number) => {
-        const isFirst = index === 0;
-        const row: any[] = [
-          isFirst ? prodDesc : `↳ ${it.produto_nome || it.produto_codigo || ''} (lote adicional)`,
-          und,
-          isFirst ? qtdSolic : '—',
-          String(l.quantidade),
-          l.numero_lote || 'N/A',
-          formatDataValidade(l.data_validade),
-        ];
-        if (comHistorico) {
-          row.push(isFirst ? parecer : '—');
-          row.push(isFirst ? auditadoPor : '—');
-        }
-        itemRows.push(row);
-      });
-    } else {
-      const row: any[] = [
-        prodDesc,
-        und,
-        qtdSolic,
-        String(it.quantidade_atendida ?? 0),
-        '—',
-        '—',
-      ];
-      if (comHistorico) {
-        row.push(parecer);
-        row.push(auditadoPor);
+      if (lotes.length === 1) {
+        const l = lotes[0];
+        lotesText = l.numero_lote || 'N/A';
+        validadeText = formatDataValidade(l.data_validade);
+      } else {
+        // Múltiplos lotes atendidos para o mesmo produto:
+        // Mantém em um único registro / campo, agrupando os lotes e validades sem desmembrar a linha
+        lotesText = lotes
+          .map((l: any) => `${l.numero_lote || 'N/A'}${l.quantidade !== undefined ? ` (${l.quantidade} ${und})` : ''}`)
+          .join('\n');
+        validadeText = lotes
+          .map((l: any) => formatDataValidade(l.data_validade))
+          .join('\n');
+
+        // Detalhamento dos lotes e validades diretamente abaixo da descrição do produto
+        const lotesSublinhas = lotes
+          .map((l: any) => `↳ Lote: ${l.numero_lote || 'N/A'} (Val: ${formatDataValidade(l.data_validade)}) • Dispensado: ${l.quantidade} ${und}`)
+          .join('\n');
+        prodDesc += `\n${lotesSublinhas}`;
       }
-      itemRows.push(row);
+    } else if (it.numero_lote) {
+      lotesText = it.numero_lote;
+      validadeText = formatDataValidade(it.data_validade);
     }
+
+    const row: any[] = [
+      prodDesc,
+      und,
+      qtdSolic,
+      qtdAtend,
+      lotesText,
+      validadeText,
+    ];
+
+    if (comHistorico) {
+      row.push(parecer);
+      row.push(auditadoPor);
+    }
+
+    itemRows.push(row);
   }
 
   const tableHead = !comHistorico
@@ -873,20 +885,20 @@ export async function generateComprovanteRequisicaoPDF(params: {
     ? {
         0: { cellWidth: 70 },
         1: { halign: 'center', cellWidth: 14 },
-        2: { halign: 'right', cellWidth: 24 },
-        3: { halign: 'right', fontStyle: 'bold', cellWidth: 24 },
-        4: { halign: 'center', fontStyle: 'bold', cellWidth: 26 },
+        2: { halign: 'right', cellWidth: 22 },
+        3: { halign: 'right', fontStyle: 'bold', cellWidth: 22 },
+        4: { halign: 'center', fontStyle: 'bold', cellWidth: 30 },
         5: { halign: 'center', cellWidth: 24 },
       }
     : {
         0: { cellWidth: 50 },
         1: { halign: 'center', cellWidth: 12 },
-        2: { halign: 'right', cellWidth: 18 },
-        3: { halign: 'right', fontStyle: 'bold', cellWidth: 18 },
-        4: { halign: 'center', fontStyle: 'bold', cellWidth: 22 },
-        5: { halign: 'center', cellWidth: 20 },
-        6: { cellWidth: 26 },
-        7: { cellWidth: 16 },
+        2: { halign: 'right', cellWidth: 16 },
+        3: { halign: 'right', fontStyle: 'bold', cellWidth: 16 },
+        4: { halign: 'center', fontStyle: 'bold', cellWidth: 28 },
+        5: { halign: 'center', cellWidth: 22 },
+        6: { cellWidth: 24 },
+        7: { cellWidth: 14 },
       };
 
   autoTable(doc, {
