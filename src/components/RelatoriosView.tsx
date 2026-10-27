@@ -340,7 +340,7 @@ export const RelatoriosView: React.FC<RelatoriosViewProps> = ({
     doc.setFont('helvetica', 'bold');
     doc.setFontSize(8);
     doc.setTextColor(0, 35, 125);
-    doc.text('SANTA CASA DE MISERICÓRDIA DE SÃO BERNARDO DO CAMPO', textStartX, 23);
+    doc.text('SANTA CASA S.B.C - MULTIHOSPITAL', textStartX, 23);
 
     // Metadados à direita
     doc.setFont('helvetica', 'normal');
@@ -565,7 +565,7 @@ export const RelatoriosView: React.FC<RelatoriosViewProps> = ({
       doc.setFont('helvetica', 'bold');
       doc.setFontSize(8);
       doc.setTextColor(0, 35, 125);
-      doc.text('SANTA CASA DE MISERICÓRDIA DE SÃO BERNARDO DO CAMPO', textStartX, 23);
+      doc.text('SANTA CASA S.B.C - MULTIHOSPITAL', textStartX, 23);
 
       // Metadados à direita
       const dataHoraAtual = new Date().toLocaleString('pt-BR');
@@ -1404,13 +1404,13 @@ export const RelatoriosView: React.FC<RelatoriosViewProps> = ({
                   <div className="border-b-2 border-[#00237D] pb-4 flex items-center justify-between">
                     <div className="flex items-center gap-4">
                       <div className="w-14 h-14 p-1 rounded-xl bg-white border border-slate-200 flex items-center justify-center shrink-0">
-                        <img src="/logo.png" alt="Logo Santa Casa SBC" className="w-full h-full object-contain" />
+                        <img src="/logo.png" alt="Logo Santa Casa S.B.C - Multihospital" className="w-full h-full object-contain" />
                       </div>
                       <div>
                         <h3 className="text-xl font-black text-slate-800 tracking-tight">ALMOXCONTROL</h3>
                         <p className="text-xs text-slate-500 font-medium">Controle Integrado de Almoxarifado e Farmácia Central</p>
                         <p className="text-[11px] text-[#00237D] font-bold uppercase tracking-wider mt-0.5">
-                          Santa Casa de Misericórdia de São Bernardo do Campo
+                          Santa Casa S.B.C - Multihospital
                         </p>
                       </div>
                     </div>

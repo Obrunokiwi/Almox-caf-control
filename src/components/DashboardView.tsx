@@ -52,13 +52,13 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
         <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
           <div className="flex items-center gap-3.5">
             <div className="w-12 h-12 rounded-xl bg-white p-1 border border-slate-200 shadow-xs flex items-center justify-center shrink-0">
-              <img src="/logo.png" alt="Logo Santa Casa SBC" className="w-full h-full object-contain" />
+              <img src="/logo.png" alt="Logo Santa Casa S.B.C - Multihospital" className="w-full h-full object-contain" />
             </div>
             <div>
               <h2 className="text-lg font-bold text-slate-900 flex items-center gap-2 flex-wrap">
                 <span>Painel Central do AlmoxControl</span>
                 <span className="text-[10px] font-bold uppercase tracking-wider bg-blue-50 text-[#00237D] px-2 py-0.5 rounded-full border border-blue-200">
-                  Santa Casa SBC
+                  Santa Casa S.B.C - Multihospital
                 </span>
               </h2>
               <p className="text-xs text-slate-500 mt-0.5">

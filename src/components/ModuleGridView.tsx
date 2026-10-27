@@ -299,7 +299,7 @@ export const ModuleGridView: React.FC<ModuleGridViewProps> = ({
         {/* Identificação do Sistema Minimalista */}
         <div className="flex items-center gap-3 min-w-0">
           <div className="w-9 h-9 rounded-lg bg-white p-1 shadow-xs flex items-center justify-center shrink-0">
-            <img src="/logo.png" alt="Logo Santa Casa SBC" className="w-full h-full object-contain" />
+            <img src="/logo.png" alt="Logo Santa Casa S.B.C - Multihospital" className="w-full h-full object-contain" />
           </div>
           <div className="flex items-center gap-2.5 min-w-0">
             <span className="text-sm font-bold tracking-wide text-white">ALMOXCONTROL</span>

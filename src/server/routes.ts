@@ -1680,6 +1680,7 @@ apiRouter.delete('/centros-custo/:id', (req, res) => {
 
 apiRouter.get('/usuarios', (req, res) => {
   const { busca, ativo, perfil, centro_custo_id } = req.query;
+  const central = getCentralDb();
 
   let sql = `
     SELECT u.id, u.codigo, u.nome, u.login, u.cpf, u.email, u.perfil, 
@@ -1717,8 +1718,15 @@ apiRouter.get('/usuarios', (req, res) => {
   }
 
   sql += ' ORDER BY u.nome ASC';
-  const rawList = db.prepare(sql).all(...params) as any[];
-  const userModStmt = db.prepare('SELECT modulo_chave FROM usuario_modulos WHERE usuario_id = ?');
+  const rawList = central.prepare(sql).all(...params) as any[];
+  const userModStmt = central.prepare('SELECT modulo_chave FROM usuario_modulos WHERE usuario_id = ?');
+  const userAreaStmt = central.prepare(`
+    SELECT a.id, a.sigla, a.nome
+    FROM usuario_areas ua
+    JOIN areas a ON ua.area_id = a.id
+    WHERE ua.usuario_id = ? AND a.ativa = 1
+    ORDER BY a.id ASC
+  `);
 
   const list = rawList.map((u) => {
     let permArray: string[] = [];
@@ -1745,11 +1753,22 @@ apiRouter.get('/usuarios', (req, res) => {
       mods = mods.filter((m) => m !== 'aprovacao-requisicoes');
     }
 
+    const areasUser = (userAreaStmt.all(u.id) as any[]) || [];
+    let areaIds = areasUser.map((a) => a.id);
+    if (areaIds.length === 0) {
+      areaIds = [1, 2];
+    }
+
     return {
       ...u,
       perfil: userRole,
       permissoes: permArray,
       modulos: mods,
+      areas_liberadas: areasUser.length > 0 ? areasUser : [
+        { id: 1, sigla: 'ALM', nome: 'Almoxarifado' },
+        { id: 2, sigla: 'CAF', nome: 'CAF' },
+      ],
+      area_ids: areaIds,
     };
   });
   res.json(list);
@@ -1838,7 +1857,7 @@ apiRouter.post('/usuarios', (req, res) => {
       if (perfil === 'admin' || perfil === 'ti_dpo') {
         central.prepare('INSERT OR IGNORE INTO usuario_areas (usuario_id, area_id) VALUES (?, 1), (?, 2)').run(novoId, novoId);
       } else {
-        const allowedAreas = Array.isArray(area_ids) && area_ids.length > 0 ? area_ids : [1];
+        const allowedAreas = Array.isArray(area_ids) && area_ids.length > 0 ? area_ids : [1, 2];
         for (const aId of allowedAreas) {
           central.prepare('INSERT OR IGNORE INTO usuario_areas (usuario_id, area_id) VALUES (?, ?)').run(novoId, Number(aId));
         }
@@ -1964,7 +1983,8 @@ apiRouter.put('/usuarios/:id', (req, res) => {
       if (Array.isArray(area_ids) && targetUser && targetUser.id !== 1 && targetUser.login !== 'admin') {
         central.prepare('DELETE FROM usuario_areas WHERE usuario_id = ?').run(id);
         const insArea = central.prepare('INSERT OR IGNORE INTO usuario_areas (usuario_id, area_id) VALUES (?, ?)');
-        for (const aId of area_ids) {
+        const targetAreaIds = area_ids.length > 0 ? area_ids : [1, 2];
+        for (const aId of targetAreaIds) {
           insArea.run(id, Number(aId));
         }
       }

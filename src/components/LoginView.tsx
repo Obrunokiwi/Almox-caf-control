@@ -298,7 +298,7 @@ export const LoginView: React.FC<LoginViewProps> = ({
         <div className="z-10">
           <div className="flex items-center gap-3.5">
             <div className="w-14 h-14 rounded-2xl bg-white p-1.5 shadow-md border border-slate-200/80 flex items-center justify-center shrink-0">
-              <img src="/logo.png" alt="Logo Santa Casa SBC" className="w-full h-full object-contain filter drop-shadow-xs" />
+              <img src="/logo.png" alt="Logo Santa Casa S.B.C - Multihospital" className="w-full h-full object-contain filter drop-shadow-xs" />
             </div>
             <div>
               <div className="flex items-center gap-2">

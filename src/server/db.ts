@@ -389,6 +389,48 @@ function migrateCentralDb(db: DatabaseSync, dbFilePath: string) {
       }
       db.prepare('INSERT OR IGNORE INTO usuario_areas (usuario_id, area_id) VALUES (?, 1), (?, 2)').run(adminUser.id, adminUser.id);
     }
+
+    // Migração e consolidação de usuários de almoxarifado.db para o banco central sistema.db
+    try {
+      const almPath = resolveDbPath('almoxarifado.db');
+      if (fs.existsSync(almPath)) {
+        const almConn = new DatabaseSync(almPath);
+        const rows = almConn.prepare("SELECT * FROM usuarios").all() as any[];
+        for (const row of rows) {
+          const exists = db.prepare("SELECT id FROM usuarios WHERE id = ? OR login = ?").get(row.id, row.login) as any;
+          if (!exists) {
+            db.prepare(`
+              INSERT INTO usuarios (id, codigo, nome, login, senha_hash, cpf, email, perfil, cargo_nome, permissoes, centro_custo_id, empresa_id, ativo, criado_em, ultimo_acesso)
+              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            `).run(
+              row.id,
+              row.codigo || `USR-${String(row.id).padStart(3, '0')}`,
+              row.nome,
+              row.login,
+              row.senha_hash || 'ef92b778bafe771e89245b89ecbc08a44a4e166c06659911881f383d4473e94f',
+              row.cpf || null,
+              row.email || null,
+              row.perfil || 'requisitante',
+              row.cargo_nome || row.perfil,
+              row.permissoes || '[]',
+              row.centro_custo_id || null,
+              row.empresa_id || null,
+              row.ativo ?? 1,
+              row.criado_em || new Date().toISOString(),
+              row.ultimo_acesso || null
+            );
+          }
+        }
+      }
+
+      // Garante que TODOS os usuários do sistema tenham acesso tanto à CAF quanto ao Almoxarifado
+      db.exec(`
+        INSERT OR IGNORE INTO usuario_areas (usuario_id, area_id)
+        SELECT u.id, a.id FROM usuarios u CROSS JOIN areas a WHERE a.ativa = 1;
+      `);
+    } catch (err: any) {
+      console.warn('[DB Central] Aviso ao sincronizar usuários para sistema.db:', err.message);
+    }
   } catch (err: any) {
     console.warn('[DB Central] Aviso ao verificar usuário admin:', err.message);
   }
@@ -864,6 +906,12 @@ export function syncMirrorsToArea(areaDb: DatabaseSync) {
         u.perfil, u.cargo_nome, u.permissoes, u.centro_custo_id,
         u.ativo ?? 1, u.criado_em || new Date().toISOString(), u.ultimo_acesso
       );
+    }
+
+    const userIds = users.map((u) => u.id);
+    if (userIds.length > 0) {
+      const placeholders = userIds.map(() => '?').join(',');
+      areaDb.prepare(`DELETE FROM usuarios WHERE id NOT IN (${placeholders})`).run(...userIds);
     }
 
     // 3. Módulos do usuário

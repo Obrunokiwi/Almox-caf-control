@@ -148,7 +148,7 @@ async function drawInstitutionalHeader(
   doc.setTextColor(255, 255, 255);
   doc.setFont('helvetica', 'bold');
   doc.setFontSize(10.5);
-  doc.text('IRMANDADE DA SANTA CASA DE MISERICÓRDIA DE BIRIGUI', textStartX, 17.5);
+  doc.text('SANTA CASA S.B.C - MULTIHOSPITAL', textStartX, 17.5);
 
   doc.setFont('helvetica', 'normal');
   doc.setFontSize(8);
@@ -578,24 +578,40 @@ export async function generateRelatorioMovimentacoesTelaPDF(params: {
 // ============================================================================
 // 3. GUIA DE REQUISIÇÃO, COMPROVANTE DE DISPENSAÇÃO E LOG DE AUDITORIA (PDF)
 // ============================================================================
-// Formatação de data e hora para Brasília (dd/mm/aaaa HH:mm:ss, sem fuso)
+// Formatação de data e hora para o horário do computador do usuário (dd/mm/aaaa HH:mm:ss)
 export function formatDataHoraBrasilia(dateInput?: string | Date | null): string {
   if (!dateInput) return '—';
   try {
-    const d = new Date(dateInput);
-    if (isNaN(d.getTime())) return String(dateInput);
-    const parts = new Intl.DateTimeFormat('pt-BR', {
-      timeZone: 'America/Sao_Paulo',
-      year: 'numeric',
-      month: '2-digit',
-      day: '2-digit',
-      hour: '2-digit',
-      minute: '2-digit',
-      second: '2-digit',
-      hour12: false,
-    }).formatToParts(d);
-    const get = (type: string) => parts.find((p) => p.type === type)?.value || '00';
-    return `${get('day')}/${get('month')}/${get('year')} ${get('hour')}:${get('minute')}:${get('second')}`;
+    if (dateInput instanceof Date) {
+      if (isNaN(dateInput.getTime())) return '—';
+      const pad = (n: number) => String(n).padStart(2, '0');
+      return `${pad(dateInput.getDate())}/${pad(dateInput.getMonth() + 1)}/${dateInput.getFullYear()} ${pad(dateInput.getHours())}:${pad(dateInput.getMinutes())}:${pad(dateInput.getSeconds())}`;
+    }
+
+    let dateStr = String(dateInput).trim();
+    if (!dateStr) return '—';
+
+    // Se veio do SQLite como "2026-10-27 18:09:51" sem indicador de fuso ('Z' ou '+'),
+    // o SQLite grava CURRENT_TIMESTAMP em UTC. Adiciona 'Z' para conversão correta ao horário do computador
+    if (!dateStr.includes('Z') && !dateStr.includes('+')) {
+      if (!dateStr.includes('T')) {
+        dateStr = dateStr.replace(' ', 'T') + 'Z';
+      } else {
+        dateStr = dateStr + 'Z';
+      }
+    }
+
+    const d = new Date(dateStr);
+    if (isNaN(d.getTime())) {
+      const fallback = new Date(dateInput);
+      if (isNaN(fallback.getTime())) return String(dateInput);
+      const pad = (n: number) => String(n).padStart(2, '0');
+      return `${pad(fallback.getDate())}/${pad(fallback.getMonth() + 1)}/${fallback.getFullYear()} ${pad(fallback.getHours())}:${pad(fallback.getMinutes())}:${pad(fallback.getSeconds())}`;
+    }
+
+    // Pega a data e hora no fuso/relógio do computador do usuário
+    const pad = (n: number) => String(n).padStart(2, '0');
+    return `${pad(d.getDate())}/${pad(d.getMonth() + 1)}/${d.getFullYear()} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
   } catch {
     return String(dateInput);
   }
@@ -676,7 +692,7 @@ export async function generateComprovanteRequisicaoPDF(params: {
   doc.setTextColor(15, 23, 42);
   doc.setFont('helvetica', 'bold');
   doc.setFontSize(10.5);
-  doc.text('IRMANDADE DA SANTA CASA DE MISERICÓRDIA DE BIRIGUI', textStartX, headerStartY + 4);
+  doc.text('SANTA CASA S.B.C - MULTIHOSPITAL', textStartX, headerStartY + 4);
 
   doc.setFont('helvetica', 'normal');
   doc.setFontSize(8);
@@ -707,14 +723,16 @@ export async function generateComprovanteRequisicaoPDF(params: {
   };
 
   const centroCustoStr = `${requisicao.centro_custo_codigo ? requisicao.centro_custo_codigo + ' - ' : ''}${requisicao.centro_custo_nome || ''}`;
-  const dataAtendimentoStr = formatDataHoraBrasilia(requisicao.data_atendimento);
+  const dataSolicitacaoStr = formatDataHoraBrasilia(requisicao.data_solicitacao);
+  const dataAtendimentoStr = requisicao.data_atendimento
+    ? formatDataHoraBrasilia(requisicao.data_atendimento)
+    : 'Aguardando Atendimento';
 
   let metaBody: any[][];
 
   if (!comHistorico) {
     // 4.1 Impressão padrão (limpa):
-    // Mantém: Número, Centro de Custo, Solicitante, Almoxarife e Data/Hora do Atendimento em linha única (sem fuso).
-    // Remove: Prioridade, Status Atual, Data Solicitação, Data Atendimento duplicada, Emissão, Operador.
+    // Mostra: Número, Centro de Custo, Solicitante, Almoxarife Responsável, Data/Hora da Solicitação (hora que o usuário fez) e Data/Hora do Atendimento no horário do computador.
     metaBody = [
       [
         'Nº da Requisição:',
@@ -729,8 +747,10 @@ export async function generateComprovanteRequisicaoPDF(params: {
         requisicao.almoxarife_nome || 'Aguardando Análise',
       ],
       [
+        'Data/Hora da Solicitação:',
+        dataSolicitacaoStr,
         'Data/Hora do Atendimento:',
-        { content: dataAtendimentoStr, colSpan: 3 },
+        dataAtendimentoStr,
       ],
     ];
     if (requisicao.observacao) {
@@ -741,7 +761,6 @@ export async function generateComprovanteRequisicaoPDF(params: {
     }
   } else {
     // 4.2 Impressão com histórico:
-    // Acrescenta dados de acompanhamento: Prioridade, Status, Data Solicitação, Data Atendimento.
     metaBody = [
       [
         'Nº da Requisição:',
@@ -758,13 +777,13 @@ export async function generateComprovanteRequisicaoPDF(params: {
       [
         'Solicitante:',
         requisicao.solicitante_nome || '—',
-        'Data Solicitação:',
-        formatDataHoraBrasilia(requisicao.data_solicitacao),
+        'Data/Hora da Solicitação:',
+        dataSolicitacaoStr,
       ],
       [
         'Almoxarife Responsável:',
         requisicao.almoxarife_nome || 'Aguardando Análise',
-        'Data Atendimento:',
+        'Data/Hora do Atendimento:',
         dataAtendimentoStr,
       ],
     ];
@@ -789,10 +808,10 @@ export async function generateComprovanteRequisicaoPDF(params: {
       lineWidth: 0.15,
     },
     columnStyles: {
-      0: { fontStyle: 'bold', fillColor: [248, 250, 252], cellWidth: 38 },
-      1: { cellWidth: 58 },
-      2: { fontStyle: 'bold', fillColor: [248, 250, 252], cellWidth: 38 },
-      3: { cellWidth: 48 },
+      0: { fontStyle: 'bold', fillColor: [248, 250, 252], cellWidth: 42 },
+      1: { cellWidth: 54 },
+      2: { fontStyle: 'bold', fillColor: [248, 250, 252], cellWidth: 42 },
+      3: { cellWidth: 44 },
     },
   });
 
@@ -1165,7 +1184,7 @@ export async function generateComprovanteNotaFiscalPDF(params: {
   doc.setFont('helvetica', 'bold');
   doc.setFontSize(11);
   doc.setTextColor(15, 23, 42);
-  doc.text('IRMANDADE DA SANTA CASA DE MISERICÓRDIA DE BIRIGUI', 14, currentY);
+  doc.text('SANTA CASA S.B.C - MULTIHOSPITAL', 14, currentY);
 
   currentY += 5;
   doc.setFont('helvetica', 'normal');
@@ -1426,7 +1445,7 @@ export async function generateComprovanteDevolucaoSetorPDF(
   doc.setFont('helvetica', 'bold');
   doc.setFontSize(13);
   doc.setTextColor(15, 23, 42);
-  doc.text('SANTA CASA DE MISERICÓRDIA', headerLeftX, currentY + 3);
+  doc.text('SANTA CASA S.B.C - MULTIHOSPITAL', headerLeftX, currentY + 3);
 
   doc.setFont('helvetica', 'normal');
   doc.setFontSize(8.5);

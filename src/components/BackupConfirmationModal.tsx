@@ -109,7 +109,7 @@ export const BackupConfirmationModal: React.FC<BackupConfirmationModalProps> = (
         <div className="bg-gradient-to-r from-[#00237D] via-[#102456] to-[#1e3f9a] p-5 text-white flex items-start justify-between">
           <div className="flex items-center gap-3">
             <div className="w-11 h-11 rounded-xl bg-white p-1 flex items-center justify-center shadow-xs shrink-0">
-              <img src="/logo.png" alt="Logo Santa Casa SBC" className="w-full h-full object-contain" />
+              <img src="/logo.png" alt="Logo Santa Casa S.B.C - Multihospital" className="w-full h-full object-contain" />
             </div>
             <div>
               <h3 className="font-bold text-base leading-tight">Exportação do Banco de Dados</h3>

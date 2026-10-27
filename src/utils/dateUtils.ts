@@ -5,38 +5,35 @@
 export function formatDateTimeBrasilia(dateInput?: string | Date | null): string {
   if (!dateInput) return '-';
   try {
+    if (dateInput instanceof Date) {
+      if (isNaN(dateInput.getTime())) return '-';
+      const pad = (n: number) => String(n).padStart(2, '0');
+      return `${pad(dateInput.getDate())}/${pad(dateInput.getMonth() + 1)}/${dateInput.getFullYear()} ${pad(dateInput.getHours())}:${pad(dateInput.getMinutes())}:${pad(dateInput.getSeconds())}`;
+    }
+
     let dateStr = String(dateInput).trim();
     if (!dateStr) return '-';
 
     // Se a string veio do SQLite como "2026-10-14 15:42:07" sem indicador de fuso,
-    // o SQLite grava CURRENT_TIMESTAMP em UTC. Adiciona 'Z' para conversão correta para Brasília (-03:00)
-    if (!dateStr.includes('Z') && !dateStr.includes('+') && !dateStr.includes('T')) {
-      dateStr = dateStr.replace(' ', 'T') + 'Z';
+    // o SQLite grava CURRENT_TIMESTAMP em UTC. Adiciona 'Z' para conversão correta ao horário do computador
+    if (!dateStr.includes('Z') && !dateStr.includes('+')) {
+      if (!dateStr.includes('T')) {
+        dateStr = dateStr.replace(' ', 'T') + 'Z';
+      } else {
+        dateStr = dateStr + 'Z';
+      }
     }
 
     const d = new Date(dateStr);
-    if (isNaN(d.getTime())) return String(dateInput);
+    if (isNaN(d.getTime())) {
+      const fallback = new Date(dateInput);
+      if (isNaN(fallback.getTime())) return String(dateInput);
+      const pad = (n: number) => String(n).padStart(2, '0');
+      return `${pad(fallback.getDate())}/${pad(fallback.getMonth() + 1)}/${fallback.getFullYear()} ${pad(fallback.getHours())}:${pad(fallback.getMinutes())}:${pad(fallback.getSeconds())}`;
+    }
 
-    // Formato brasileiro estrito: dd/mm/aaaa HH:mm:ss, 24h, sem fuso ("UTC", "GMT", "Z")
-    const parts = new Intl.DateTimeFormat('pt-BR', {
-      timeZone: 'America/Sao_Paulo',
-      year: 'numeric',
-      month: '2-digit',
-      day: '2-digit',
-      hour: '2-digit',
-      minute: '2-digit',
-      second: '2-digit',
-      hour12: false,
-    }).formatToParts(d);
-
-    const day = parts.find((p) => p.type === 'day')?.value || '00';
-    const month = parts.find((p) => p.type === 'month')?.value || '00';
-    const year = parts.find((p) => p.type === 'year')?.value || '0000';
-    const hour = parts.find((p) => p.type === 'hour')?.value || '00';
-    const minute = parts.find((p) => p.type === 'minute')?.value || '00';
-    const second = parts.find((p) => p.type === 'second')?.value || '00';
-
-    return `${day}/${month}/${year} ${hour}:${minute}:${second}`;
+    const pad = (n: number) => String(n).padStart(2, '0');
+    return `${pad(d.getDate())}/${pad(d.getMonth() + 1)}/${d.getFullYear()} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
   } catch {
     return String(dateInput);
   }

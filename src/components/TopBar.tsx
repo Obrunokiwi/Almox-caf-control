@@ -381,7 +381,7 @@ export const TopBar: React.FC<TopBarProps> = ({
             title="Voltar ao Painel de Módulos em Grade"
           >
             <div className="w-8 h-8 rounded-lg bg-white p-0.5 shadow-2xs border border-slate-200/80 flex items-center justify-center shrink-0">
-              <img src="/logo.png" alt="Logo Santa Casa SBC" className="w-full h-full object-contain" />
+              <img src="/logo.png" alt="Logo Santa Casa S.B.C - Multihospital" className="w-full h-full object-contain" />
             </div>
             <div className="hidden sm:flex flex-col items-start leading-none">
               <span className="font-extrabold text-slate-900 text-xs tracking-tight">ALMOXCONTROL</span>

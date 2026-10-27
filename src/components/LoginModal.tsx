@@ -50,7 +50,7 @@ export const LoginModal: React.FC<LoginModalProps> = ({
         <div className="p-4 px-6 border-b border-slate-200 flex items-center justify-between bg-[#00237D] text-white">
           <div className="flex items-center gap-2.5">
             <div className="w-7 h-7 rounded-lg bg-white p-0.5 flex items-center justify-center shrink-0">
-              <img src="/logo.png" alt="Logo Santa Casa SBC" className="w-full h-full object-contain" />
+              <img src="/logo.png" alt="Logo Santa Casa S.B.C - Multihospital" className="w-full h-full object-contain" />
             </div>
             <h3 className="text-sm font-bold">Autenticação AlmoxControl</h3>
           </div>

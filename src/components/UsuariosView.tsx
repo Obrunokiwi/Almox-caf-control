@@ -164,6 +164,7 @@ export const UsuariosView: React.FC<UsuariosViewProps> = ({
   const [formCcId, setFormCcId] = useState<number | ''>('');
   const [formEmpresaId, setFormEmpresaId] = useState<number>(1);
   const [formAtivo, setFormAtivo] = useState<number>(1);
+  const [formAreaIds, setFormAreaIds] = useState<number[]>([1, 2]);
   const [formHistoricoCriacao, setFormHistoricoCriacao] = useState('');
   const [formHistoricoAcesso, setFormHistoricoAcesso] = useState('');
 
@@ -326,6 +327,7 @@ export const UsuariosView: React.FC<UsuariosViewProps> = ({
     setFormCcId(centrosCusto[0]?.id || '');
     setFormEmpresaId(unidades[0]?.id || 1);
     setFormAtivo(1);
+    setFormAreaIds([1, 2]);
     setFormHistoricoCriacao(new Date().toLocaleString('pt-BR'));
     setFormHistoricoAcesso('Primeiro acesso pendente');
     setFormModulos([...(MODULOS_PADRAO_POR_PERFIL['requisitante'] || ['requisicoes', 'perfil'])]);
@@ -355,6 +357,7 @@ export const UsuariosView: React.FC<UsuariosViewProps> = ({
     setFormCcId(u.centro_custo_id || '');
     setFormEmpresaId(u.empresa_id || 1);
     setFormAtivo(u.ativo);
+    setFormAreaIds(u.area_ids && u.area_ids.length > 0 ? [...u.area_ids] : [1, 2]);
     setFormHistoricoCriacao(u.criado_em ? new Date(u.criado_em).toLocaleString('pt-BR') : '29/09/2026');
     setFormHistoricoAcesso(u.ultimo_acesso ? new Date(u.ultimo_acesso).toLocaleString('pt-BR') : 'Sem registros recentes');
     const isTargetAdmin = u.id === 1 || u.login === 'admin';
@@ -429,6 +432,7 @@ export const UsuariosView: React.FC<UsuariosViewProps> = ({
         empresa_id: formEmpresaId || 1,
         ativo: formAtivo,
         modulos: formModulos,
+        area_ids: formAreaIds,
       };
 
       if (formSenha && formSenha.trim()) {
@@ -803,6 +807,129 @@ export const UsuariosView: React.FC<UsuariosViewProps> = ({
                     disabled={formMode === 'view'}
                     placeholder="Selecione o Status..."
                   />
+                </div>
+
+                {/* Seleção de Áreas com Permissão de Acesso (Almoxarifado / CAF / Ambas) */}
+                <div className="md:col-span-3 bg-blue-50/60 p-4 rounded-xl border border-blue-200/80 mt-1">
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 mb-2">
+                    <div>
+                      <label className="block text-xs font-bold text-slate-800 uppercase tracking-wider">
+                        Acesso às Áreas Operacionais *
+                      </label>
+                      <p className="text-[11px] text-slate-500">
+                        Defina se o usuário terá acesso ao Almoxarifado, à CAF (Farmácia Central) ou a ambas as áreas.
+                      </p>
+                    </div>
+                    {formMode !== 'view' && (
+                      <div className="flex flex-wrap items-center gap-1.5">
+                        <button
+                          type="button"
+                          onClick={() => setFormAreaIds([1, 2])}
+                          className={`px-2.5 py-1 text-[11px] font-bold rounded cursor-pointer transition-all ${
+                            formAreaIds.includes(1) && formAreaIds.includes(2)
+                              ? 'bg-[#00237D] text-white shadow-xs'
+                              : 'bg-white border border-slate-300 text-slate-600 hover:bg-slate-50'
+                          }`}
+                        >
+                          Ambas as Áreas (Padrão)
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setFormAreaIds([1])}
+                          className={`px-2.5 py-1 text-[11px] font-bold rounded cursor-pointer transition-all ${
+                            formAreaIds.length === 1 && formAreaIds.includes(1)
+                              ? 'bg-teal-600 text-white shadow-xs'
+                              : 'bg-white border border-slate-300 text-slate-600 hover:bg-slate-50'
+                          }`}
+                        >
+                          Somente Almoxarifado
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setFormAreaIds([2])}
+                          className={`px-2.5 py-1 text-[11px] font-bold rounded cursor-pointer transition-all ${
+                            formAreaIds.length === 1 && formAreaIds.includes(2)
+                              ? 'bg-amber-600 text-white shadow-xs'
+                              : 'bg-white border border-slate-300 text-slate-600 hover:bg-slate-50'
+                          }`}
+                        >
+                          Somente CAF
+                        </button>
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mt-3">
+                    <label
+                      className={`flex items-start gap-3 p-3 rounded-lg border transition-all cursor-pointer ${
+                        formAreaIds.includes(1)
+                          ? 'bg-white border-teal-500 shadow-xs ring-1 ring-teal-500/30'
+                          : 'bg-slate-50/80 border-slate-200 opacity-60'
+                      }`}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={formAreaIds.includes(1)}
+                        disabled={formMode === 'view'}
+                        onChange={(e) => {
+                          if (e.target.checked) {
+                            setFormAreaIds((prev) => Array.from(new Set([...prev, 1])));
+                          } else {
+                            if (formAreaIds.length === 1 && formAreaIds.includes(1)) {
+                              toast.warning('Atenção', 'O usuário precisa ter acesso a pelo menos uma área.');
+                              return;
+                            }
+                            setFormAreaIds((prev) => prev.filter((id) => id !== 1));
+                          }
+                        }}
+                        className="mt-0.5 w-4 h-4 text-teal-600 rounded border-slate-300 focus:ring-teal-500 cursor-pointer"
+                      />
+                      <div>
+                        <div className="font-bold text-xs text-slate-800 flex items-center gap-1.5">
+                          <span>Almoxarifado (ALM)</span>
+                          <span className="text-[10px] bg-teal-100 text-teal-800 px-1.5 py-0.2 rounded font-semibold">Insumos & Materiais</span>
+                        </div>
+                        <p className="text-[11px] text-slate-500 mt-0.5">
+                          Estoque físico de materiais médicos, escritório, limpeza e suprimentos.
+                        </p>
+                      </div>
+                    </label>
+
+                    <label
+                      className={`flex items-start gap-3 p-3 rounded-lg border transition-all cursor-pointer ${
+                        formAreaIds.includes(2)
+                          ? 'bg-white border-blue-600 shadow-xs ring-1 ring-blue-600/30'
+                          : 'bg-slate-50/80 border-slate-200 opacity-60'
+                      }`}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={formAreaIds.includes(2)}
+                        disabled={formMode === 'view'}
+                        onChange={(e) => {
+                          if (e.target.checked) {
+                            setFormAreaIds((prev) => Array.from(new Set([...prev, 2])));
+                          } else {
+                            if (formAreaIds.length === 1 && formAreaIds.includes(2)) {
+                              toast.warning('Atenção', 'O usuário precisa ter acesso a pelo menos uma área.');
+                              return;
+                            }
+                            setFormAreaIds((prev) => prev.filter((id) => id !== 2));
+                          }
+                        }}
+                        className="mt-0.5 w-4 h-4 text-blue-600 rounded border-slate-300 focus:ring-blue-500 cursor-pointer"
+                      />
+                      <div>
+                        <div className="font-bold text-xs text-slate-800 flex items-center gap-1.5">
+                          <span>CAF - Farmácia Central</span>
+                          <span className="text-[10px] bg-blue-100 text-blue-800 px-1.5 py-0.2 rounded font-semibold">Medicamentos</span>
+                        </div>
+                        <p className="text-[11px] text-slate-500 mt-0.5">
+                          Central de Abastecimento Farmacêutico, controle de medicamentos e lotes controlados.
+                        </p>
+                      </div>
+                    </label>
+                  </div>
                 </div>
               </div>
             )}
@@ -1209,6 +1336,7 @@ export const UsuariosView: React.FC<UsuariosViewProps> = ({
                 <th className="py-2.5 px-3">CPF</th>
                 <th className="py-2.5 px-3">E-mail</th>
                 <th className="py-2.5 px-3 text-center">Perfil</th>
+                <th className="py-2.5 px-3 text-center">Áreas</th>
                 <th className="py-2.5 px-3">Centro de Custo</th>
                 <th className="py-2.5 px-3 text-center">Ativo</th>
                 <th className="py-2.5 px-3 text-right">Ações</th>
@@ -1226,6 +1354,23 @@ export const UsuariosView: React.FC<UsuariosViewProps> = ({
                     <td className="py-2 px-3 text-slate-600">{u.cpf || '-'}</td>
                     <td className="py-2 px-3 text-slate-600">{u.email || '-'}</td>
                     <td className="py-2 px-3 text-center">{getPerfilBadge(u.perfil)}</td>
+                    <td className="py-2 px-3 text-center">
+                      {(!u.area_ids || u.area_ids.length === 0 || (u.area_ids.includes(1) && u.area_ids.includes(2))) ? (
+                        <span className="inline-flex items-center gap-1 font-bold bg-blue-50 text-blue-800 px-2 py-0.5 rounded text-[10px] border border-blue-200" title="Acesso liberado tanto ao Almoxarifado quanto à CAF">
+                          ALM + CAF
+                        </span>
+                      ) : u.area_ids.includes(1) ? (
+                        <span className="inline-flex items-center gap-1 font-bold bg-teal-50 text-teal-800 px-2 py-0.5 rounded text-[10px] border border-teal-200" title="Acesso restrito ao Almoxarifado">
+                          ALM
+                        </span>
+                      ) : u.area_ids.includes(2) ? (
+                        <span className="inline-flex items-center gap-1 font-bold bg-amber-50 text-amber-800 px-2 py-0.5 rounded text-[10px] border border-amber-200" title="Acesso restrito à CAF">
+                          CAF
+                        </span>
+                      ) : (
+                        <span className="text-slate-400 text-[10px]">-</span>
+                      )}
+                    </td>
                     <td className="py-2 px-3 text-slate-600">{u.centro_custo_nome || 'Geral / Almoxarifado'}</td>
                     <td className="py-2 px-3 text-center">
                       {u.ativo ? (
@@ -1276,7 +1421,7 @@ export const UsuariosView: React.FC<UsuariosViewProps> = ({
                 ))
               ) : (
                 <tr>
-                  <td colSpan={9} className="py-8 text-center text-slate-500">
+                  <td colSpan={10} className="py-8 text-center text-slate-500">
                     Nenhum usuário encontrado para os critérios pesquisados.
                   </td>
                 </tr>
