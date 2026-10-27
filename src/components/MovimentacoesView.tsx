@@ -311,7 +311,7 @@ export const MovimentacoesView: React.FC<MovimentacoesViewProps> = ({
             activeUnidade || null,
             'print'
           );
-          setPdfPreviewDoc(pdfDoc);
+          showToast('Comprovante de devolução enviado para a impressão do navegador.');
         } catch (pdfErr) {
           console.error('Erro ao emitir comprovante de devolução de setor:', pdfErr);
         }
@@ -427,7 +427,7 @@ export const MovimentacoesView: React.FC<MovimentacoesViewProps> = ({
       });
 
       if (mode === 'print') {
-        setPdfPreviewDoc(generated);
+        showToast('Extrato de movimentações enviado para a impressão do navegador.');
       } else {
         showToast(`Relatório PDF gerado com ${filtered.length} movimentação(ões).`);
       }
@@ -445,7 +445,7 @@ export const MovimentacoesView: React.FC<MovimentacoesViewProps> = ({
     if (isGeneratingPdf) return;
     setIsGeneratingPdf(true);
     try {
-      const generated = await generateComprovanteMovimentacaoPDF({
+      await generateComprovanteMovimentacaoPDF({
         mov,
         currentUser,
         activeUnidade,
@@ -453,7 +453,7 @@ export const MovimentacoesView: React.FC<MovimentacoesViewProps> = ({
       });
 
       if (mode === 'print') {
-        setPdfPreviewDoc(generated);
+        showToast(`Comprovante #${mov.id} enviado para a impressão do navegador.`);
       } else {
         showToast(`Comprovante da movimentação #${mov.id} baixado em PDF.`);
       }

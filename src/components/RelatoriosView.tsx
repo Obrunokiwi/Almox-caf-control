@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { SearchableSelect } from './SearchableSelect.tsx';
 import {
   FileBarChart,
@@ -89,6 +89,18 @@ export const RelatoriosView: React.FC<RelatoriosViewProps> = ({
       setFeedbackBanner((prev) => (prev?.message === message ? null : prev));
     }, 5000);
   };
+
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        if (selectedReportId) {
+          setSelectedReportId(null);
+        }
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [selectedReportId]);
 
   // Filtros do Modal
   const [filtroCcId, setFiltroCcId] = useState<string>('');
@@ -437,14 +449,14 @@ export const RelatoriosView: React.FC<RelatoriosViewProps> = ({
     }
 
     const filename = `${reportIdSlug}_${new Date().toISOString().slice(0, 10)}.pdf`;
-    const generated = finalizeJsPDF(
+    finalizeJsPDF(
       doc,
       filename,
       String(dataToExport.titulo || reportIdSlug),
       mode
     );
     if (mode === 'print') {
-      setPdfPreviewDoc(generated);
+      showFeedback('success', `Relatório "${dataToExport.titulo || reportIdSlug}" enviado para a impressão do navegador.`);
     } else {
       showFeedback('success', `Relatório "${dataToExport.titulo || reportIdSlug}" exportado em PDF com sucesso.`);
     }
@@ -950,7 +962,7 @@ export const RelatoriosView: React.FC<RelatoriosViewProps> = ({
       }
 
       const filename = `Relatorio_Geral_Almoxarifado_${new Date().toISOString().slice(0, 10)}.pdf`;
-      const generated = finalizeJsPDF(
+      finalizeJsPDF(
         doc,
         filename,
         'Relatório Geral Consolidado do Almoxarifado',
@@ -958,7 +970,7 @@ export const RelatoriosView: React.FC<RelatoriosViewProps> = ({
       );
 
       if (mode === 'print') {
-        setPdfPreviewDoc(generated);
+        showFeedback('success', 'Relatório Geral Consolidado enviado diretamente para a impressão do navegador.');
       } else {
         showFeedback('success', 'Relatório Geral Consolidado do Almoxarifado exportado em PDF com sucesso.');
       }
@@ -1319,7 +1331,14 @@ export const RelatoriosView: React.FC<RelatoriosViewProps> = ({
           MODAL DE VISUALIZAÇÃO / IMPRESSÃO / EXPORTAÇÃO DE RELATÓRIO
          ========================================================================= */}
       {selectedReportId && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4 animate-fadeIn">
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4 animate-fadeIn"
+          onClick={(e) => {
+            if (e.target === e.currentTarget) {
+              setSelectedReportId(null);
+            }
+          }}
+        >
           <div className="bg-white rounded-xl shadow-2xl border border-slate-300 w-full max-w-5xl max-h-[92vh] flex flex-col overflow-hidden">
             {/* Cabeçalho do Modal */}
             <div className="px-6 py-4 bg-slate-100 border-b border-slate-200 flex flex-wrap items-center justify-between gap-3">

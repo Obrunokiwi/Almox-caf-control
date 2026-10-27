@@ -76,27 +76,40 @@ export function triggerDirectIframePrint(blobUrl: string) {
 
     const iframe = document.createElement('iframe');
     iframe.id = 'jspdf-direct-print-frame';
+    // Colocado fora da área visível com dimensões reais para o mecanismo de PDF renderizar
     iframe.style.position = 'fixed';
-    iframe.style.right = '0';
-    iframe.style.bottom = '0';
-    iframe.style.width = '1px';
-    iframe.style.height = '1px';
+    iframe.style.top = '-10000px';
+    iframe.style.left = '-10000px';
+    iframe.style.width = '1000px';
+    iframe.style.height = '1000px';
     iframe.style.border = '0';
-    iframe.style.opacity = '0.01';
+    iframe.style.opacity = '0.001';
+    iframe.style.pointerEvents = 'none';
     iframe.src = blobUrl;
 
+    const executePrint = () => {
+      try {
+        iframe.contentWindow?.focus();
+        iframe.contentWindow?.print();
+      } catch (err) {
+        console.warn('Tentativa de disparo de impressão no iframe:', err);
+      }
+    };
+
     iframe.onload = () => {
-      setTimeout(() => {
-        try {
-          iframe.contentWindow?.focus();
-          iframe.contentWindow?.print();
-        } catch {
-          // Caso o navegador exija interação no preview modal, o modal já estará visível
-        }
-      }, 250);
+      setTimeout(executePrint, 300);
     };
 
     document.body.appendChild(iframe);
+
+    // Fallback de tempo caso o evento onload não dispare no plugin de PDF
+    setTimeout(executePrint, 600);
+
+    // Limpeza após 2 minutos para liberar memória
+    setTimeout(() => {
+      const el = document.getElementById('jspdf-direct-print-frame');
+      if (el) el.remove();
+    }, 120000);
   } catch (err) {
     console.error('Erro ao acionar impressão direta via iframe:', err);
   }

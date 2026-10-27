@@ -200,7 +200,7 @@ export const RequisicoesView: React.FC<RequisicoesViewProps> = ({
       });
 
       if (mode === 'print') {
-        setPdfPreviewDoc(generated);
+        toast.success('Impressão Solicitada', `Requisição ${targetReq.numero_requisicao} enviada diretamente para a impressão do navegador.`);
       }
     } catch (err) {
       console.error('Erro ao gerar PDF da requisição:', err);

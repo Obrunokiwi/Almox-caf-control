@@ -614,7 +614,7 @@ export const EntradasView: React.FC<EntradasViewProps> = ({
       });
 
       if (mode === 'print') {
-        setPdfPreviewDoc(doc);
+        toast.success('Impressão Solicitada', `Nota Fiscal ${nota.numero_documento} enviada diretamente para a impressão do navegador.`);
       } else {
         toast.success('Download Concluído', `PDF da Nota Fiscal ${nota.numero_documento} baixado.`);
       }
