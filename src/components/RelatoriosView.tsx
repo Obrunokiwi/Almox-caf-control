@@ -102,13 +102,26 @@ export const RelatoriosView: React.FC<RelatoriosViewProps> = ({
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [selectedReportId]);
 
-  // Filtros do Modal
-  const [filtroCcId, setFiltroCcId] = useState<string>('');
-  const [filtroProdutoId, setFiltroProdutoId] = useState<string>('');
-  const [filtroTipoProduto, setFiltroTipoProduto] = useState<string>('');
+  // Área ativa e cabeçalhos de requisição
+  const activeAreaSigla = (
+    currentUser?.area_sigla ||
+    sessionStorage.getItem('multi_almox_area_sigla') ||
+    localStorage.getItem('multi_almox_area_sigla') ||
+    'ALM'
+  ).toUpperCase();
+  const isCaf = activeAreaSigla === 'CAF';
+
+  const getReportHeaders = () => {
+    const token = sessionStorage.getItem('multi_almox_token') || localStorage.getItem('multi_almox_token') || '';
+    return {
+      'Content-Type': 'application/json',
+      'X-Area-Sigla': activeAreaSigla,
+      'Authorization': token ? `Bearer ${token}` : `user:${currentUser?.id || 1}`,
+    };
+  };
 
   // Categorias de Relatórios Operacionais
-  const categorias = [
+  const categorias = React.useMemo(() => [
     {
       nome: 'Estoque',
       icone: Package,
@@ -116,20 +129,28 @@ export const RelatoriosView: React.FC<RelatoriosViewProps> = ({
       relatorios: [
         {
           id: 'relatorio_geral_almoxarifado',
-          titulo: '1. Relatório Geral Consolidado do Almoxarifado (Painel Geral Impresso / PDF)',
-          descricao: 'Visão geral completa com indicadores (KPIs), alertas de validade de lotes (30/60/90 dias e vencidos), estoque crítico, empréstimos entre entidades e consumo por setor.',
-          badge: 'Relatório Geral (Dashboard)',
+          titulo: isCaf
+            ? '1. Relatório Geral Consolidado da Farmácia Central / CAF (Painel Geral Impresso / PDF)'
+            : '1. Relatório Geral Consolidado do Almoxarifado (Painel Geral Impresso / PDF)',
+          descricao: isCaf
+            ? 'Visão geral completa com indicadores (KPIs), alertas de validade de lotes de medicamentos (30/60/90 dias e vencidos), estoque crítico e consumo por setor.'
+            : 'Visão geral completa com indicadores (KPIs), alertas de validade de lotes (30/60/90 dias e vencidos), estoque crítico, empréstimos entre entidades e consumo por setor.',
+          badge: isCaf ? 'Relatório Geral (CAF)' : 'Relatório Geral (Dashboard)',
         },
         {
           id: 'posicao_atual_estoque',
           titulo: '2. Posição Atual de Estoque Físico e Financeiro',
-          descricao: 'Demonstrativo completo de produtos ativos, saldo físico, localização de prateleira e valorização contábil.',
+          descricao: isCaf
+            ? 'Demonstrativo completo de medicamentos e insumos farma ativos, saldo físico, prateleiras/gavetas e valorização contábil.'
+            : 'Demonstrativo completo de produtos ativos, saldo físico, localização de prateleira e valorização contábil.',
           badge: 'Físico / Financeiro',
         },
         {
           id: 'estoque_critico',
           titulo: '3. Produtos com Estoque Crítico / Abaixo do Mínimo',
-          descricao: 'Alerta gerencial de itens com saldo em nível de risco para reposição urgente de compras.',
+          descricao: isCaf
+            ? 'Alerta gerencial de medicamentos com saldo em nível de risco para reposição urgente de compras.'
+            : 'Alerta gerencial de itens com saldo em nível de risco para reposição urgente de compras.',
           badge: 'Ponto de Pedido',
         },
         {
@@ -146,9 +167,13 @@ export const RelatoriosView: React.FC<RelatoriosViewProps> = ({
         },
         {
           id: 'consumivel_vs_equipamentos',
-          titulo: '6. Relação de Materiais Consumíveis vs Equipamentos',
-          descricao: 'Classificação analítica por tipo de insumo e distribuição patrimonial no almoxarifado.',
-          badge: 'Patrimonial',
+          titulo: isCaf
+            ? '6. Relação de Medicamentos Consumíveis vs Insumos de Farmácia'
+            : '6. Relação de Materiais Consumíveis vs Equipamentos',
+          descricao: isCaf
+            ? 'Classificação analítica por tipo de insumo farmacêutico e distribuição no setor CAF.'
+            : 'Classificação analítica por tipo de insumo e distribuição patrimonial no almoxarifado.',
+          badge: isCaf ? 'Classificação Farmacêutica' : 'Patrimonial',
         },
       ],
     },
@@ -160,7 +185,9 @@ export const RelatoriosView: React.FC<RelatoriosViewProps> = ({
         {
           id: 'extrato_entradas_nf',
           titulo: '6. Extrato de Entradas por Fornecedor / Nota Fiscal',
-          descricao: 'Recebimentos efetuados com número de documento, número de lote, validade e almoxarife conferente.',
+          descricao: isCaf
+            ? 'Recebimentos efetuados de medicamentos com número de documento, lote, validade e farmacêutico/conferente.'
+            : 'Recebimentos efetuados com número de documento, número de lote, validade e almoxarife conferente.',
           badge: 'Fiscal / NF',
         },
         {
@@ -191,7 +218,9 @@ export const RelatoriosView: React.FC<RelatoriosViewProps> = ({
         {
           id: 'requisicoes_rejeitadas',
           titulo: '10. Requisições Rejeitadas e Motivos',
-          descricao: 'Levantamento dos pedidos não autorizados com parecer obrigatório do almoxarife.',
+          descricao: isCaf
+            ? 'Levantamento dos pedidos não autorizados com parecer obrigatório da CAF.'
+            : 'Levantamento dos pedidos não autorizados com parecer obrigatório do almoxarife.',
           badge: 'Pareceres',
         },
         {
@@ -216,7 +245,7 @@ export const RelatoriosView: React.FC<RelatoriosViewProps> = ({
         {
           id: 'equipamentos_abertos_atrasados',
           titulo: '13. Equipamentos em Aberto e Empréstimos Atrasados',
-          descricao: 'Controle de ferramentas e equipamentos cirúrgicos fora do almoxarifado e atrasos.',
+          descricao: 'Controle de ferramentas e equipamentos cirúrgicos fora do setor e atrasos.',
           badge: 'Cautela Ativa',
         },
         {
@@ -227,7 +256,7 @@ export const RelatoriosView: React.FC<RelatoriosViewProps> = ({
         },
       ],
     },
-  ];
+  ], [isCaf]);
 
   const toggleCategory = (nome: string) => {
     setOpenCategories((prev) => ({ ...prev, [nome]: !prev[nome] }));
@@ -240,12 +269,17 @@ export const RelatoriosView: React.FC<RelatoriosViewProps> = ({
     executeReport(reportId, filtroCcId, filtroProdutoId, filtroTipoProduto);
   };
 
+  // Filtros do Modal
+  const [filtroCcId, setFiltroCcId] = useState<string>('');
+  const [filtroProdutoId, setFiltroProdutoId] = useState<string>('');
+  const [filtroTipoProduto, setFiltroTipoProduto] = useState<string>('');
+
   const executeReport = async (reportId: string, ccId: string, prodId: string, tipoProd: string) => {
     setLoadingReport(true);
     try {
       const res = await fetch('/api/relatorios/executar', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: getReportHeaders(),
         body: JSON.stringify({
           tipo_relatorio: reportId,
           centro_custo_id: ccId ? Number(ccId) : undefined,
@@ -468,7 +502,7 @@ export const RelatoriosView: React.FC<RelatoriosViewProps> = ({
     try {
       const res = await fetch('/api/relatorios/executar', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: getReportHeaders(),
         body: JSON.stringify({
           tipo_relatorio: reportId,
           centro_custo_id: filtroCcId ? Number(filtroCcId) : undefined,
@@ -490,14 +524,12 @@ export const RelatoriosView: React.FC<RelatoriosViewProps> = ({
   };
 
   // =========================================================================
-  // 2. RELATÓRIO GERAL DO ALMOXARIFADO (IMPRESSO OU PDF) — ANTIGO DASHBOARD
+  // 2. RELATÓRIO GERAL DO ALMOXARIFADO / CAF (IMPRESSO OU PDF) — ANTIGO DASHBOARD
   // =========================================================================
   const handleGerarRelatorioGeralPDF = async (mode: PdfOutputMode = 'download') => {
     setExportingExecutivePdf(true);
     try {
-      const storedUserId = localStorage.getItem('multi_almox_user_id');
-      const effectiveUserId = currentUser?.id || (storedUserId ? Number(storedUserId) : 1);
-      const authHeader: Record<string, string> = { Authorization: `user:${effectiveUserId}` };
+      const authHeader = getReportHeaders();
 
       // Busca dados atualizados em tempo real (com fallback seguro para as props)
       const [statsRes, prodRes, movRes] = await Promise.all([
@@ -548,19 +580,23 @@ export const RelatoriosView: React.FC<RelatoriosViewProps> = ({
         }
       }
 
+      const areaPdfTitle = isCaf
+        ? 'ALMOXCONTROL — RELATÓRIO GERAL CONSOLIDADO DA CENTRAL FARMACÊUTICA (CAF)'
+        : 'ALMOXCONTROL — RELATÓRIO GERAL CONSOLIDADO DO ALMOXARIFADO';
+
+      const areaPdfSubtitle = isCaf
+        ? 'Painel Geral de Medicamentos, Indicadores (KPIs), Validades (FEFO), Posição de Estoque, Consumo e Dispensações'
+        : 'Painel Geral de Indicadores (KPIs), Controle de Validade (30/60/90d), Posição de Estoque, Consumo e Movimentações';
+
       doc.setFont('helvetica', 'bold');
-      doc.setFontSize(14);
+      doc.setFontSize(13);
       doc.setTextColor(15, 23, 42);
-      doc.text('ALMOXCONTROL — RELATÓRIO GERAL CONSOLIDADO DO ALMOXARIFADO', textStartX, 13);
+      doc.text(areaPdfTitle, textStartX, 13);
 
       doc.setFont('helvetica', 'normal');
       doc.setFontSize(8.5);
       doc.setTextColor(71, 85, 105);
-      doc.text(
-        'Painel Geral de Indicadores (KPIs), Controle de Validade (30/60/90d), Posição de Estoque, Consumo e Movimentações',
-        textStartX,
-        18
-      );
+      doc.text(areaPdfSubtitle, textStartX, 18);
 
       doc.setFont('helvetica', 'bold');
       doc.setFontSize(8);
@@ -942,7 +978,12 @@ export const RelatoriosView: React.FC<RelatoriosViewProps> = ({
         doc.setFont('helvetica', 'bold');
         doc.setFontSize(8);
         doc.setTextColor(51, 65, 85);
-        doc.text('Coordenação de Almoxarifado e Suprimentos', (30 + (pageWidth / 2 - 20)) / 2, sigY + 4, { align: 'center' });
+        doc.text(
+          isCaf ? 'Coordenação de Farmácia Hospitalar (CAF)' : 'Coordenação de Almoxarifado e Suprimentos',
+          (30 + (pageWidth / 2 - 20)) / 2,
+          sigY + 4,
+          { align: 'center' }
+        );
         doc.text('Diretoria Administrativa / Controle Interno', ((pageWidth / 2 + 20) + (pageWidth - 30)) / 2, sigY + 4, { align: 'center' });
       }
 
@@ -954,25 +995,30 @@ export const RelatoriosView: React.FC<RelatoriosViewProps> = ({
         doc.setFontSize(7.5);
         doc.setTextColor(148, 163, 184);
         doc.text(
-          `AlmoxControl — Relatório Geral Consolidado do Almoxarifado | Desenvolvido por Bruno Rocha - DPO`,
+          isCaf
+            ? `AlmoxControl — Relatório Geral Consolidado da Central Farmacêutica (CAF) | Desenvolvido por Bruno Rocha - DPO`
+            : `AlmoxControl — Relatório Geral Consolidado do Almoxarifado | Desenvolvido por Bruno Rocha - DPO`,
           14,
           pageHeight - 8
         );
         doc.text(`Página ${i} de ${totalPages}`, pageWidth - 14, pageHeight - 8, { align: 'right' });
       }
 
-      const filename = `Relatorio_Geral_Almoxarifado_${new Date().toISOString().slice(0, 10)}.pdf`;
+      const reportName = isCaf ? 'Relatorio_Geral_CAF' : 'Relatorio_Geral_Almoxarifado';
+      const reportTitle = isCaf ? 'Relatório Geral Consolidado da Farmácia Central (CAF)' : 'Relatório Geral Consolidado do Almoxarifado';
+      const filename = `${reportName}_${new Date().toISOString().slice(0, 10)}.pdf`;
+
       finalizeJsPDF(
         doc,
         filename,
-        'Relatório Geral Consolidado do Almoxarifado',
+        reportTitle,
         mode
       );
 
       if (mode === 'print') {
-        showFeedback('success', 'Relatório Geral Consolidado enviado diretamente para a impressão do navegador.');
+        showFeedback('success', `Relatório Geral Consolidado (${isCaf ? 'CAF' : 'Almoxarifado'}) enviado diretamente para a impressão do navegador.`);
       } else {
-        showFeedback('success', 'Relatório Geral Consolidado do Almoxarifado exportado em PDF com sucesso.');
+        showFeedback('success', `Relatório Geral Consolidado (${isCaf ? 'CAF' : 'Almoxarifado'}) exportado em PDF com sucesso.`);
       }
     } catch (err: any) {
       showFeedback('error', 'Falha ao gerar o Relatório Geral: ' + err.message);
@@ -1027,11 +1073,18 @@ export const RelatoriosView: React.FC<RelatoriosViewProps> = ({
             <FileBarChart className="w-5 h-5" />
           </div>
           <div>
-            <h1 className="text-xl font-bold text-slate-800 tracking-tight">
-              Relatórios Gerenciais & Relatório Geral (Impresso / PDF)
-            </h1>
-            <p className="text-xs text-slate-500">
-              Painel consolidado de indicadores (antigo Dashboard), validades (30/60/90d), estoque e movimentações para impressão ou PDF
+            <div className="flex items-center gap-2">
+              <h1 className="text-xl font-bold text-slate-800 tracking-tight">
+                Relatórios Gerenciais & Relatório Geral ({isCaf ? 'CAF — Farmácia Central' : 'Almoxarifado'})
+              </h1>
+              <span className={`px-2 py-0.5 rounded text-[11px] font-bold tracking-wide uppercase ${isCaf ? 'bg-purple-100 text-purple-800 border border-purple-200' : 'bg-blue-100 text-blue-800 border border-blue-200'}`}>
+                Área Ativa: {isCaf ? 'CAF (Farmácia)' : 'ALM (Almoxarifado)'}
+              </span>
+            </div>
+            <p className="text-xs text-slate-500 mt-0.5">
+              {isCaf
+                ? 'Painel consolidado da Central de Abastecimento Farmacêutico (CAF): medicamentos, validades FEFO, dispensações e posições de estoque'
+                : 'Painel consolidado de indicadores (antigo Dashboard), validades (30/60/90d), estoque e movimentações para impressão ou PDF'}
             </p>
           </div>
         </div>

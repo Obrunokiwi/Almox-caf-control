@@ -6859,8 +6859,15 @@ apiRouter.post('/relatorios/executar', (req, res) => {
       }
 
       case 'relatorio_geral_almoxarifado': {
-        titulo = 'Relatório Geral Consolidado do Almoxarifado (Painel Executivo)';
-        subtitulo = 'Balanço completo de indicadores (KPIs), validade de lotes (30/60/90d), estoque crítico, empréstimos e consumo por setor';
+        const areaSiglaReq = ((req as any).areaSigla || 'ALM').toUpperCase();
+        const isCafReq = areaSiglaReq === 'CAF';
+
+        titulo = isCafReq
+          ? 'Relatório Geral Consolidado da Central Farmacêutica (CAF / Painel Executivo)'
+          : 'Relatório Geral Consolidado do Almoxarifado (Painel Executivo)';
+        subtitulo = isCafReq
+          ? 'Balanço completo de medicamentos, indicadores (KPIs), validade de lotes (30/60/90d), estoque crítico e dispensação por setor'
+          : 'Balanço completo de indicadores (KPIs), validade de lotes (30/60/90d), estoque crítico, empréstimos e consumo por setor';
         colunas = [
           { chave: 'bloco', rotulo: 'Bloco / Seção' },
           { chave: 'indicador', rotulo: 'Indicador / Produto / Entidade' },
