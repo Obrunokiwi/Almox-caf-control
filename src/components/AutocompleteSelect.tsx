@@ -296,7 +296,7 @@ export const AutocompleteSelect: React.FC<AutocompleteSelectProps> = ({
                 setHighlightedIndex(0);
               }}
               onKeyDown={handleKeyDown}
-              className="w-full min-w-0 bg-transparent text-slate-800 placeholder-slate-400 focus:outline-none text-xs font-normal leading-relaxed truncate"
+              className="w-full min-w-0 bg-transparent text-slate-800 placeholder-slate-400 focus:outline-none text-xs font-normal leading-relaxed break-words whitespace-normal"
               autoComplete="off"
               role="combobox"
               aria-autocomplete="list"

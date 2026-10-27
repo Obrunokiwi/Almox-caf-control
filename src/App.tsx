@@ -276,18 +276,25 @@ export default function App() {
 
   // Seleção de Módulo a partir do Grid
   const handleSelectModuleFromGrid = (moduleId: string) => {
-    if (moduleId === 'aprovacao-requisicoes') {
-      setCurrentTab('requisicoes');
-    } else {
-      setCurrentTab(moduleId);
-    }
-    setIsGridView(false);
+    const target = moduleId === 'aprovacao-requisicoes' ? 'requisicoes' : moduleId;
+    navigateToTab(target);
   };
+
+  const navigateToTab = useCallback((tab: string) => {
+    setCurrentTab(tab);
+    setIsGridView(false);
+    try {
+      window.history.pushState({ tab, isGridView: false }, '', `#module=${tab}`);
+    } catch {}
+  }, []);
 
   // Retorno ao Grid (reavalia dados atualizados do banco)
   const handleReturnToGrid = useCallback(() => {
     loadData();
     setIsGridView(true);
+    try {
+      window.history.pushState({ isGridView: true }, '', '#grid');
+    } catch {}
   }, [loadData]);
 
   // Limpeza de logs de acesso e auditoria
@@ -434,17 +441,17 @@ export default function App() {
         requisicoes={requisicoes}
         isSidebarOpen={isSidebarOpen}
         onToggleSidebar={() => setIsSidebarOpen((prev) => !prev)}
-        onSelectTab={(tab) => setCurrentTab(tab)}
+        onSelectTab={(tab) => navigateToTab(tab)}
         onOpenNovaRequisicao={() => {
-          setCurrentTab('requisicoes');
+          navigateToTab('requisicoes');
           setIsNovaRequisicaoOpen(true);
         }}
         onOpenNovaEntrada={() => {
-          setCurrentTab('entradas');
+          navigateToTab('entradas');
           setIsNovaEntradaOpen(true);
         }}
         onOpenNovoEmprestimo={() => {
-          setCurrentTab('emprestimos');
+          navigateToTab('emprestimos');
           setIsNovoEmprestimoOpen(true);
         }}
         onResetDb={handleResetDb}
@@ -458,7 +465,7 @@ export default function App() {
         {isSidebarOpen && (
           <Sidebar
             currentTab={currentTab}
-            onSelectTab={(tab) => setCurrentTab(tab)}
+            onSelectTab={(tab) => navigateToTab(tab)}
             currentUser={currentUser}
             activeUnidade={activeUnidade}
             onGoToGrid={handleReturnToGrid}

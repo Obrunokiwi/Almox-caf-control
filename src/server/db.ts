@@ -609,7 +609,41 @@ function migrateAreaDb(areaDb: DatabaseSync, areaSigla: string, dbFilePath: stri
       appliedMigrations++;
     }
 
-    // 9. Verificação e adição idempotente de colunas na tabela 'inventarios_estoque'
+    // 9. Garante tabelas de inventário do estoque
+    areaDb.exec(`
+      CREATE TABLE IF NOT EXISTS inventarios_estoque (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          codigo TEXT UNIQUE NOT NULL,
+          area_id INTEGER NOT NULL DEFAULT 1 REFERENCES empresas_unidades(id),
+          data DATE NOT NULL,
+          hora TIME NOT NULL,
+          empresa_id INTEGER REFERENCES empresas_unidades(id) ON DELETE SET NULL,
+          centro_custo_id INTEGER NOT NULL REFERENCES centros_custo(id),
+          centro_custo_nome TEXT,
+          centro_custo_codigo TEXT,
+          zera_por_lote INTEGER DEFAULT 0,
+          zera_nao_listados INTEGER DEFAULT 0,
+          observacao TEXT,
+          finalizado INTEGER DEFAULT 0,
+          usuario_id INTEGER NOT NULL REFERENCES usuarios(id),
+          usuario_nome TEXT,
+          criado_em DATETIME DEFAULT CURRENT_TIMESTAMP
+      );
+
+      CREATE TABLE IF NOT EXISTS itens_inventario (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          inventario_id INTEGER NOT NULL REFERENCES inventarios_estoque(id) ON DELETE CASCADE,
+          produto_id INTEGER NOT NULL REFERENCES produtos(id),
+          lote_id INTEGER REFERENCES lotes_estoque(id) ON DELETE SET NULL,
+          numero_lote TEXT,
+          data_validade DATE,
+          quantidade_sistema REAL NOT NULL DEFAULT 0,
+          quantidade_fisica REAL NOT NULL DEFAULT 0,
+          diferenca REAL NOT NULL DEFAULT 0
+      );
+    `);
+
+    // Verificação e adição idempotente de colunas na tabela 'inventarios_estoque'
     const invCols = new Set((areaDb.prepare("PRAGMA table_info('inventarios_estoque')").all() as Array<{ name: string }>).map((c) => c.name));
     if (!invCols.has('empresa_id')) {
       areaDb.exec('ALTER TABLE inventarios_estoque ADD COLUMN empresa_id INTEGER REFERENCES empresas_unidades(id) ON DELETE SET NULL;');

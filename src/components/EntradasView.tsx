@@ -1548,8 +1548,8 @@ export const EntradasView: React.FC<EntradasViewProps> = ({
       {/* MODAL DE CRIAÇÃO DE NOVA NOTA FISCAL (COM MÚLTIPLOS ITENS E AUTOCOMPLETE) */}
       {/* ========================================================================= */}
       {isNewNotaOpen && (
-        <div className="fixed inset-0 z-50 overflow-y-auto bg-slate-900/60 backdrop-blur-xs flex items-start justify-center p-3 sm:p-6 py-8 sm:py-12 animate-fadeIn">
-          <div className="bg-white rounded-2xl border border-slate-200 shadow-2xl w-full max-w-4xl my-0 overflow-visible flex flex-col">
+        <div className="fixed inset-0 z-50 overflow-hidden bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-3 sm:p-6 animate-fadeIn">
+          <div className="bg-white rounded-2xl border border-slate-200 shadow-2xl w-full max-w-4xl max-h-[90vh] overflow-hidden flex flex-col">
             <div className="px-6 py-4 bg-slate-50 border-b border-slate-200 flex items-center justify-between shrink-0">
               <div className="flex items-center gap-2.5">
                 <div className="p-2 bg-teal-100 text-teal-800 rounded-lg">
