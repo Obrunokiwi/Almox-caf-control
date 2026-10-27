@@ -1053,6 +1053,173 @@ apiRouter.post('/auth/login', (req, res) => {
   });
 });
 
+// ============================================================================
+// AUTO-CADASTRO PÚBLICO DE USUÁRIO (APENAS SOLICITANTE DE REQUISIÇÃO)
+// ============================================================================
+apiRouter.post('/auth/cadastrar-solicitante', (req, res) => {
+  const { nome, login, senha, cpf, email, centro_custo_id } = req.body;
+  const clientIp = String(req.headers['x-forwarded-for'] || req.socket.remoteAddress || '127.0.0.1');
+
+  if (!nome || !login || !senha || !cpf || !email || !centro_custo_id) {
+    res.status(400).json({ error: 'Todos os campos são obrigatórios: Nome, Login, Senha, CPF, E-mail e Centro de Custo.' });
+    return;
+  }
+
+  const cleanCpfVal = String(cpf).replace(/\D/g, '');
+  if (cleanCpfVal.length !== 11) {
+    res.status(400).json({ error: 'O CPF é obrigatório e deve ter exatamente 11 dígitos no formato 000.000.000-00.' });
+    return;
+  }
+
+  const formattedCpf = `${cleanCpfVal.slice(0, 3)}.${cleanCpfVal.slice(3, 6)}.${cleanCpfVal.slice(6, 9)}-${cleanCpfVal.slice(9, 11)}`;
+  const cleanLogin = login.trim().toLowerCase();
+
+  const central = getCentralDb();
+
+  // Validação estrita: não aceitar cadastros com CPF repetido
+  const existingCpf = central.prepare(`
+    SELECT id, nome, login FROM usuarios
+    WHERE REPLACE(REPLACE(REPLACE(COALESCE(cpf, ''), '.', ''), '-', ''), ' ', '') = ?
+  `).get(cleanCpfVal) as any;
+
+  if (existingCpf) {
+    res.status(409).json({ error: `O CPF ${formattedCpf} já está cadastrado no sistema.` });
+    return;
+  }
+
+  // Validação: login único
+  const existingLogin = central.prepare('SELECT id FROM usuarios WHERE LOWER(login) = ?').get(cleanLogin) as any;
+  if (existingLogin) {
+    res.status(409).json({ error: `O login "${cleanLogin}" já está em uso. Por favor, escolha outro nome de usuário.` });
+    return;
+  }
+
+  // Garante que o centro de custo exista no banco central
+  const ccExists = central.prepare('SELECT id FROM centros_custo WHERE id = ?').get(Number(centro_custo_id));
+  if (!ccExists) {
+    try {
+      const alm = getAreaDb('ALM');
+      const ccAlm = alm.prepare('SELECT * FROM centros_custo WHERE id = ?').get(Number(centro_custo_id)) as any;
+      if (ccAlm) {
+        central.prepare(`
+          INSERT OR IGNORE INTO centros_custo (id, codigo, nome, departamento, responsavel, ativo)
+          VALUES (?, ?, ?, ?, ?, ?)
+        `).run(ccAlm.id, ccAlm.codigo, ccAlm.nome, ccAlm.departamento, ccAlm.responsavel, ccAlm.ativo ?? 1);
+      }
+    } catch {}
+  }
+
+  try {
+    const senha_hash = hashPassword(senha);
+    const countUsers = (central.prepare('SELECT COUNT(*) as total FROM usuarios').get() as any)?.total || 0;
+    const codFinal = `USR-${String(countUsers + 1).padStart(3, '0')}`;
+    const perfil = 'requisitante'; // Estritamente perfil solicitante de requisição
+    const cargoNome = 'requisitante';
+    const permissoesJson = JSON.stringify([]);
+
+    runInTransaction(() => {
+      const stmt = central.prepare(`
+        INSERT INTO usuarios (codigo, nome, login, senha_hash, cpf, email, perfil, cargo_nome, permissoes, centro_custo_id, ativo)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+      `);
+      const resStmt = stmt.run(
+        codFinal,
+        nome.trim(),
+        cleanLogin,
+        senha_hash,
+        formattedCpf,
+        email.trim().toLowerCase(),
+        perfil,
+        cargoNome,
+        permissoesJson,
+        Number(centro_custo_id)
+      );
+
+      const novoId = Number(resStmt.lastInsertRowid);
+
+      // Módulos padrão para solicitante: apenas requisições e perfil
+      const insertModStmt = central.prepare('INSERT OR IGNORE INTO usuario_modulos (usuario_id, modulo_chave) VALUES (?, ?)');
+      insertModStmt.run(novoId, 'requisicoes');
+      insertModStmt.run(novoId, 'perfil');
+
+      // Vincula o solicitante às áreas ativas (Almoxarifado e CAF) para emissão de requisições
+      central.prepare('INSERT OR IGNORE INTO usuario_areas (usuario_id, area_id) VALUES (?, 1), (?, 2)').run(novoId, novoId);
+    }, central);
+
+    // Sincroniza espelhos locais
+    syncMirrorsToAllAreas();
+    registrarLogAcesso({ login: cleanLogin }, clientIp, 'cadastro_solicitante', `Novo auto-cadastro de Solicitante: ${nome.trim()} (CPF ${formattedCpf})`);
+
+    res.status(201).json({
+      success: true,
+      message: 'Usuário Solicitante cadastrado com sucesso! Você já pode realizar o login com seu usuário e senha.',
+      login: cleanLogin,
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: 'Erro ao cadastrar usuário solicitante: ' + err.message });
+  }
+});
+
+// ============================================================================
+// REDEFINIÇÃO / RECUPERAÇÃO DE SENHA (VALIDAÇÃO POR E-MAIL E CPF)
+// ============================================================================
+apiRouter.post('/auth/recuperar-senha', (req, res) => {
+  const { email, cpf, nova_senha } = req.body;
+  const clientIp = String(req.headers['x-forwarded-for'] || req.socket.remoteAddress || '127.0.0.1');
+
+  if (!email || !cpf || !nova_senha) {
+    res.status(400).json({ error: 'Informe o E-mail cadastrado, o CPF e a nova senha desejada.' });
+    return;
+  }
+
+  const cleanCpfVal = String(cpf).replace(/\D/g, '');
+  if (cleanCpfVal.length !== 11) {
+    res.status(400).json({ error: 'O CPF informado deve conter exatamente 11 dígitos no formato 000.000.000-00.' });
+    return;
+  }
+
+  if (String(nova_senha).length < 4) {
+    res.status(400).json({ error: 'A nova senha deve possuir no mínimo 4 caracteres.' });
+    return;
+  }
+
+  const central = getCentralDb();
+  const user = central.prepare(`
+    SELECT id, nome, login, email, cpf, ativo
+    FROM usuarios
+    WHERE LOWER(email) = ?
+      AND REPLACE(REPLACE(REPLACE(COALESCE(cpf, ''), '.', ''), '-', ''), ' ', '') = ?
+  `).get(email.trim().toLowerCase(), cleanCpfVal) as any;
+
+  if (!user) {
+    registrarLogAcesso({ login: email.trim() }, clientIp, 'recuperar_senha_falha', 'E-mail e CPF não coincidem com nenhum usuário');
+    res.status(404).json({ error: 'Nenhum usuário foi localizado com este E-mail e CPF informados. Verifique os dados digitados.' });
+    return;
+  }
+
+  if (user.ativo === 0) {
+    res.status(403).json({ error: 'Este usuário está inativo no sistema. Contate a equipe de TI / DPO.' });
+    return;
+  }
+
+  try {
+    // Permite cadastrar a senha antiga novamente ou uma nova senha
+    const novaSenhaHash = hashPassword(nova_senha);
+    central.prepare('UPDATE usuarios SET senha_hash = ? WHERE id = ?').run(novaSenhaHash, user.id);
+
+    syncMirrorsToAllAreas();
+    registrarLogAcesso(user, clientIp, 'redefinicao_senha', `Senha redefinida com sucesso via validação de E-mail e CPF (@${user.login})`);
+
+    res.json({
+      success: true,
+      message: `Senha do usuário @${user.login} redefinida com sucesso! Você já pode entrar no sistema com sua senha.`,
+      login: user.login,
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: 'Erro ao redefinir senha: ' + err.message });
+  }
+});
+
 apiRouter.post('/auth/trocar-area', (req, res) => {
   const authHeader = req.headers.authorization;
   if (!authHeader) {
@@ -1602,6 +1769,24 @@ apiRouter.post('/usuarios', (req, res) => {
     return;
   }
 
+  const cleanCpfVal = String(cpf || '').replace(/\D/g, '');
+  if (cleanCpfVal.length !== 11) {
+    res.status(400).json({ error: 'O CPF é obrigatório e deve ter 11 dígitos no formato 000.000.000-00' });
+    return;
+  }
+  const formattedCpf = `${cleanCpfVal.slice(0, 3)}.${cleanCpfVal.slice(3, 6)}.${cleanCpfVal.slice(6, 9)}-${cleanCpfVal.slice(9, 11)}`;
+
+  const central = getCentralDb();
+  const existingCpf = central.prepare(`
+    SELECT id, nome, login FROM usuarios
+    WHERE REPLACE(REPLACE(REPLACE(COALESCE(cpf, ''), '.', ''), '-', ''), ' ', '') = ?
+  `).get(cleanCpfVal) as any;
+
+  if (existingCpf) {
+    res.status(409).json({ error: `O CPF ${formattedCpf} já está cadastrado para o usuário "${existingCpf.nome}" (@${existingCpf.login})` });
+    return;
+  }
+
   if (perfil === 'requisitante' && !centro_custo_id) {
     res.status(400).json({ error: 'Centro de Custo é obrigatório para usuários com perfil Requisitante' });
     return;
@@ -1614,7 +1799,6 @@ apiRouter.post('/usuarios', (req, res) => {
     const cargoNome = perfil;
     const permissoesJson = Array.isArray(permissoes) ? JSON.stringify(permissoes) : JSON.stringify([]);
 
-    const central = getCentralDb();
     const info = runInTransaction(() => {
       const stmt = central.prepare(`
         INSERT INTO usuarios (codigo, nome, login, senha_hash, cpf, email, perfil, cargo_nome, permissoes, centro_custo_id, ativo)
@@ -1625,7 +1809,7 @@ apiRouter.post('/usuarios', (req, res) => {
         nome.trim(), 
         login.trim().toLowerCase(), 
         senha_hash, 
-        cpf ? cpf.trim() : null,
+        formattedCpf,
         email ? email.trim().toLowerCase() : null,
         dbPerfil,
         cargoNome,
@@ -1694,12 +1878,31 @@ apiRouter.put('/usuarios/:id', (req, res) => {
     const permissoesJson = Array.isArray(permissoes) ? JSON.stringify(permissoes) : null;
     const central = getCentralDb();
 
+    let formattedCpf: string | null = null;
+    if (cpf !== undefined && cpf !== null && String(cpf).trim()) {
+      const cleanCpfVal = String(cpf).replace(/\D/g, '');
+      if (cleanCpfVal.length !== 11) {
+        res.status(400).json({ error: 'O CPF é obrigatório e deve ter 11 dígitos no formato 000.000.000-00' });
+        return;
+      }
+      formattedCpf = `${cleanCpfVal.slice(0, 3)}.${cleanCpfVal.slice(3, 6)}.${cleanCpfVal.slice(6, 9)}-${cleanCpfVal.slice(9, 11)}`;
+      const existingCpf = central.prepare(`
+        SELECT id, nome, login FROM usuarios
+        WHERE REPLACE(REPLACE(REPLACE(COALESCE(cpf, ''), '.', ''), '-', ''), ' ', '') = ? AND id != ?
+      `).get(cleanCpfVal, id) as any;
+
+      if (existingCpf) {
+        res.status(409).json({ error: `O CPF ${formattedCpf} já está cadastrado para o usuário "${existingCpf.nome}" (@${existingCpf.login})` });
+        return;
+      }
+    }
+
     runInTransaction(() => {
       if (senha && senha.trim()) {
         const senha_hash = hashPassword(senha);
         central.prepare(`
           UPDATE usuarios
-          SET codigo = ?, nome = ?, login = ?, senha_hash = ?, cpf = ?, email = ?, 
+          SET codigo = ?, nome = ?, login = ?, senha_hash = ?, cpf = COALESCE(?, cpf), email = ?, 
               perfil = ?, cargo_nome = ?, permissoes = COALESCE(?, permissoes), centro_custo_id = ?, ativo = ?
           WHERE id = ?
         `).run(
@@ -1707,7 +1910,7 @@ apiRouter.put('/usuarios/:id', (req, res) => {
           nome.trim(), 
           login.trim().toLowerCase(), 
           senha_hash, 
-          cpf ? cpf.trim() : null,
+          formattedCpf,
           email ? email.trim().toLowerCase() : null,
           dbPerfil,
           cargoNome,
@@ -1719,14 +1922,14 @@ apiRouter.put('/usuarios/:id', (req, res) => {
       } else {
         central.prepare(`
           UPDATE usuarios
-          SET codigo = ?, nome = ?, login = ?, cpf = ?, email = ?, 
+          SET codigo = ?, nome = ?, login = ?, cpf = COALESCE(?, cpf), email = ?, 
               perfil = ?, cargo_nome = ?, permissoes = COALESCE(?, permissoes), centro_custo_id = ?, ativo = ?
           WHERE id = ?
         `).run(
           codigo ? codigo.trim().toUpperCase() : null,
           nome.trim(), 
           login.trim().toLowerCase(), 
-          cpf ? cpf.trim() : null,
+          formattedCpf,
           email ? email.trim().toLowerCase() : null,
           dbPerfil,
           cargoNome,

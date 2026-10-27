@@ -41,6 +41,7 @@ import {
   ShoppingBag
 } from 'lucide-react';
 import type { Usuario, CentroCusto, PerfilUsuario, EmpresaUnidade } from '../types/index.ts';
+import { maskCpf } from '../utils/cpfUtils.ts';
 
 export const TODOS_MODULOS_SISTEMA = [
   { id: 'fornecedores', label: 'Fornecedores / Entidades', desc: 'Cadastro de fornecedores comerciais e hospitais parceiros', icon: Truck },
@@ -404,6 +405,15 @@ export const UsuariosView: React.FC<UsuariosViewProps> = ({
       return;
     }
 
+    const cleanCpfDigits = formCpf.replace(/\D/g, '');
+    if (cleanCpfDigits.length !== 11) {
+      const msg = 'O CPF é obrigatório e deve ter 11 dígitos no formato 000.000.000-00.';
+      setErrorMsg(msg);
+      toast.error('CPF Obrigatório', msg);
+      setActiveFormTab('identificacao');
+      return;
+    }
+
     setIsProcessing(true);
     setErrorMsg(null);
 
@@ -685,15 +695,17 @@ export const UsuariosView: React.FC<UsuariosViewProps> = ({
 
                 <div>
                   <label className="block text-[11px] font-bold text-slate-600 uppercase tracking-wider mb-1">
-                    CPF
+                    CPF *
                   </label>
                   <input
                     type="text"
                     value={formCpf}
-                    onChange={(e) => setFormCpf(e.target.value)}
+                    onChange={(e) => setFormCpf(maskCpf(e.target.value))}
                     disabled={formMode === 'view'}
                     className="w-full px-3 py-2 bg-[#f1f3f5] border border-slate-300 rounded text-xs text-slate-800 focus:bg-white focus:border-teal-500 shadow-inner"
                     placeholder="000.000.000-00"
+                    maxLength={14}
+                    required
                   />
                 </div>
 

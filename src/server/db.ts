@@ -341,6 +341,24 @@ function migrateCentralDb(db: DatabaseSync, dbFilePath: string) {
     appliedMigrations++;
   }
 
+  // Garante que centros_custo existentes nos bancos de área estejam no banco central
+  try {
+    const ccCount = (db.prepare('SELECT COUNT(*) as c FROM centros_custo').get() as any)?.c || 0;
+    if (ccCount === 0) {
+      const almPath = path.join(DB_DIR, 'almoxarifado.db');
+      if (fs.existsSync(almPath)) {
+        const areaDb = new DatabaseSync(almPath);
+        const rows = areaDb.prepare("SELECT * FROM centros_custo").all() as any[];
+        for (const row of rows) {
+          db.prepare(`
+            INSERT OR IGNORE INTO centros_custo (id, codigo, nome, departamento, responsavel, ativo)
+            VALUES (?, ?, ?, ?, ?, ?)
+          `).run(row.id, row.codigo, row.nome, row.departamento, row.responsavel, row.ativo ?? 1);
+        }
+      }
+    }
+  } catch {}
+
   // Garante unidade padrão se vazia
   try {
     const empCount = (db.prepare('SELECT COUNT(*) as c FROM empresas_unidades').get() as any)?.c || 0;
