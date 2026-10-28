@@ -171,7 +171,7 @@ export const GruposSubgruposModal: React.FC<GruposSubgruposModalProps> = ({
                 Gestão de Grupos e Subgrupos de Produtos
               </h2>
               <p className="text-xs text-slate-300">
-                Classificação hierárquica e categorização para relatórios e inventário
+                Catálogo unificado e compartilhado entre Almoxarifado, CAF e todas as áreas
               </p>
             </div>
           </div>
@@ -340,7 +340,7 @@ export const GruposSubgruposModal: React.FC<GruposSubgruposModalProps> = ({
                     ) : (
                       <tr>
                         <td colSpan={6} className="py-6 text-center text-slate-400">
-                          Nenhum grupo de produtos cadastrado nesta área.
+                          Nenhum grupo de produtos cadastrado.
                         </td>
                       </tr>
                     )}
@@ -462,7 +462,7 @@ export const GruposSubgruposModal: React.FC<GruposSubgruposModalProps> = ({
                     ) : (
                       <tr>
                         <td colSpan={5} className="py-6 text-center text-slate-400">
-                          Nenhum subgrupo cadastrado nesta área.
+                          Nenhum subgrupo cadastrado.
                         </td>
                       </tr>
                     )}

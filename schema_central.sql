@@ -138,3 +138,25 @@ CREATE INDEX IF NOT EXISTS idx_fornecedores_cnpj ON fornecedores (cnpj);
 CREATE INDEX IF NOT EXISTS idx_fornecedores_tipo ON fornecedores (tipo_entidade);
 CREATE INDEX IF NOT EXISTS idx_fornecedores_ativo ON fornecedores (ativo);
 
+-- 10. TABELA CENTRAL DE GRUPOS E SUBGRUPOS DE PRODUTOS (UNIFICADA E COMPARTILHADA ENTRE TODAS AS ÁREAS)
+CREATE TABLE IF NOT EXISTS grupos_produtos (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    codigo TEXT UNIQUE NOT NULL,
+    nome TEXT NOT NULL,
+    tipo_padrao TEXT NOT NULL DEFAULT 'consumivel' CHECK (tipo_padrao IN ('consumivel', 'nao_consumivel')),
+    ativo INTEGER NOT NULL DEFAULT 1,
+    criado_em DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_grupos_produtos_codigo ON grupos_produtos (codigo);
+CREATE INDEX IF NOT EXISTS idx_grupos_produtos_ativo ON grupos_produtos (ativo);
+
+CREATE TABLE IF NOT EXISTS subgrupos_produtos (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    grupo_id INTEGER REFERENCES grupos_produtos(id) ON DELETE CASCADE,
+    codigo TEXT,
+    nome TEXT NOT NULL,
+    ativo INTEGER NOT NULL DEFAULT 1,
+    criado_em DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_subgrupos_produtos_grupo ON subgrupos_produtos (grupo_id);
+CREATE INDEX IF NOT EXISTS idx_subgrupos_produtos_ativo ON subgrupos_produtos (ativo);

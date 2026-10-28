@@ -2378,16 +2378,27 @@ apiRouter.get('/lotes', (req, res) => {
 // GRUPOS DE PRODUTOS & SUGESTÃO DE CÓDIGO
 // ============================================================================
 
-apiRouter.get('/grupos-produtos', (_req, res) => {
+apiRouter.get('/grupos-produtos', (req, res) => {
   try {
-    const rows = db.prepare(`
+    const central = getCentralDb();
+    const areaDb = (req as any).areaDb || db;
+    const rows = central.prepare(`
       SELECT gp.*,
-             (SELECT COUNT(*) FROM produtos p WHERE p.grupo_id = gp.id AND p.ativo = 1) as total_produtos,
              (SELECT COUNT(*) FROM subgrupos_produtos sg WHERE sg.grupo_id = gp.id AND sg.ativo = 1) as total_subgrupos
       FROM grupos_produtos gp
       WHERE gp.ativo = 1
       ORDER BY gp.nome ASC
-    `).all();
+    `).all() as any[];
+
+    for (const r of rows) {
+      try {
+        const pRow = areaDb.prepare('SELECT COUNT(*) as c FROM produtos WHERE grupo_id = ? AND ativo = 1').get(r.id) as any;
+        r.total_produtos = pRow ? pRow.c : 0;
+      } catch {
+        r.total_produtos = 0;
+      }
+    }
+
     res.json(rows);
   } catch (err: any) {
     res.status(500).json({ error: 'Erro ao buscar grupos de produtos: ' + err.message });
@@ -2409,20 +2420,24 @@ apiRouter.post('/grupos-produtos', (req, res) => {
 
   const nomeNorm = String(nome).trim().toUpperCase();
   const tipoNorm = tipo_padrao === 'nao_consumivel' ? 'nao_consumivel' : 'consumivel';
+  const central = getCentralDb();
+
   let codNorm = codigo && String(codigo).trim() ? String(codigo).trim().toUpperCase() : '';
   if (!codNorm) {
-    const count = (db.prepare('SELECT COUNT(*) as c FROM grupos_produtos').get() as any)?.c || 0;
+    const count = (central.prepare('SELECT COUNT(*) as c FROM grupos_produtos').get() as any)?.c || 0;
     codNorm = `GRP-${String(count + 1).padStart(3, '0')}`;
   }
 
   try {
-    const areaDb = (req as any).areaDb;
-    const info = areaDb.prepare(`
+    const info = central.prepare(`
       INSERT INTO grupos_produtos (codigo, nome, tipo_padrao, ativo)
       VALUES (?, ?, ?, 1)
     `).run(codNorm, nomeNorm, tipoNorm);
 
-    const novo = areaDb.prepare('SELECT * FROM grupos_produtos WHERE id = ?').get(info.lastInsertRowid);
+    // Propaga imediatamente para todas as áreas operacionais (Almoxarifado, CAF, etc.)
+    syncMirrorsToAllAreas();
+
+    const novo = central.prepare('SELECT * FROM grupos_produtos WHERE id = ?').get(info.lastInsertRowid);
     res.status(201).json(novo);
   } catch (err: any) {
     res.status(500).json({ error: 'Erro ao cadastrar grupo de produtos: ' + err.message });
@@ -2445,8 +2460,8 @@ apiRouter.put('/grupos-produtos/:id', (req, res) => {
   }
 
   try {
-    const areaDb = (req as any).areaDb;
-    areaDb.prepare(`
+    const central = getCentralDb();
+    central.prepare(`
       UPDATE grupos_produtos
       SET codigo = COALESCE(?, codigo),
           nome = ?,
@@ -2461,7 +2476,10 @@ apiRouter.put('/grupos-produtos/:id', (req, res) => {
       Number(id)
     );
 
-    const updated = areaDb.prepare('SELECT * FROM grupos_produtos WHERE id = ?').get(Number(id));
+    // Propaga imediatamente para todas as áreas operacionais
+    syncMirrorsToAllAreas();
+
+    const updated = central.prepare('SELECT * FROM grupos_produtos WHERE id = ?').get(Number(id));
     res.json(updated);
   } catch (err: any) {
     res.status(500).json({ error: 'Erro ao atualizar grupo de produtos: ' + err.message });
@@ -2477,17 +2495,28 @@ apiRouter.delete('/grupos-produtos/:id', (req, res) => {
 
   const { id } = req.params;
   try {
-    const areaDb = (req as any).areaDb;
-    const prodsCount = (areaDb.prepare('SELECT COUNT(*) as c FROM produtos WHERE grupo_id = ?').get(Number(id)) as any)?.c || 0;
-    if (prodsCount > 0) {
-      // Soft-delete se houver produtos
-      areaDb.prepare('UPDATE grupos_produtos SET ativo = 0 WHERE id = ?').run(Number(id));
-      res.json({ message: `Grupo desativado pois contém ${prodsCount} produto(s) associado(s).` });
+    const central = getCentralDb();
+    const areas = getAllActiveAreas();
+    let totalProds = 0;
+    for (const a of areas) {
+      try {
+        const aDb = getAreaDb(a.sigla);
+        const c = (aDb.prepare('SELECT COUNT(*) as c FROM produtos WHERE grupo_id = ?').get(Number(id)) as any)?.c || 0;
+        totalProds += c;
+      } catch {}
+    }
+
+    if (totalProds > 0) {
+      // Soft-delete se houver produtos vinculados em qualquer área
+      central.prepare('UPDATE grupos_produtos SET ativo = 0 WHERE id = ?').run(Number(id));
+      syncMirrorsToAllAreas();
+      res.json({ message: `Grupo desativado pois contém ${totalProds} produto(s) associado(s) em uso.` });
       return;
     }
 
-    areaDb.prepare('DELETE FROM subgrupos_produtos WHERE grupo_id = ?').run(Number(id));
-    areaDb.prepare('DELETE FROM grupos_produtos WHERE id = ?').run(Number(id));
+    central.prepare('DELETE FROM subgrupos_produtos WHERE grupo_id = ?').run(Number(id));
+    central.prepare('DELETE FROM grupos_produtos WHERE id = ?').run(Number(id));
+    syncMirrorsToAllAreas();
     res.json({ message: 'Grupo excluído com sucesso.' });
   } catch (err: any) {
     res.status(500).json({ error: 'Erro ao excluir grupo: ' + err.message });
@@ -2501,12 +2530,12 @@ apiRouter.delete('/grupos-produtos/:id', (req, res) => {
 apiRouter.get('/subgrupos-produtos', (req, res) => {
   const { grupo_id } = req.query;
   try {
-    const areaDb = (req as any).areaDb;
+    const central = getCentralDb();
+    const areaDb = (req as any).areaDb || db;
     let sql = `
       SELECT sg.*,
              gp.nome as grupo_nome,
-             gp.codigo as grupo_codigo,
-             (SELECT COUNT(*) FROM produtos p WHERE (p.subgrupo_id = sg.id OR UPPER(p.subgrupo_nome) = UPPER(sg.nome)) AND p.ativo = 1) as total_produtos
+             gp.codigo as grupo_codigo
       FROM subgrupos_produtos sg
       LEFT JOIN grupos_produtos gp ON sg.grupo_id = gp.id
       WHERE sg.ativo = 1
@@ -2518,7 +2547,17 @@ apiRouter.get('/subgrupos-produtos', (req, res) => {
     }
     sql += ' ORDER BY gp.nome ASC, sg.nome ASC';
 
-    const rows = areaDb.prepare(sql).all(...params);
+    const rows = central.prepare(sql).all(...params) as any[];
+
+    for (const r of rows) {
+      try {
+        const pRow = areaDb.prepare('SELECT COUNT(*) as c FROM produtos WHERE (subgrupo_id = ? OR UPPER(subgrupo_nome) = UPPER(?)) AND ativo = 1').get(r.id, r.nome) as any;
+        r.total_produtos = pRow ? pRow.c : 0;
+      } catch {
+        r.total_produtos = 0;
+      }
+    }
+
     res.json(rows);
   } catch (err: any) {
     res.status(500).json({ error: 'Erro ao buscar subgrupos de produtos: ' + err.message });
@@ -2539,20 +2578,23 @@ apiRouter.post('/subgrupos-produtos', (req, res) => {
   }
 
   const nomeNorm = String(nome).trim().toUpperCase();
+  const central = getCentralDb();
   let codNorm = codigo && String(codigo).trim() ? String(codigo).trim().toUpperCase() : '';
   if (!codNorm) {
-    const count = (db.prepare('SELECT COUNT(*) as c FROM subgrupos_produtos').get() as any)?.c || 0;
+    const count = (central.prepare('SELECT COUNT(*) as c FROM subgrupos_produtos').get() as any)?.c || 0;
     codNorm = `SGRP-${String(count + 1).padStart(3, '0')}`;
   }
 
   try {
-    const areaDb = (req as any).areaDb;
-    const info = areaDb.prepare(`
+    const info = central.prepare(`
       INSERT INTO subgrupos_produtos (grupo_id, codigo, nome, ativo)
       VALUES (?, ?, ?, 1)
     `).run(grupo_id ? Number(grupo_id) : null, codNorm, nomeNorm);
 
-    const novo = areaDb.prepare(`
+    // Propaga imediatamente para todas as áreas
+    syncMirrorsToAllAreas();
+
+    const novo = central.prepare(`
       SELECT sg.*, gp.nome as grupo_nome
       FROM subgrupos_produtos sg
       LEFT JOIN grupos_produtos gp ON sg.grupo_id = gp.id
@@ -2580,8 +2622,8 @@ apiRouter.put('/subgrupos-produtos/:id', (req, res) => {
   }
 
   try {
-    const areaDb = (req as any).areaDb;
-    areaDb.prepare(`
+    const central = getCentralDb();
+    central.prepare(`
       UPDATE subgrupos_produtos
       SET grupo_id = ?,
           codigo = COALESCE(?, codigo),
@@ -2596,7 +2638,10 @@ apiRouter.put('/subgrupos-produtos/:id', (req, res) => {
       Number(id)
     );
 
-    const updated = areaDb.prepare(`
+    // Propaga imediatamente para todas as áreas
+    syncMirrorsToAllAreas();
+
+    const updated = central.prepare(`
       SELECT sg.*, gp.nome as grupo_nome
       FROM subgrupos_produtos sg
       LEFT JOIN grupos_produtos gp ON sg.grupo_id = gp.id
@@ -2617,15 +2662,26 @@ apiRouter.delete('/subgrupos-produtos/:id', (req, res) => {
 
   const { id } = req.params;
   try {
-    const areaDb = (req as any).areaDb;
-    const prodsCount = (areaDb.prepare('SELECT COUNT(*) as c FROM produtos WHERE subgrupo_id = ?').get(Number(id)) as any)?.c || 0;
+    const central = getCentralDb();
+    const areas = getAllActiveAreas();
+    let prodsCount = 0;
+    for (const a of areas) {
+      try {
+        const aDb = getAreaDb(a.sigla);
+        const c = (aDb.prepare('SELECT COUNT(*) as c FROM produtos WHERE subgrupo_id = ?').get(Number(id)) as any)?.c || 0;
+        prodsCount += c;
+      } catch {}
+    }
+
     if (prodsCount > 0) {
-      areaDb.prepare('UPDATE subgrupos_produtos SET ativo = 0 WHERE id = ?').run(Number(id));
+      central.prepare('UPDATE subgrupos_produtos SET ativo = 0 WHERE id = ?').run(Number(id));
+      syncMirrorsToAllAreas();
       res.json({ message: `Subgrupo desativado pois contém ${prodsCount} produto(s) associado(s).` });
       return;
     }
 
-    areaDb.prepare('DELETE FROM subgrupos_produtos WHERE id = ?').run(Number(id));
+    central.prepare('DELETE FROM subgrupos_produtos WHERE id = ?').run(Number(id));
+    syncMirrorsToAllAreas();
     res.json({ message: 'Subgrupo excluído com sucesso.' });
   } catch (err: any) {
     res.status(500).json({ error: 'Erro ao excluir subgrupo: ' + err.message });
@@ -9332,21 +9388,23 @@ function handleImportacaoProdutosRoute(req: any, res: any) {
   try {
     const targetDb = getAreaDb(areaRow.sigla);
 
+    let houveNovosGruposCentrais = false;
+
     const result = runInTransaction(() => {
       const incluidos: any[] = [];
       const atualizados: any[] = [];
       const ignorados: any[] = [];
       const avisos: string[] = [];
 
-      // Mapeamento de grupos existentes no banco da área de destino
-      const todosGrupos = targetDb.prepare('SELECT id, UPPER(nome) as nome_upper FROM grupos_produtos').all() as any[];
+      // Mapeamento de grupos existentes no banco central unificado e na área de destino
+      const todosGrupos = central.prepare('SELECT id, UPPER(nome) as nome_upper FROM grupos_produtos').all() as any[];
       const grupoMap = new Map<string, number>();
       for (const g of todosGrupos) {
         grupoMap.set(g.nome_upper, g.id);
       }
 
-      // Mapeamento de subgrupos existentes no banco da área de destino
-      const todosSubgrupos = targetDb.prepare('SELECT id, grupo_id, UPPER(nome) as nome_upper FROM subgrupos_produtos').all() as any[];
+      // Mapeamento de subgrupos existentes no banco central unificado e na área de destino
+      const todosSubgrupos = central.prepare('SELECT id, grupo_id, UPPER(nome) as nome_upper FROM subgrupos_produtos').all() as any[];
       const subgrupoMap = new Map<string, number>();
       for (const sg of todosSubgrupos) {
         const key = `${sg.grupo_id || 0}:::${sg.nome_upper}`;
@@ -9362,14 +9420,6 @@ function handleImportacaoProdutosRoute(req: any, res: any) {
       const auditoriaUserNome = user.nome || 'Administrador Geral';
 
       const stmtCheckProd = targetDb.prepare('SELECT id, codigo, nome, grupo_id, subgrupo_id, subgrupo_nome, quantidade_atual, custo_unitario FROM produtos WHERE UPPER(codigo) = UPPER(?)');
-      const stmtInsertGrupo = targetDb.prepare(`
-        INSERT INTO grupos_produtos (codigo, nome, tipo_padrao, ativo)
-        VALUES (?, ?, ?, 1)
-      `);
-      const stmtInsertSubgrupo = targetDb.prepare(`
-        INSERT INTO subgrupos_produtos (grupo_id, codigo, nome, ativo)
-        VALUES (?, ?, ?, 1)
-      `);
       const stmtInsertProd = targetDb.prepare(`
         INSERT INTO produtos (
           codigo, nome, descricao, grupo_id, subgrupo_id, subgrupo_nome, unidade_medida, tipo, controla_validade,
@@ -9446,7 +9496,7 @@ function handleImportacaoProdutosRoute(req: any, res: any) {
           continue;
         }
 
-        // 1. Resolução do Grupo de Produto na área de destino
+        // 1. Resolução do Grupo de Produto no catálogo unificado (central)
         let grupoId: number | null = null;
         let grupoNomeFinal: string | null = null;
         if (rawGrupoNome) {
@@ -9454,14 +9504,28 @@ function handleImportacaoProdutosRoute(req: any, res: any) {
           if (grupoMap.has(grupoNomeFinal)) {
             grupoId = grupoMap.get(grupoNomeFinal)!;
           } else {
-            const nextGrupoCod = `GRP-${Math.floor(100 + Math.random() * 900)}`;
-            const infoGrupo = stmtInsertGrupo.run(nextGrupoCod, grupoNomeFinal, tipoFinal);
-            grupoId = Number(infoGrupo.lastInsertRowid);
+            const foundC = central.prepare('SELECT id FROM grupos_produtos WHERE UPPER(nome) = ?').get(grupoNomeFinal) as any;
+            if (foundC) {
+              grupoId = Number(foundC.id);
+            } else {
+              const countG = (central.prepare('SELECT COUNT(*) as c FROM grupos_produtos').get() as any)?.c || 0;
+              const nextGrupoCod = `GRP-${String(countG + 1).padStart(3, '0')}`;
+              const infoGrupo = central.prepare(`
+                INSERT INTO grupos_produtos (codigo, nome, tipo_padrao, ativo)
+                VALUES (?, ?, ?, 1)
+              `).run(nextGrupoCod, grupoNomeFinal, tipoFinal);
+              grupoId = Number(infoGrupo.lastInsertRowid);
+              houveNovosGruposCentrais = true;
+            }
+            targetDb.prepare(`
+              INSERT OR REPLACE INTO grupos_produtos (id, codigo, nome, tipo_padrao, ativo)
+              VALUES (?, ?, ?, ?, 1)
+            `).run(grupoId, `GRP-${grupoId}`, grupoNomeFinal, tipoFinal);
             grupoMap.set(grupoNomeFinal, grupoId);
           }
         }
 
-        // 2. Resolução do Subgrupo de Produto na área de destino
+        // 2. Resolução do Subgrupo de Produto no catálogo unificado (central)
         let subgrupoId: number | null = null;
         let subgrupoNomeFinal: string | null = null;
         if (rawSubgrupoNome) {
@@ -9472,9 +9536,23 @@ function handleImportacaoProdutosRoute(req: any, res: any) {
           } else if (subgrupoMap.has(subgrupoNomeFinal)) {
             subgrupoId = subgrupoMap.get(subgrupoNomeFinal)!;
           } else {
-            const nextSubgrupoCod = `SGRP-${Math.floor(100 + Math.random() * 900)}`;
-            const infoSg = stmtInsertSubgrupo.run(grupoId, nextSubgrupoCod, subgrupoNomeFinal);
-            subgrupoId = Number(infoSg.lastInsertRowid);
+            const foundSgC = central.prepare('SELECT id FROM subgrupos_produtos WHERE (grupo_id = ? OR grupo_id IS NULL) AND UPPER(nome) = ?').get(grupoId, subgrupoNomeFinal) as any;
+            if (foundSgC) {
+              subgrupoId = Number(foundSgC.id);
+            } else {
+              const countSg = (central.prepare('SELECT COUNT(*) as c FROM subgrupos_produtos').get() as any)?.c || 0;
+              const nextSubgrupoCod = `SGRP-${String(countSg + 1).padStart(3, '0')}`;
+              const infoSg = central.prepare(`
+                INSERT INTO subgrupos_produtos (grupo_id, codigo, nome, ativo)
+                VALUES (?, ?, ?, 1)
+              `).run(grupoId, nextSubgrupoCod, subgrupoNomeFinal);
+              subgrupoId = Number(infoSg.lastInsertRowid);
+              houveNovosGruposCentrais = true;
+            }
+            targetDb.prepare(`
+              INSERT OR REPLACE INTO subgrupos_produtos (id, grupo_id, codigo, nome, ativo)
+              VALUES (?, ?, ?, ?, 1)
+            `).run(subgrupoId, grupoId, `SGRP-${subgrupoId}`, subgrupoNomeFinal);
             subgrupoMap.set(keyComGrupo, subgrupoId);
             subgrupoMap.set(subgrupoNomeFinal, subgrupoId);
           }
@@ -9585,6 +9663,14 @@ function handleImportacaoProdutosRoute(req: any, res: any) {
         avisos,
       };
     }, targetDb);
+
+    if (houveNovosGruposCentrais) {
+      try {
+        syncMirrorsToAllAreas();
+      } catch (e: any) {
+        console.warn('[Importação] Aviso ao sincronizar espelhos:', e.message);
+      }
+    }
 
     // Auditoria de Acesso no banco central
     registrarLogAcesso(

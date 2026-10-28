@@ -502,6 +502,39 @@ function migrateCentralDb(db: DatabaseSync, dbFilePath: string) {
     console.warn('[DB Central] Aviso ao migrar fornecedores existentes:', err.message);
   }
 
+  // 7. Garante tabela central de grupos e subgrupos de produtos (unificada e compartilhada entre todas as áreas)
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS grupos_produtos (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        codigo TEXT UNIQUE NOT NULL,
+        nome TEXT NOT NULL,
+        tipo_padrao TEXT NOT NULL DEFAULT 'consumivel' CHECK (tipo_padrao IN ('consumivel', 'nao_consumivel')),
+        ativo INTEGER NOT NULL DEFAULT 1,
+        criado_em DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+    CREATE INDEX IF NOT EXISTS idx_grupos_produtos_codigo ON grupos_produtos (codigo);
+    CREATE INDEX IF NOT EXISTS idx_grupos_produtos_ativo ON grupos_produtos (ativo);
+
+    CREATE TABLE IF NOT EXISTS subgrupos_produtos (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        grupo_id INTEGER REFERENCES grupos_produtos(id) ON DELETE CASCADE,
+        codigo TEXT,
+        nome TEXT NOT NULL,
+        ativo INTEGER NOT NULL DEFAULT 1,
+        criado_em DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+    CREATE INDEX IF NOT EXISTS idx_subgrupos_produtos_grupo ON subgrupos_produtos (grupo_id);
+    CREATE INDEX IF NOT EXISTS idx_subgrupos_produtos_ativo ON subgrupos_produtos (ativo);
+  `);
+
+  // Unifica grupos e subgrupos de produtos de todas as áreas (Almoxarifado, CAF, etc.) no banco central
+  try {
+    consolidateUnifiedGruposCentral(db);
+    appliedMigrations++;
+  } catch (err: any) {
+    console.warn('[DB Central] Aviso ao unificar grupos e subgrupos:', err.message);
+  }
+
   // Atualiza user_version
   const currVer = (db.prepare('PRAGMA user_version;').get() as any)?.user_version || 0;
   if (currVer < 3) {
@@ -514,6 +547,221 @@ function migrateCentralDb(db: DatabaseSync, dbFilePath: string) {
   const finalVer = (db.prepare('PRAGMA user_version;').get() as any)?.user_version || 0;
   const jMode = (db.prepare('PRAGMA journal_mode;').get() as any)?.journal_mode;
   console.log(`[DB Central] Conectado: ${dbFilePath} | user_version: ${finalVer} | journal_mode: ${jMode} | Migrações aplicadas: ${appliedMigrations}`);
+}
+
+/**
+ * Unifica os grupos e subgrupos de produtos no banco central (sistema.db)
+ * garantindo catálogo unificado e compartilhado entre Almoxarifado, CAF e demais áreas operacionais.
+ */
+export function consolidateUnifiedGruposCentral(centralDb: DatabaseSync) {
+  const standardGrupos = [
+    // Almoxarifado
+    {
+      codigo: 'GRP-ALM',
+      nome: 'ALMOXARIFADO CENTRAL',
+      tipo: 'consumivel',
+      subgrupos: [
+        { codigo: 'SG-MATGER', nome: 'MATERIAIS GERAIS' },
+      ],
+    },
+    {
+      codigo: 'GRP-ESC',
+      nome: 'MATERIAIS DE ESCRITÓRIO E EXPEDIENTE',
+      tipo: 'consumivel',
+      subgrupos: [
+        { codigo: 'SG-PAPEL', nome: 'PAPELARIA E IMPRESSOS' },
+        { codigo: 'SG-ESCRIT', nome: 'SUPRIMENTOS DE ESCRITÓRIO' },
+      ],
+    },
+    {
+      codigo: 'GRP-HIG',
+      nome: 'HIGIENE, LIMPEZA E COPA',
+      tipo: 'consumivel',
+      subgrupos: [
+        { codigo: 'SG-DESINF', nome: 'DESINFETANTES E SANEANTES' },
+        { codigo: 'SG-DESCART', nome: 'DESCARTÁVEIS DE COPA' },
+      ],
+    },
+    {
+      codigo: 'GRP-MAN',
+      nome: 'MANUTENÇÃO E REPAROS',
+      tipo: 'consumivel',
+      subgrupos: [
+        { codigo: 'SG-ELETR', nome: 'ELÉTRICA E ILUMINAÇÃO' },
+        { codigo: 'SG-HIDR', nome: 'HIDRÁULICA' },
+      ],
+    },
+    {
+      codigo: 'GRP-EQP',
+      nome: 'EQUIPAMENTOS E IMOBILIZADOS',
+      tipo: 'nao_consumivel',
+      subgrupos: [
+        { codigo: 'SG-APAR', nome: 'APARELHOS E INSTRUMENTOS' },
+      ],
+    },
+    // CAF
+    {
+      codigo: 'GRP-MED',
+      nome: 'MEDICAMENTOS',
+      tipo: 'consumivel',
+      subgrupos: [
+        { codigo: 'SG-ANTIB', nome: 'ANTIBIÓTICOS E ANTIMICROBIANOS' },
+        { codigo: 'SG-ANALG', nome: 'ANALGÉSICOS E ANTI-INFLAMATÓRIOS' },
+        { codigo: 'SG-CARD', nome: 'CARDIOVASCULARES' },
+      ],
+    },
+    {
+      codigo: 'GRP-MAT',
+      nome: 'MATERIAIS MÉDICO-HOSPITALARES',
+      tipo: 'consumivel',
+      subgrupos: [
+        { codigo: 'SG-SER', nome: 'SERINGAS E AGULHAS' },
+        { codigo: 'SG-CUR', nome: 'CURATIVOS E GAZE' },
+        { codigo: 'SG-CAT', nome: 'CATETERES E EQUIPOS' },
+      ],
+    },
+    {
+      codigo: 'GRP-SOL',
+      nome: 'SOLUÇÕES E PARENTERAIS',
+      tipo: 'consumivel',
+      subgrupos: [
+        { codigo: 'SG-SOR', nome: 'SOROS E SOLUÇÕES FISIOLÓGICAS' },
+      ],
+    },
+    {
+      codigo: 'GRP-PSI',
+      nome: 'PSICOTRÓPICOS E CONTROLADOS',
+      tipo: 'consumivel',
+      subgrupos: [
+        { codigo: 'SG-PORT344', nome: 'CONTROLADOS PORTARIA 344' },
+      ],
+    },
+  ];
+
+  // 1. Garante que os grupos padrão e seus subgrupos existam no banco central
+  for (const sgDef of standardGrupos) {
+    let gRow = centralDb.prepare('SELECT id FROM grupos_produtos WHERE UPPER(nome) = ?').get(sgDef.nome.toUpperCase()) as any;
+    if (!gRow) {
+      const gCodeCheck = centralDb.prepare('SELECT id FROM grupos_produtos WHERE UPPER(codigo) = ?').get(sgDef.codigo.toUpperCase()) as any;
+      const codeToUse = gCodeCheck ? `GRP-${Math.floor(100 + Math.random() * 900)}` : sgDef.codigo;
+      const resG = centralDb.prepare(`
+        INSERT INTO grupos_produtos (codigo, nome, tipo_padrao, ativo)
+        VALUES (?, ?, ?, 1)
+      `).run(codeToUse, sgDef.nome.toUpperCase(), sgDef.tipo);
+      gRow = { id: Number(resG.lastInsertRowid) };
+    }
+
+    for (const sub of sgDef.subgrupos) {
+      const subExists = centralDb.prepare('SELECT id FROM subgrupos_produtos WHERE grupo_id = ? AND UPPER(nome) = ?').get(gRow.id, sub.nome.toUpperCase());
+      if (!subExists) {
+        centralDb.prepare(`
+          INSERT INTO subgrupos_produtos (grupo_id, codigo, nome, ativo)
+          VALUES (?, ?, ?, 1)
+        `).run(gRow.id, sub.codigo, sub.nome.toUpperCase());
+      }
+    }
+  }
+
+  // 2. Coleta grupos e subgrupos existentes em cada arquivo de área e importa qualquer um que não esteja no central
+  const areaFiles = ['almoxarifado.db', 'caf.db'];
+  try {
+    const areas = centralDb.prepare('SELECT arquivo_db FROM areas').all() as any[];
+    for (const a of areas) {
+      if (a.arquivo_db && !areaFiles.includes(a.arquivo_db)) {
+        areaFiles.push(a.arquivo_db);
+      }
+    }
+  } catch {}
+
+  for (const fileName of areaFiles) {
+    const areaFilePath = resolveDbPath(fileName);
+    if (!fs.existsSync(areaFilePath)) continue;
+
+    try {
+      const areaConn = new DatabaseSync(areaFilePath);
+      try {
+        const checkTable = areaConn.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='grupos_produtos'").get();
+        if (checkTable) {
+          const areaGrupos = areaConn.prepare('SELECT * FROM grupos_produtos').all() as any[];
+          for (const ag of areaGrupos) {
+            const agNomeNorm = String(ag.nome || '').trim().toUpperCase();
+            if (!agNomeNorm) continue;
+            let cGroup = centralDb.prepare('SELECT id FROM grupos_produtos WHERE UPPER(nome) = ?').get(agNomeNorm) as any;
+            if (!cGroup) {
+              const codeCheck = centralDb.prepare('SELECT id FROM grupos_produtos WHERE UPPER(codigo) = ?').get(String(ag.codigo || '').toUpperCase()) as any;
+              const finalCod = codeCheck || !ag.codigo ? `GRP-${Math.floor(100 + Math.random() * 900)}` : ag.codigo;
+              const resNew = centralDb.prepare(`
+                INSERT INTO grupos_produtos (codigo, nome, tipo_padrao, ativo)
+                VALUES (?, ?, ?, ?)
+              `).run(finalCod, agNomeNorm, ag.tipo_padrao || 'consumivel', ag.ativo ?? 1);
+              cGroup = { id: Number(resNew.lastInsertRowid) };
+            }
+
+            // Coleta subgrupos vinculados
+            try {
+              const checkSubTable = areaConn.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='subgrupos_produtos'").get();
+              if (checkSubTable) {
+                const areaSubgrupos = areaConn.prepare('SELECT * FROM subgrupos_produtos WHERE grupo_id = ?').all(ag.id) as any[];
+                for (const asg of areaSubgrupos) {
+                  const asgNomeNorm = String(asg.nome || '').trim().toUpperCase();
+                  if (!asgNomeNorm) continue;
+                  const cSub = centralDb.prepare('SELECT id FROM subgrupos_produtos WHERE grupo_id = ? AND UPPER(nome) = ?').get(cGroup.id, asgNomeNorm) as any;
+                  if (!cSub) {
+                    centralDb.prepare(`
+                      INSERT INTO subgrupos_produtos (grupo_id, codigo, nome, ativo)
+                      VALUES (?, ?, ?, ?)
+                    `).run(cGroup.id, asg.codigo || `SGRP-${Math.floor(100 + Math.random() * 900)}`, asgNomeNorm, asg.ativo ?? 1);
+                  }
+                }
+              }
+            } catch {}
+          }
+        }
+      } finally {
+        try { areaConn.close(); } catch {}
+      }
+    } catch (e: any) {
+      console.warn(`[DB Central] Aviso ao ler grupos de ${fileName}:`, e.message);
+    }
+  }
+
+  // 3. Atualiza os produtos em cada banco de área para apontarem para os novos IDs unificados
+  for (const fileName of areaFiles) {
+    const areaFilePath = resolveDbPath(fileName);
+    if (!fs.existsSync(areaFilePath)) continue;
+
+    try {
+      const areaConn = new DatabaseSync(areaFilePath);
+      try {
+        const checkProdTable = areaConn.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='produtos'").get();
+        const checkGrpTable = areaConn.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='grupos_produtos'").get();
+        if (checkProdTable && checkGrpTable) {
+          const oldGroups = areaConn.prepare('SELECT id, UPPER(nome) as nome_upper FROM grupos_produtos').all() as any[];
+          for (const og of oldGroups) {
+            const centralMatch = centralDb.prepare('SELECT id FROM grupos_produtos WHERE UPPER(nome) = ?').get(og.nome_upper) as any;
+            if (centralMatch && centralMatch.id !== og.id) {
+              areaConn.prepare('UPDATE produtos SET grupo_id = ? WHERE grupo_id = ?').run(centralMatch.id, og.id);
+            }
+          }
+
+          const checkSgTable = areaConn.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='subgrupos_produtos'").get();
+          if (checkSgTable) {
+            const oldSubgroups = areaConn.prepare('SELECT id, UPPER(nome) as nome_upper FROM subgrupos_produtos').all() as any[];
+            for (const osg of oldSubgroups) {
+              const centralSgMatch = centralDb.prepare('SELECT id FROM subgrupos_produtos WHERE UPPER(nome) = ?').get(osg.nome_upper) as any;
+              if (centralSgMatch && centralSgMatch.id !== osg.id) {
+                areaConn.prepare('UPDATE produtos SET subgrupo_id = ? WHERE subgrupo_id = ?').run(centralSgMatch.id, osg.id);
+              }
+            }
+          }
+        }
+      } finally {
+        try { areaConn.close(); } catch {}
+      }
+    } catch (e: any) {
+      console.warn(`[DB Central] Aviso ao remapear produtos em ${fileName}:`, e.message);
+    }
+  }
 }
 
 /**
@@ -763,59 +1011,7 @@ function migrateAreaDb(areaDb: DatabaseSync, areaSigla: string, dbFilePath: stri
       CREATE INDEX IF NOT EXISTS idx_subgrupos_produtos_ativo ON subgrupos_produtos (ativo);
     `);
 
-    // 7.0 Garante grupos e subgrupos padrão para cada área se a tabela estiver vazia
-    try {
-      const gCount = (areaDb.prepare('SELECT COUNT(*) as c FROM grupos_produtos').get() as any)?.c || 0;
-      if (gCount === 0) {
-        if (areaSigla.toUpperCase() === 'CAF') {
-          const insG = areaDb.prepare('INSERT INTO grupos_produtos (codigo, nome, tipo_padrao, ativo) VALUES (?, ?, ?, 1)');
-          const insSg = areaDb.prepare('INSERT INTO subgrupos_produtos (grupo_id, codigo, nome, ativo) VALUES (?, ?, ?, 1)');
-
-          const g1 = Number(insG.run('GRP-MED', 'MEDICAMENTOS', 'consumivel').lastInsertRowid);
-          insSg.run(g1, 'SG-ANTIB', 'ANTIBIÓTICOS E ANTIMICROBIANOS');
-          insSg.run(g1, 'SG-ANALG', 'ANALGÉSICOS E ANTI-INFLAMATÓRIOS');
-          insSg.run(g1, 'SG-CARD', 'CARDIOVASCULARES');
-
-          const g2 = Number(insG.run('GRP-MAT', 'MATERIAIS MÉDICO-HOSPITALARES', 'consumivel').lastInsertRowid);
-          insSg.run(g2, 'SG-SER', 'SERINGAS E AGULHAS');
-          insSg.run(g2, 'SG-CUR', 'CURATIVOS E GAZE');
-          insSg.run(g2, 'SG-CAT', 'CATETERES E EQUIPOS');
-
-          const g3 = Number(insG.run('GRP-SOL', 'SOLUÇÕES E PARENTERAIS', 'consumivel').lastInsertRowid);
-          insSg.run(g3, 'SG-SOR', 'SOROS E SOLUÇÕES FISIOLÓGICAS');
-
-          const g4 = Number(insG.run('GRP-PSI', 'PSICOTRÓPICOS E CONTROLADOS', 'consumivel').lastInsertRowid);
-          insSg.run(g4, 'SG-PORT344', 'CONTROLADOS PORTARIA 344');
-
-          appliedMigrations++;
-        } else {
-          const insG = areaDb.prepare('INSERT INTO grupos_produtos (codigo, nome, tipo_padrao, ativo) VALUES (?, ?, ?, 1)');
-          const insSg = areaDb.prepare('INSERT INTO subgrupos_produtos (grupo_id, codigo, nome, ativo) VALUES (?, ?, ?, 1)');
-
-          const g1 = Number(insG.run('GRP-ALM', 'ALMOXARIFADO CENTRAL', 'consumivel').lastInsertRowid);
-          insSg.run(g1, 'SG-MATGER', 'MATERIAIS GERAIS');
-
-          const g2 = Number(insG.run('GRP-ESC', 'MATERIAIS DE ESCRITÓRIO E EXPEDIENTE', 'consumivel').lastInsertRowid);
-          insSg.run(g2, 'SG-PAPEL', 'PAPELARIA E IMPRESSOS');
-          insSg.run(g2, 'SG-ESCRIT', 'SUPRIMENTOS DE ESCRITÓRIO');
-
-          const g3 = Number(insG.run('GRP-HIG', 'HIGIENE, LIMPEZA E COPA', 'consumivel').lastInsertRowid);
-          insSg.run(g3, 'SG-DESINF', 'DESINFETANTES E SANEANTES');
-          insSg.run(g3, 'SG-DESCART', 'DESCARTÁVEIS DE COPA');
-
-          const g4 = Number(insG.run('GRP-MAN', 'MANUTENÇÃO E REPAROS', 'consumivel').lastInsertRowid);
-          insSg.run(g4, 'SG-ELETR', 'ELÉTRICA E ILUMINAÇÃO');
-          insSg.run(g4, 'SG-HIDR', 'HIDRÁULICA');
-
-          const g5 = Number(insG.run('GRP-EQP', 'EQUIPAMENTOS E IMOBILIZADOS', 'nao_consumivel').lastInsertRowid);
-          insSg.run(g5, 'SG-APAR', 'APARELHOS E INSTRUMENTOS');
-
-          appliedMigrations++;
-        }
-      }
-    } catch (e: any) {
-      console.warn(`[DB Área ${areaSigla}] Aviso ao semear grupos padrão:`, e.message);
-    }
+    // 7.0 Grupos e subgrupos são unificados no banco central (sistema.db) e espelhados automaticamente via syncMirrorsToArea(areaDb)
 
     const prodCols = new Set((areaDb.prepare("PRAGMA table_info('produtos')").all() as Array<{ name: string }>).map((c) => c.name));
     if (!prodCols.has('custo_unitario')) {
@@ -1035,6 +1231,15 @@ export function syncMirrorsToArea(areaDb: DatabaseSync) {
     }
 
 
+
+    if (grupos.length > 0) {
+      const gPlaceholders = grupos.map(() => '?').join(',');
+      areaDb.prepare(`DELETE FROM grupos_produtos WHERE id NOT IN (${gPlaceholders})`).run(...grupos.map((g) => g.id));
+    }
+    if (subgrupos.length > 0) {
+      const sgPlaceholders = subgrupos.map(() => '?').join(',');
+      areaDb.prepare(`DELETE FROM subgrupos_produtos WHERE id NOT IN (${sgPlaceholders})`).run(...subgrupos.map((s) => s.id));
+    }
 
     const userIds = users.map((u) => u.id);
     if (userIds.length > 0) {
