@@ -2416,12 +2416,13 @@ apiRouter.post('/grupos-produtos', (req, res) => {
   }
 
   try {
-    const info = db.prepare(`
+    const areaDb = (req as any).areaDb;
+    const info = areaDb.prepare(`
       INSERT INTO grupos_produtos (codigo, nome, tipo_padrao, ativo)
       VALUES (?, ?, ?, 1)
     `).run(codNorm, nomeNorm, tipoNorm);
 
-    const novo = db.prepare('SELECT * FROM grupos_produtos WHERE id = ?').get(info.lastInsertRowid);
+    const novo = areaDb.prepare('SELECT * FROM grupos_produtos WHERE id = ?').get(info.lastInsertRowid);
     res.status(201).json(novo);
   } catch (err: any) {
     res.status(500).json({ error: 'Erro ao cadastrar grupo de produtos: ' + err.message });
@@ -2444,7 +2445,8 @@ apiRouter.put('/grupos-produtos/:id', (req, res) => {
   }
 
   try {
-    db.prepare(`
+    const areaDb = (req as any).areaDb;
+    areaDb.prepare(`
       UPDATE grupos_produtos
       SET codigo = COALESCE(?, codigo),
           nome = ?,
@@ -2459,7 +2461,7 @@ apiRouter.put('/grupos-produtos/:id', (req, res) => {
       Number(id)
     );
 
-    const updated = db.prepare('SELECT * FROM grupos_produtos WHERE id = ?').get(Number(id));
+    const updated = areaDb.prepare('SELECT * FROM grupos_produtos WHERE id = ?').get(Number(id));
     res.json(updated);
   } catch (err: any) {
     res.status(500).json({ error: 'Erro ao atualizar grupo de produtos: ' + err.message });
@@ -2475,16 +2477,17 @@ apiRouter.delete('/grupos-produtos/:id', (req, res) => {
 
   const { id } = req.params;
   try {
-    const prodsCount = (db.prepare('SELECT COUNT(*) as c FROM produtos WHERE grupo_id = ?').get(Number(id)) as any)?.c || 0;
+    const areaDb = (req as any).areaDb;
+    const prodsCount = (areaDb.prepare('SELECT COUNT(*) as c FROM produtos WHERE grupo_id = ?').get(Number(id)) as any)?.c || 0;
     if (prodsCount > 0) {
       // Soft-delete se houver produtos
-      db.prepare('UPDATE grupos_produtos SET ativo = 0 WHERE id = ?').run(Number(id));
+      areaDb.prepare('UPDATE grupos_produtos SET ativo = 0 WHERE id = ?').run(Number(id));
       res.json({ message: `Grupo desativado pois contém ${prodsCount} produto(s) associado(s).` });
       return;
     }
 
-    db.prepare('DELETE FROM subgrupos_produtos WHERE grupo_id = ?').run(Number(id));
-    db.prepare('DELETE FROM grupos_produtos WHERE id = ?').run(Number(id));
+    areaDb.prepare('DELETE FROM subgrupos_produtos WHERE grupo_id = ?').run(Number(id));
+    areaDb.prepare('DELETE FROM grupos_produtos WHERE id = ?').run(Number(id));
     res.json({ message: 'Grupo excluído com sucesso.' });
   } catch (err: any) {
     res.status(500).json({ error: 'Erro ao excluir grupo: ' + err.message });
@@ -2498,6 +2501,7 @@ apiRouter.delete('/grupos-produtos/:id', (req, res) => {
 apiRouter.get('/subgrupos-produtos', (req, res) => {
   const { grupo_id } = req.query;
   try {
+    const areaDb = (req as any).areaDb;
     let sql = `
       SELECT sg.*,
              gp.nome as grupo_nome,
@@ -2514,7 +2518,7 @@ apiRouter.get('/subgrupos-produtos', (req, res) => {
     }
     sql += ' ORDER BY gp.nome ASC, sg.nome ASC';
 
-    const rows = db.prepare(sql).all(...params);
+    const rows = areaDb.prepare(sql).all(...params);
     res.json(rows);
   } catch (err: any) {
     res.status(500).json({ error: 'Erro ao buscar subgrupos de produtos: ' + err.message });
@@ -2542,12 +2546,13 @@ apiRouter.post('/subgrupos-produtos', (req, res) => {
   }
 
   try {
-    const info = db.prepare(`
+    const areaDb = (req as any).areaDb;
+    const info = areaDb.prepare(`
       INSERT INTO subgrupos_produtos (grupo_id, codigo, nome, ativo)
       VALUES (?, ?, ?, 1)
     `).run(grupo_id ? Number(grupo_id) : null, codNorm, nomeNorm);
 
-    const novo = db.prepare(`
+    const novo = areaDb.prepare(`
       SELECT sg.*, gp.nome as grupo_nome
       FROM subgrupos_produtos sg
       LEFT JOIN grupos_produtos gp ON sg.grupo_id = gp.id
@@ -2556,6 +2561,74 @@ apiRouter.post('/subgrupos-produtos', (req, res) => {
     res.status(201).json(novo);
   } catch (err: any) {
     res.status(500).json({ error: 'Erro ao cadastrar subgrupo: ' + err.message });
+  }
+});
+
+apiRouter.put('/subgrupos-produtos/:id', (req, res) => {
+  const user = authenticateRequest(req);
+  if (!user || (user.perfil !== 'admin' && user.perfil !== 'almoxarife')) {
+    res.status(403).json({ error: 'Apenas Administradores e Almoxarifes podem editar subgrupos' });
+    return;
+  }
+
+  const { id } = req.params;
+  const { grupo_id, codigo, nome, ativo } = req.body || {};
+
+  if (!nome || !String(nome).trim()) {
+    res.status(400).json({ error: 'O nome do subgrupo é obrigatório' });
+    return;
+  }
+
+  try {
+    const areaDb = (req as any).areaDb;
+    areaDb.prepare(`
+      UPDATE subgrupos_produtos
+      SET grupo_id = ?,
+          codigo = COALESCE(?, codigo),
+          nome = ?,
+          ativo = COALESCE(?, ativo)
+      WHERE id = ?
+    `).run(
+      grupo_id ? Number(grupo_id) : null,
+      codigo ? String(codigo).trim().toUpperCase() : null,
+      String(nome).trim().toUpperCase(),
+      ativo !== undefined ? (ativo ? 1 : 0) : null,
+      Number(id)
+    );
+
+    const updated = areaDb.prepare(`
+      SELECT sg.*, gp.nome as grupo_nome
+      FROM subgrupos_produtos sg
+      LEFT JOIN grupos_produtos gp ON sg.grupo_id = gp.id
+      WHERE sg.id = ?
+    `).get(Number(id));
+    res.json(updated);
+  } catch (err: any) {
+    res.status(500).json({ error: 'Erro ao atualizar subgrupo: ' + err.message });
+  }
+});
+
+apiRouter.delete('/subgrupos-produtos/:id', (req, res) => {
+  const user = authenticateRequest(req);
+  if (!user || user.perfil !== 'admin') {
+    res.status(403).json({ error: 'Apenas Administradores podem excluir subgrupos' });
+    return;
+  }
+
+  const { id } = req.params;
+  try {
+    const areaDb = (req as any).areaDb;
+    const prodsCount = (areaDb.prepare('SELECT COUNT(*) as c FROM produtos WHERE subgrupo_id = ?').get(Number(id)) as any)?.c || 0;
+    if (prodsCount > 0) {
+      areaDb.prepare('UPDATE subgrupos_produtos SET ativo = 0 WHERE id = ?').run(Number(id));
+      res.json({ message: `Subgrupo desativado pois contém ${prodsCount} produto(s) associado(s).` });
+      return;
+    }
+
+    areaDb.prepare('DELETE FROM subgrupos_produtos WHERE id = ?').run(Number(id));
+    res.json({ message: 'Subgrupo excluído com sucesso.' });
+  } catch (err: any) {
+    res.status(500).json({ error: 'Erro ao excluir subgrupo: ' + err.message });
   }
 });
 

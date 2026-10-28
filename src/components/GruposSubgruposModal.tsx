@@ -50,7 +50,7 @@ export const GruposSubgruposModal: React.FC<GruposSubgruposModalProps> = ({
       setErrorMsg(null);
       const res = await fetch('/api/grupos-produtos', {
         method: 'POST',
-        headers: getAuthHeaders(),
+        headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify({
           codigo: novoGrupoCodigo.trim() || undefined,
           nome: novoGrupoNome.trim(),
@@ -110,7 +110,7 @@ export const GruposSubgruposModal: React.FC<GruposSubgruposModalProps> = ({
       setErrorMsg(null);
       const res = await fetch('/api/subgrupos-produtos', {
         method: 'POST',
-        headers: getAuthHeaders(),
+        headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify({
           grupo_id: novoSubgrupoGrupoId ? Number(novoSubgrupoGrupoId) : null,
           codigo: novoSubgrupoCodigo.trim() || undefined,
