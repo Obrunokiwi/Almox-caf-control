@@ -80,6 +80,18 @@ CREATE TABLE IF NOT EXISTS grupos_produtos (
 CREATE INDEX IF NOT EXISTS idx_grupos_produtos_codigo ON grupos_produtos (codigo);
 CREATE INDEX IF NOT EXISTS idx_grupos_produtos_ativo ON grupos_produtos (ativo);
 
+-- 5.1 TABELA DE SUBGRUPOS DE PRODUTOS
+CREATE TABLE IF NOT EXISTS subgrupos_produtos (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    grupo_id INTEGER REFERENCES grupos_produtos(id) ON DELETE CASCADE,
+    codigo TEXT,
+    nome TEXT NOT NULL,
+    ativo INTEGER NOT NULL DEFAULT 1,
+    criado_em DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_subgrupos_produtos_grupo ON subgrupos_produtos (grupo_id);
+CREATE INDEX IF NOT EXISTS idx_subgrupos_produtos_ativo ON subgrupos_produtos (ativo);
+
 -- 6. TABELA DE PRODUTOS / ITENS DO CATÁLOGO DA ÁREA
 CREATE TABLE IF NOT EXISTS produtos (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -87,6 +99,8 @@ CREATE TABLE IF NOT EXISTS produtos (
     nome TEXT NOT NULL,
     descricao TEXT,
     grupo_id INTEGER REFERENCES grupos_produtos(id),
+    subgrupo_id INTEGER REFERENCES subgrupos_produtos(id),
+    subgrupo_nome TEXT,
     unidade_medida TEXT NOT NULL,
     tipo TEXT NOT NULL CHECK (tipo IN ('consumivel', 'nao_consumivel')),
     controla_validade INTEGER NOT NULL DEFAULT 1,
@@ -102,6 +116,7 @@ CREATE TABLE IF NOT EXISTS produtos (
 CREATE INDEX IF NOT EXISTS idx_produtos_codigo ON produtos (codigo);
 CREATE INDEX IF NOT EXISTS idx_produtos_tipo ON produtos (tipo);
 CREATE INDEX IF NOT EXISTS idx_produtos_grupo ON produtos (grupo_id);
+CREATE INDEX IF NOT EXISTS idx_produtos_subgrupo ON produtos (subgrupo_id);
 CREATE INDEX IF NOT EXISTS idx_produtos_ativo ON produtos (ativo);
 
 -- 7. VÍNCULO PRODUTO X FORNECEDORES

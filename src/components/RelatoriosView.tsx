@@ -20,11 +20,12 @@ import {
 import { jsPDF } from 'jspdf';
 import autoTable from 'jspdf-autotable';
 import { ConsumoMensalChart } from './ConsumoMensalChart.tsx';
+import { IndicadoresPerformanceView } from './IndicadoresPerformanceView.tsx';
 import { finalizeJsPDF, type PdfGeneratedDocument, type PdfOutputMode } from '../utils/pdfGenerator.ts';
 import { PdfPrintModal } from './PdfPrintModal.tsx';
 import { HelpFloatingModal } from './HelpFloatingModal.tsx';
 import { CentroCustoAlertBanner } from './CentroCustoAlertBanner.tsx';
-import type { CentroCusto, Produto, Movimentacao, EmpresaUnidade, Usuario, DashboardStats } from '../types/index.ts';
+import type { CentroCusto, Produto, Movimentacao, EmpresaUnidade, Usuario, DashboardStats, GrupoProduto, SubgrupoProduto } from '../types/index.ts';
 
 interface RelatoriosViewProps {
   centrosCusto: CentroCusto[];
@@ -64,7 +65,7 @@ export const RelatoriosView: React.FC<RelatoriosViewProps> = ({
   onVoltar,
   onNavigate,
 }) => {
-  const [activeTab, setActiveTab] = useState<'padrao' | 'personalizados'>('padrao');
+  const [activeTab, setActiveTab] = useState<'padrao' | 'personalizados' | 'performance'>('padrao');
   const [searchTerm, setSearchTerm] = useState('');
   const [openCategories, setOpenCategories] = useState<Record<string, boolean>>({
     Estoque: true,
@@ -175,6 +176,14 @@ export const RelatoriosView: React.FC<RelatoriosViewProps> = ({
             : 'Classificação analítica por tipo de insumo e distribuição patrimonial no almoxarifado.',
           badge: isCaf ? 'Classificação Farmacêutica' : 'Patrimonial',
         },
+        {
+          id: 'posicao_estoque_grupo_subgrupo',
+          titulo: isCaf
+            ? '7. Posição de Estoque por Grupo e Subgrupo de Medicamentos/Insumos'
+            : '7. Posição de Estoque por Grupo e Subgrupo de Materiais',
+          descricao: 'Demonstrativo de saldos e custos classificados hierarquicamente por Grupo e Subgrupo de produtos cadastrados.',
+          badge: 'Grupos & Subgrupos',
+        },
       ],
     },
     {
@@ -262,11 +271,28 @@ export const RelatoriosView: React.FC<RelatoriosViewProps> = ({
     setOpenCategories((prev) => ({ ...prev, [nome]: !prev[nome] }));
   };
 
+  // Grupos e Subgrupos para Filtro de Relatórios
+  const [grupos, setGrupos] = useState<GrupoProduto[]>([]);
+  const [subgrupos, setSubgrupos] = useState<SubgrupoProduto[]>([]);
+  const [filtroGrupoId, setFiltroGrupoId] = useState<string>('');
+  const [filtroSubgrupoId, setFiltroSubgrupoId] = useState<string>('');
+
+  useEffect(() => {
+    fetch('/api/grupos-produtos', { headers: getReportHeaders() })
+      .then((r) => r.json())
+      .then((d) => { if (Array.isArray(d)) setGrupos(d); })
+      .catch(() => {});
+    fetch('/api/subgrupos-produtos', { headers: getReportHeaders() })
+      .then((r) => r.json())
+      .then((d) => { if (Array.isArray(d)) setSubgrupos(d); })
+      .catch(() => {});
+  }, [activeAreaSigla]);
+
   const handleOpenReport = async (reportId: string, title: string) => {
     setSelectedReportId(reportId);
     setSelectedReportTitle(title);
     setReportResult(null);
-    executeReport(reportId, filtroCcId, filtroProdutoId, filtroTipoProduto);
+    executeReport(reportId, filtroCcId, filtroProdutoId, filtroTipoProduto, filtroGrupoId, filtroSubgrupoId);
   };
 
   // Filtros do Modal
@@ -274,9 +300,18 @@ export const RelatoriosView: React.FC<RelatoriosViewProps> = ({
   const [filtroProdutoId, setFiltroProdutoId] = useState<string>('');
   const [filtroTipoProduto, setFiltroTipoProduto] = useState<string>('');
 
-  const executeReport = async (reportId: string, ccId: string, prodId: string, tipoProd: string) => {
+  const executeReport = async (
+    reportId: string,
+    ccId: string,
+    prodId: string,
+    tipoProd: string,
+    grupoId?: string,
+    subgrupoId?: string
+  ) => {
     setLoadingReport(true);
     try {
+      const gId = grupoId !== undefined ? grupoId : filtroGrupoId;
+      const sgId = subgrupoId !== undefined ? subgrupoId : filtroSubgrupoId;
       const res = await fetch('/api/relatorios/executar', {
         method: 'POST',
         headers: getReportHeaders(),
@@ -285,6 +320,8 @@ export const RelatoriosView: React.FC<RelatoriosViewProps> = ({
           centro_custo_id: ccId ? Number(ccId) : undefined,
           produto_id: prodId ? Number(prodId) : undefined,
           tipo_produto: tipoProd || undefined,
+          grupo_id: gId ? Number(gId) : undefined,
+          subgrupo_id: sgId || undefined,
         }),
       });
 
@@ -508,6 +545,8 @@ export const RelatoriosView: React.FC<RelatoriosViewProps> = ({
           centro_custo_id: filtroCcId ? Number(filtroCcId) : undefined,
           produto_id: filtroProdutoId ? Number(filtroProdutoId) : undefined,
           tipo_produto: filtroTipoProduto || undefined,
+          grupo_id: filtroGrupoId ? Number(filtroGrupoId) : undefined,
+          subgrupo_id: filtroSubgrupoId || undefined,
         }),
       });
       const data = await res.json();
@@ -1172,10 +1211,10 @@ export const RelatoriosView: React.FC<RelatoriosViewProps> = ({
       {/* =========================================================================
           ABAS DE SELEÇÃO: Relatórios Padrão / Personalizados
          ========================================================================= */}
-      <div className="flex border-b border-slate-200">
+      <div className="flex border-b border-slate-200 overflow-x-auto">
         <button
           onClick={() => setActiveTab('padrao')}
-          className={`px-5 py-2.5 text-xs font-bold uppercase tracking-wider border-b-2 transition-all cursor-pointer ${
+          className={`px-5 py-2.5 text-xs font-bold uppercase tracking-wider border-b-2 transition-all cursor-pointer whitespace-nowrap ${
             activeTab === 'padrao'
               ? 'border-teal-600 text-teal-700 bg-teal-50/40'
               : 'border-transparent text-slate-500 hover:text-slate-700 hover:border-slate-300'
@@ -1185,13 +1224,24 @@ export const RelatoriosView: React.FC<RelatoriosViewProps> = ({
         </button>
         <button
           onClick={() => setActiveTab('personalizados')}
-          className={`px-5 py-2.5 text-xs font-bold uppercase tracking-wider border-b-2 transition-all cursor-pointer ${
+          className={`px-5 py-2.5 text-xs font-bold uppercase tracking-wider border-b-2 transition-all cursor-pointer whitespace-nowrap ${
             activeTab === 'personalizados'
               ? 'border-teal-600 text-teal-700 bg-teal-50/40'
               : 'border-transparent text-slate-500 hover:text-slate-700 hover:border-slate-300'
           }`}
         >
           Relatórios Personalizados & Filtros Avançados
+        </button>
+        <button
+          onClick={() => setActiveTab('performance')}
+          className={`px-5 py-2.5 text-xs font-bold uppercase tracking-wider border-b-2 transition-all cursor-pointer whitespace-nowrap flex items-center gap-1.5 ${
+            activeTab === 'performance'
+              ? 'border-[#00237D] text-[#00237D] bg-blue-50/50'
+              : 'border-transparent text-slate-500 hover:text-slate-700 hover:border-slate-300'
+          }`}
+        >
+          <span>3. Indicadores de Performance (NPS & Avaliações)</span>
+          <span className="bg-amber-100 text-amber-800 text-[10px] px-1.5 py-0.5 rounded font-mono font-bold">5★</span>
         </button>
       </div>
 
@@ -1289,7 +1339,7 @@ export const RelatoriosView: React.FC<RelatoriosViewProps> = ({
             );
           })}
         </div>
-      ) : (
+      ) : activeTab === 'personalizados' ? (
         /* Aba de Relatórios Personalizados */
         <div className="bg-white p-6 rounded-xl border border-slate-200 shadow-sm space-y-6">
           <div>
@@ -1299,7 +1349,7 @@ export const RelatoriosView: React.FC<RelatoriosViewProps> = ({
             </p>
           </div>
 
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-4 p-4 bg-[#f8f9fa] border border-slate-200 rounded-lg">
+          <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-5 gap-3 p-4 bg-[#f8f9fa] border border-slate-200 rounded-lg">
             <div>
               <label className="block text-[11px] font-bold text-slate-600 uppercase tracking-wider mb-1">
                 Tipo de Relatório Base
@@ -1322,6 +1372,50 @@ export const RelatoriosView: React.FC<RelatoriosViewProps> = ({
 
             <div>
               <label className="block text-[11px] font-bold text-slate-600 uppercase tracking-wider mb-1">
+                Grupo de Produto
+              </label>
+              <SearchableSelect
+                options={[
+                  { value: '', label: '(Todos os Grupos)' },
+                  ...grupos.map((g) => ({
+                    value: String(g.id),
+                    label: `${g.codigo ? `${g.codigo} - ` : ''}${g.nome}`,
+                  })),
+                ]}
+                value={filtroGrupoId}
+                onChange={(val) => {
+                  const gVal = String(val || '');
+                  setFiltroGrupoId(gVal);
+                  setFiltroSubgrupoId('');
+                }}
+                placeholder="Filtrar por grupo..."
+                allowClear={true}
+              />
+            </div>
+
+            <div>
+              <label className="block text-[11px] font-bold text-slate-600 uppercase tracking-wider mb-1">
+                Subgrupo de Produto
+              </label>
+              <SearchableSelect
+                options={[
+                  { value: '', label: '(Todos os Subgrupos)' },
+                  ...subgrupos
+                    .filter((sg) => !filtroGrupoId || String(sg.grupo_id) === String(filtroGrupoId))
+                    .map((sg) => ({
+                      value: String(sg.id),
+                      label: `${sg.codigo ? `${sg.codigo} - ` : ''}${sg.nome}${sg.grupo_nome ? ` (${sg.grupo_nome})` : ''}`,
+                    })),
+                ]}
+                value={filtroSubgrupoId}
+                onChange={(val) => setFiltroSubgrupoId(String(val || ''))}
+                placeholder="Filtrar por subgrupo..."
+                allowClear={true}
+              />
+            </div>
+
+            <div>
+              <label className="block text-[11px] font-bold text-slate-600 uppercase tracking-wider mb-1">
                 Centro de Custo
               </label>
               <SearchableSelect
@@ -1335,7 +1429,7 @@ export const RelatoriosView: React.FC<RelatoriosViewProps> = ({
                 value={filtroCcId}
                 onChange={(val) => setFiltroCcId(String(val || ''))}
                 placeholder="Filtrar por centro de custo..."
-                allowClear={false}
+                allowClear={true}
               />
             </div>
 
@@ -1352,7 +1446,7 @@ export const RelatoriosView: React.FC<RelatoriosViewProps> = ({
                 value={filtroTipoProduto}
                 onChange={(val) => setFiltroTipoProduto(String(val || ''))}
                 placeholder="Filtrar por categoria..."
-                allowClear={false}
+                allowClear={true}
               />
             </div>
           </div>
@@ -1378,6 +1472,8 @@ export const RelatoriosView: React.FC<RelatoriosViewProps> = ({
             </button>
           </div>
         </div>
+      ) : (
+        <IndicadoresPerformanceView currentUser={currentUser} />
       )}
 
       {/* =========================================================================

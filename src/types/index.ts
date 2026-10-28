@@ -31,6 +31,18 @@ export interface GrupoProduto {
   tipo_padrao: TipoProduto;
   area_id_sugerida?: number | null;
   ativo: number;
+  total_produtos?: number;
+  total_subgrupos?: number;
+}
+
+export interface SubgrupoProduto {
+  id: number;
+  grupo_id?: number | null;
+  grupo_nome?: string | null;
+  codigo?: string | null;
+  nome: string;
+  ativo: number;
+  total_produtos?: number;
 }
 export type StatusRequisicao = 'pendente' | 'aprovada_atendida' | 'rejeitada' | 'cancelada';
 export type PrioridadeRequisicao = 'normal' | 'urgente';
@@ -275,6 +287,9 @@ export interface Produto {
   grupo_id?: number | null;
   grupo_codigo?: string | null;
   grupo_nome?: string | null;
+  subgrupo_id?: number | null;
+  subgrupo_codigo?: string | null;
+  subgrupo_nome?: string | null;
   unidade_medida: UnidadeMedida;
   tipo: TipoProduto;
   controla_validade?: number;

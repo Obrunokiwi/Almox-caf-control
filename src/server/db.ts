@@ -718,7 +718,105 @@ function migrateAreaDb(areaDb: DatabaseSync, areaSigla: string, dbFilePath: stri
       appliedMigrations++;
     }
 
+    // 6.1 Verificação e adição de colunas de avaliação de performance na tabela 'requisicoes'
+    const reqCols = new Set((areaDb.prepare("PRAGMA table_info('requisicoes')").all() as Array<{ name: string }>).map((c) => c.name));
+    if (!reqCols.has('avaliacao_agilidade')) {
+      areaDb.exec('ALTER TABLE requisicoes ADD COLUMN avaliacao_agilidade INTEGER;');
+      appliedMigrations++;
+    }
+    if (!reqCols.has('avaliacao_qualidade')) {
+      areaDb.exec('ALTER TABLE requisicoes ADD COLUMN avaliacao_qualidade INTEGER;');
+      appliedMigrations++;
+    }
+    if (!reqCols.has('avaliacao_entrega')) {
+      areaDb.exec('ALTER TABLE requisicoes ADD COLUMN avaliacao_entrega INTEGER;');
+      appliedMigrations++;
+    }
+    if (!reqCols.has('avaliacao_media')) {
+      areaDb.exec('ALTER TABLE requisicoes ADD COLUMN avaliacao_media REAL;');
+      appliedMigrations++;
+    }
+    if (!reqCols.has('avaliacao_sugestao')) {
+      areaDb.exec('ALTER TABLE requisicoes ADD COLUMN avaliacao_sugestao TEXT;');
+      appliedMigrations++;
+    }
+    if (!reqCols.has('avaliacao_data')) {
+      areaDb.exec('ALTER TABLE requisicoes ADD COLUMN avaliacao_data DATETIME;');
+      appliedMigrations++;
+    }
+    if (!reqCols.has('avaliacao_status')) {
+      areaDb.exec('ALTER TABLE requisicoes ADD COLUMN avaliacao_status TEXT DEFAULT "pendente";');
+      appliedMigrations++;
+    }
+
     // 7. Verificação e adição de colunas em produtos
+    areaDb.exec(`
+      CREATE TABLE IF NOT EXISTS subgrupos_produtos (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          grupo_id INTEGER REFERENCES grupos_produtos(id) ON DELETE CASCADE,
+          codigo TEXT,
+          nome TEXT NOT NULL,
+          ativo INTEGER NOT NULL DEFAULT 1,
+          criado_em DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+      );
+      CREATE INDEX IF NOT EXISTS idx_subgrupos_produtos_grupo ON subgrupos_produtos (grupo_id);
+      CREATE INDEX IF NOT EXISTS idx_subgrupos_produtos_ativo ON subgrupos_produtos (ativo);
+    `);
+
+    // 7.0 Garante grupos e subgrupos padrão para cada área se a tabela estiver vazia
+    try {
+      const gCount = (areaDb.prepare('SELECT COUNT(*) as c FROM grupos_produtos').get() as any)?.c || 0;
+      if (gCount === 0) {
+        if (areaSigla.toUpperCase() === 'CAF') {
+          const insG = areaDb.prepare('INSERT INTO grupos_produtos (codigo, nome, tipo_padrao, ativo) VALUES (?, ?, ?, 1)');
+          const insSg = areaDb.prepare('INSERT INTO subgrupos_produtos (grupo_id, codigo, nome, ativo) VALUES (?, ?, ?, 1)');
+
+          const g1 = Number(insG.run('GRP-MED', 'MEDICAMENTOS', 'consumivel').lastInsertRowid);
+          insSg.run(g1, 'SG-ANTIB', 'ANTIBIÓTICOS E ANTIMICROBIANOS');
+          insSg.run(g1, 'SG-ANALG', 'ANALGÉSICOS E ANTI-INFLAMATÓRIOS');
+          insSg.run(g1, 'SG-CARD', 'CARDIOVASCULARES');
+
+          const g2 = Number(insG.run('GRP-MAT', 'MATERIAIS MÉDICO-HOSPITALARES', 'consumivel').lastInsertRowid);
+          insSg.run(g2, 'SG-SER', 'SERINGAS E AGULHAS');
+          insSg.run(g2, 'SG-CUR', 'CURATIVOS E GAZE');
+          insSg.run(g2, 'SG-CAT', 'CATETERES E EQUIPOS');
+
+          const g3 = Number(insG.run('GRP-SOL', 'SOLUÇÕES E PARENTERAIS', 'consumivel').lastInsertRowid);
+          insSg.run(g3, 'SG-SOR', 'SOROS E SOLUÇÕES FISIOLÓGICAS');
+
+          const g4 = Number(insG.run('GRP-PSI', 'PSICOTRÓPICOS E CONTROLADOS', 'consumivel').lastInsertRowid);
+          insSg.run(g4, 'SG-PORT344', 'CONTROLADOS PORTARIA 344');
+
+          appliedMigrations++;
+        } else {
+          const insG = areaDb.prepare('INSERT INTO grupos_produtos (codigo, nome, tipo_padrao, ativo) VALUES (?, ?, ?, 1)');
+          const insSg = areaDb.prepare('INSERT INTO subgrupos_produtos (grupo_id, codigo, nome, ativo) VALUES (?, ?, ?, 1)');
+
+          const g1 = Number(insG.run('GRP-ALM', 'ALMOXARIFADO CENTRAL', 'consumivel').lastInsertRowid);
+          insSg.run(g1, 'SG-MATGER', 'MATERIAIS GERAIS');
+
+          const g2 = Number(insG.run('GRP-ESC', 'MATERIAIS DE ESCRITÓRIO E EXPEDIENTE', 'consumivel').lastInsertRowid);
+          insSg.run(g2, 'SG-PAPEL', 'PAPELARIA E IMPRESSOS');
+          insSg.run(g2, 'SG-ESCRIT', 'SUPRIMENTOS DE ESCRITÓRIO');
+
+          const g3 = Number(insG.run('GRP-HIG', 'HIGIENE, LIMPEZA E COPA', 'consumivel').lastInsertRowid);
+          insSg.run(g3, 'SG-DESINF', 'DESINFETANTES E SANEANTES');
+          insSg.run(g3, 'SG-DESCART', 'DESCARTÁVEIS DE COPA');
+
+          const g4 = Number(insG.run('GRP-MAN', 'MANUTENÇÃO E REPAROS', 'consumivel').lastInsertRowid);
+          insSg.run(g4, 'SG-ELETR', 'ELÉTRICA E ILUMINAÇÃO');
+          insSg.run(g4, 'SG-HIDR', 'HIDRÁULICA');
+
+          const g5 = Number(insG.run('GRP-EQP', 'EQUIPAMENTOS E IMOBILIZADOS', 'nao_consumivel').lastInsertRowid);
+          insSg.run(g5, 'SG-APAR', 'APARELHOS E INSTRUMENTOS');
+
+          appliedMigrations++;
+        }
+      }
+    } catch (e: any) {
+      console.warn(`[DB Área ${areaSigla}] Aviso ao semear grupos padrão:`, e.message);
+    }
+
     const prodCols = new Set((areaDb.prepare("PRAGMA table_info('produtos')").all() as Array<{ name: string }>).map((c) => c.name));
     if (!prodCols.has('custo_unitario')) {
       areaDb.exec('ALTER TABLE produtos ADD COLUMN custo_unitario REAL NOT NULL DEFAULT 0;');
@@ -726,6 +824,14 @@ function migrateAreaDb(areaDb: DatabaseSync, areaSigla: string, dbFilePath: stri
     }
     if (!prodCols.has('localizacao')) {
       areaDb.exec('ALTER TABLE produtos ADD COLUMN localizacao TEXT;');
+      appliedMigrations++;
+    }
+    if (!prodCols.has('subgrupo_id')) {
+      areaDb.exec('ALTER TABLE produtos ADD COLUMN subgrupo_id INTEGER REFERENCES subgrupos_produtos(id) ON DELETE SET NULL;');
+      appliedMigrations++;
+    }
+    if (!prodCols.has('subgrupo_nome')) {
+      areaDb.exec('ALTER TABLE produtos ADD COLUMN subgrupo_nome TEXT;');
       appliedMigrations++;
     }
 

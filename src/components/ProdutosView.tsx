@@ -24,14 +24,17 @@ import {
   Truck,
   PackagePlus,
   Layers,
-  Sparkles
+  Sparkles,
+  FolderTree,
+  X
 } from 'lucide-react';
-import type { Produto, Fornecedor, ProdutoFornecedor, Usuario, UnidadeMedida, TipoProduto, GrupoProduto } from '../types/index.ts';
+import type { Produto, Fornecedor, ProdutoFornecedor, Usuario, UnidadeMedida, TipoProduto, GrupoProduto, SubgrupoProduto } from '../types/index.ts';
 import { useToast } from '../context/ToastContext.tsx';
 import { ConfirmDeleteModal } from './ConfirmDeleteModal.tsx';
 import { HelpFloatingModal } from './HelpFloatingModal.tsx';
 import { SearchableSelect, type SearchableOption } from './SearchableSelect.tsx';
 import { getAuthHeaders } from '../utils/apiUtils.ts';
+import { GruposSubgruposModal } from './GruposSubgruposModal.tsx';
 
 interface ProdutosViewProps {
   produtos: Produto[];
@@ -74,13 +77,16 @@ export const ProdutosView: React.FC<ProdutosViewProps> = ({
   onVoltar,
   onNavigate,
 }) => {
-  // Grupos de Produtos do Banco
+  // Grupos e Subgrupos de Produtos do Banco
   const [grupos, setGrupos] = useState<GrupoProduto[]>([]);
+  const [subgrupos, setSubgrupos] = useState<SubgrupoProduto[]>([]);
+  const [isGruposModalOpen, setIsGruposModalOpen] = useState(false);
 
   // Filtros de busca
   const [filtroCodigo, setFiltroCodigo] = useState('');
   const [filtroNome, setFiltroNome] = useState('');
   const [filtroGrupoId, setFiltroGrupoId] = useState<string>('todos');
+  const [filtroSubgrupoId, setFiltroSubgrupoId] = useState<string>('todos');
   const [filtroTipo, setFiltroTipo] = useState<'todos' | 'consumivel' | 'nao_consumivel'>('todos');
   const [filtroAtivo, setFiltroAtivo] = useState<'todos' | '1' | '0'>('todos');
   const [isFilterOpen, setIsFilterOpen] = useState(false);
@@ -90,15 +96,17 @@ export const ProdutosView: React.FC<ProdutosViewProps> = ({
     if (filtroCodigo.trim()) count++;
     if (filtroNome.trim()) count++;
     if (filtroGrupoId !== 'todos') count++;
+    if (filtroSubgrupoId !== 'todos') count++;
     if (filtroTipo !== 'todos') count++;
     if (filtroAtivo !== 'todos') count++;
     return count;
-  }, [filtroCodigo, filtroNome, filtroGrupoId, filtroTipo, filtroAtivo]);
+  }, [filtroCodigo, filtroNome, filtroGrupoId, filtroSubgrupoId, filtroTipo, filtroAtivo]);
 
   const handleLimparFiltros = () => {
     setFiltroCodigo('');
     setFiltroNome('');
     setFiltroGrupoId('todos');
+    setFiltroSubgrupoId('todos');
     setFiltroTipo('todos');
     setFiltroAtivo('todos');
     setCurrentPage(1);
@@ -122,6 +130,8 @@ export const ProdutosView: React.FC<ProdutosViewProps> = ({
   const [formNome, setFormNome] = useState('');
   const [formDescricao, setFormDescricao] = useState('');
   const [formGrupoId, setFormGrupoId] = useState<number | null>(null);
+  const [formSubgrupoId, setFormSubgrupoId] = useState<number | null>(null);
+  const [formSubgrupoNome, setFormSubgrupoNome] = useState<string>('');
   const [formUnidadeMedida, setFormUnidadeMedida] = useState<UnidadeMedida>('UN');
   const [formTipo, setFormTipo] = useState<TipoProduto>('consumivel');
   const [formCustoUnitario, setFormCustoUnitario] = useState<number>(0);
@@ -142,22 +152,28 @@ export const ProdutosView: React.FC<ProdutosViewProps> = ({
   const { toast } = useToast();
   const canEdit = currentUser && (currentUser.perfil === 'admin' || currentUser.perfil === 'almoxarife');
 
-  // Carrega lista de grupos oficiais do backend para a área ativa
+  // Carrega lista de grupos e subgrupos oficiais do backend para a área ativa
+  const carregarGruposESubgrupos = async () => {
+    try {
+      const [resG, resSg] = await Promise.all([
+        fetch('/api/grupos-produtos', { headers: getAuthHeaders() }),
+        fetch('/api/subgrupos-produtos', { headers: getAuthHeaders() }),
+      ]);
+      if (resG.ok) {
+        const dataG = await resG.json();
+        if (Array.isArray(dataG)) setGrupos(dataG);
+      }
+      if (resSg.ok) {
+        const dataSg = await resSg.json();
+        if (Array.isArray(dataSg)) setSubgrupos(dataSg);
+      }
+    } catch (err) {
+      console.error('Erro ao carregar grupos/subgrupos:', err);
+    }
+  };
+
   useEffect(() => {
-    const token = sessionStorage.getItem('multi_almox_token') || localStorage.getItem('multi_almox_token');
-    const areaSigla = sessionStorage.getItem('multi_almox_area_sigla') || localStorage.getItem('multi_almox_area_sigla') || currentUser?.area_sigla || 'ALM';
-    fetch('/api/grupos-produtos', {
-      headers: getAuthHeaders(),
-    })
-      .then((r) => r.json())
-      .then((data) => {
-        if (Array.isArray(data)) {
-          setGrupos(data);
-        }
-      })
-      .catch((err) => {
-        console.error('Erro ao carregar grupos de produtos:', err);
-      });
+    carregarGruposESubgrupos();
   }, [currentUser?.area_sigla]);
 
   const grupoFormOptions: SearchableOption[] = useMemo(() => [
@@ -167,6 +183,19 @@ export const ProdutosView: React.FC<ProdutosViewProps> = ({
       label: `${g.codigo ? `${g.codigo} - ` : ''}${g.nome} (${g.tipo_padrao === 'consumivel' ? 'Consumível' : 'Não Consumível'})`,
     })),
   ], [grupos]);
+
+  const subgrupoFormOptions: SearchableOption[] = useMemo(() => {
+    const list = formGrupoId
+      ? subgrupos.filter((sg) => !sg.grupo_id || sg.grupo_id === formGrupoId)
+      : subgrupos;
+    return [
+      { value: '', label: 'Sem Subgrupo / Geral' },
+      ...list.map((sg) => ({
+        value: sg.id,
+        label: `${sg.codigo ? `${sg.codigo} - ` : ''}${sg.nome}${sg.grupo_nome ? ` [${sg.grupo_nome}]` : ''}`,
+      })),
+    ];
+  }, [subgrupos, formGrupoId]);
 
   const tipoItemOptions: SearchableOption[] = [
     { value: 'consumivel', label: 'Consumível (Dispensação / Requisição)' },
@@ -201,9 +230,19 @@ export const ProdutosView: React.FC<ProdutosViewProps> = ({
     { value: 'todos', label: 'TODOS OS GRUPOS' },
     ...grupos.map((g) => ({
       value: String(g.id),
-      label: g.nome,
+      label: `${g.codigo ? `${g.codigo} - ` : ''}${g.nome}`,
     })),
   ], [grupos]);
+
+  const filtroSubgrupoOptions: SearchableOption[] = useMemo(() => [
+    { value: 'todos', label: 'TODOS OS SUBGRUPOS' },
+    ...subgrupos
+      .filter((sg) => filtroGrupoId === 'todos' || String(sg.grupo_id) === String(filtroGrupoId))
+      .map((sg) => ({
+        value: String(sg.id),
+        label: `${sg.codigo ? `${sg.codigo} - ` : ''}${sg.nome}`,
+      })),
+  ], [subgrupos, filtroGrupoId]);
 
   const filtroTipoOptions: SearchableOption[] = [
     { value: 'todos', label: 'TODOS' },
@@ -231,6 +270,14 @@ export const ProdutosView: React.FC<ProdutosViewProps> = ({
           return false;
         }
       }
+      if (filtroSubgrupoId !== 'todos') {
+        if (
+          String(p.subgrupo_id || '') !== String(filtroSubgrupoId) &&
+          String(p.subgrupo_nome || '').toUpperCase() !== String(filtroSubgrupoId).toUpperCase()
+        ) {
+          return false;
+        }
+      }
       if (filtroTipo !== 'todos' && p.tipo !== filtroTipo) {
         return false;
       }
@@ -240,7 +287,7 @@ export const ProdutosView: React.FC<ProdutosViewProps> = ({
       }
       return true;
     });
-  }, [produtos, filtroCodigo, filtroNome, filtroGrupoId, filtroTipo, filtroAtivo]);
+  }, [produtos, filtroCodigo, filtroNome, filtroGrupoId, filtroSubgrupoId, filtroTipo, filtroAtivo]);
 
   const totalPages = Math.ceil(filteredProdutos.length / pageSize) || 1;
   const paginatedProdutos = useMemo(() => {
@@ -251,6 +298,8 @@ export const ProdutosView: React.FC<ProdutosViewProps> = ({
   // Ao selecionar um Grupo no formulário, sugere o tipo_padrao correspondente
   const handleGrupoChange = (novoGrupoId: number | null) => {
     setFormGrupoId(novoGrupoId);
+    setFormSubgrupoId(null);
+    setFormSubgrupoNome('');
     if (novoGrupoId) {
       const g = grupos.find((item) => item.id === novoGrupoId);
       if (g) {
@@ -282,6 +331,8 @@ export const ProdutosView: React.FC<ProdutosViewProps> = ({
     setFormNome('');
     setFormDescricao('');
     setFormGrupoId(1); // 1 = ALMOXARIFADO CENTRAL (consumivel)
+    setFormSubgrupoId(null);
+    setFormSubgrupoNome('');
     setFormUnidadeMedida('UN');
     setFormTipo('consumivel');
     setFormCustoUnitario(0);
@@ -303,6 +354,8 @@ export const ProdutosView: React.FC<ProdutosViewProps> = ({
     setFormNome(p.nome);
     setFormDescricao(p.descricao || '');
     setFormGrupoId(p.grupo_id || null);
+    setFormSubgrupoId(p.subgrupo_id || null);
+    setFormSubgrupoNome(p.subgrupo_nome || '');
     setFormUnidadeMedida(p.unidade_medida);
     setFormTipo(p.tipo);
     setFormCustoUnitario(p.custo_unitario ?? p.valor_unitario ?? 0);
@@ -346,6 +399,8 @@ export const ProdutosView: React.FC<ProdutosViewProps> = ({
         nome: formNome.trim().toUpperCase(),
         descricao: formDescricao ? formDescricao.trim() : null,
         grupo_id: formGrupoId ? Number(formGrupoId) : null,
+        subgrupo_id: formSubgrupoId ? Number(formSubgrupoId) : null,
+        subgrupo_nome: formSubgrupoNome ? formSubgrupoNome.trim().toUpperCase() : null,
         unidade_medida: formUnidadeMedida.trim().toUpperCase(),
         tipo: formTipo,
         custo_unitario: Number(formCustoUnitario) || 0,
@@ -645,14 +700,14 @@ export const ProdutosView: React.FC<ProdutosViewProps> = ({
           <form onSubmit={handleSalvar} className="p-6 space-y-6">
             {/* ABA 1: DADOS PRINCIPAIS */}
             {activeFormTab === 'dados_principais' && (
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+              <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
                 {/* Código */}
                 <div>
                   <div className="flex items-center justify-between mb-1">
                     <label className="block text-[11px] font-bold text-slate-600 uppercase tracking-wider">
                       Código Interno *
                     </label>
-                    <span className="text-[10px] text-teal-700 font-medium">Ex: 4149881 / 414XXXX</span>
+                    <span className="text-[10px] text-teal-700 font-medium">Ex: 4149881</span>
                   </div>
                   <input
                     type="text"
@@ -663,7 +718,7 @@ export const ProdutosView: React.FC<ProdutosViewProps> = ({
                     placeholder="Deixe em branco para gerar automático"
                   />
                   <p className="text-[10px] text-slate-500 mt-1">
-                    Aceita códigos numéricos legados de 7 dígitos ou gera automaticamente sequencial.
+                    Código numérico legados de 7 dígitos ou sequencial.
                   </p>
                 </div>
 
@@ -680,7 +735,30 @@ export const ProdutosView: React.FC<ProdutosViewProps> = ({
                     placeholder="Selecione o Grupo..."
                   />
                   <p className="text-[10px] text-slate-500 mt-1">
-                    Sugere automaticamente o tipo (Consumível / Não Consumível).
+                    Sugere automaticamente o tipo.
+                  </p>
+                </div>
+
+                {/* Subgrupo de Produto */}
+                <div>
+                  <label className="block text-[11px] font-bold text-slate-600 uppercase tracking-wider mb-1">
+                    Subgrupo de Produto
+                  </label>
+                  <SearchableSelect
+                    options={subgrupoFormOptions}
+                    value={formSubgrupoId || ''}
+                    onChange={(val) => {
+                      const idNum = val ? Number(val) : null;
+                      setFormSubgrupoId(idNum);
+                      const found = subgrupos.find((sg) => sg.id === idNum);
+                      setFormSubgrupoNome(found ? found.nome : '');
+                    }}
+                    disabled={formMode === 'view'}
+                    placeholder="Selecione o Subgrupo..."
+                    allowClear={true}
+                  />
+                  <p className="text-[10px] text-slate-500 mt-1">
+                    Subclassificação vinculada ao grupo.
                   </p>
                 </div>
 
@@ -703,7 +781,7 @@ export const ProdutosView: React.FC<ProdutosViewProps> = ({
                 </div>
 
                 {/* Descrição Padrão (Caixa Alta) */}
-                <div className="md:col-span-3">
+                <div className="md:col-span-4">
                   <label className="block text-[11px] font-bold text-slate-600 uppercase tracking-wider mb-1">
                     Descrição do Produto (Caixa Alta) *
                   </label>
@@ -1158,6 +1236,18 @@ export const ProdutosView: React.FC<ProdutosViewProps> = ({
           {canEdit && (
             <button
               type="button"
+              onClick={() => setIsGruposModalOpen(true)}
+              className="bg-teal-700 hover:bg-teal-800 active:bg-teal-900 text-white font-medium px-3.5 py-2 rounded-lg text-xs flex items-center gap-1.5 transition-all shadow-sm uppercase tracking-wide cursor-pointer"
+              title="Gerenciar Grupos e Subgrupos de Produtos"
+            >
+              <FolderTree className="w-4 h-4" />
+              <span>GRUPOS & SUBGRUPOS</span>
+            </button>
+          )}
+
+          {canEdit && (
+            <button
+              type="button"
               onClick={handleNovo}
               className="bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800 text-white font-medium px-4 py-2 rounded-lg text-xs flex items-center gap-1.5 transition-all shadow-sm uppercase tracking-wide cursor-pointer"
             >
@@ -1182,7 +1272,7 @@ export const ProdutosView: React.FC<ProdutosViewProps> = ({
             </button>
           </div>
 
-          <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-5 gap-3">
+          <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
             {/* 1. Código */}
             <div>
               <label className="block text-[11px] font-bold text-slate-500 uppercase tracking-wider mb-1">
@@ -1192,7 +1282,7 @@ export const ProdutosView: React.FC<ProdutosViewProps> = ({
                 type="text"
                 value={filtroCodigo}
                 onChange={(e) => { setFiltroCodigo(e.target.value); setCurrentPage(1); }}
-                placeholder="ex: 4149881 ou 414..."
+                placeholder="ex: 4149881..."
                 className="w-full px-3 py-2 bg-slate-50 border border-slate-300 rounded text-xs text-slate-800 font-mono focus:bg-white focus:border-teal-500 shadow-inner"
               />
             </div>
@@ -1214,7 +1304,7 @@ export const ProdutosView: React.FC<ProdutosViewProps> = ({
             {/* 3. Grupo de Produto */}
             <div>
               <label className="block text-[11px] font-bold text-slate-500 uppercase tracking-wider mb-1">
-                Grupo de Produto
+                Grupo
               </label>
               <SearchableSelect
                 options={filtroGrupoOptions}
@@ -1224,7 +1314,20 @@ export const ProdutosView: React.FC<ProdutosViewProps> = ({
               />
             </div>
 
-            {/* 4. Tipo */}
+            {/* 4. Subgrupo de Produto */}
+            <div>
+              <label className="block text-[11px] font-bold text-slate-500 uppercase tracking-wider mb-1">
+                Subgrupo
+              </label>
+              <SearchableSelect
+                options={filtroSubgrupoOptions}
+                value={filtroSubgrupoId}
+                onChange={(val) => { setFiltroSubgrupoId(val ? String(val) : 'todos'); setCurrentPage(1); }}
+                placeholder="Todos os subgrupos..."
+              />
+            </div>
+
+            {/* 5. Tipo */}
             <div>
               <label className="block text-[11px] font-bold text-slate-500 uppercase tracking-wider mb-1">
                 Tipo
@@ -1237,7 +1340,7 @@ export const ProdutosView: React.FC<ProdutosViewProps> = ({
               />
             </div>
 
-            {/* 5. Ativo */}
+            {/* 6. Ativo */}
             <div>
               <label className="block text-[11px] font-bold text-slate-500 uppercase tracking-wider mb-1">
                 Ativo
@@ -1290,7 +1393,7 @@ export const ProdutosView: React.FC<ProdutosViewProps> = ({
               <tr>
                 <th className="py-2.5 px-3">Código</th>
                 <th className="py-2.5 px-3">Descrição do Produto</th>
-                <th className="py-2.5 px-3">Grupo</th>
+                <th className="py-2.5 px-3">Grupo / Subgrupo</th>
                 <th className="py-2.5 px-3 text-center">UND</th>
                 <th className="py-2.5 px-3 text-right">Custo (R$)</th>
                 <th className="py-2.5 px-3 text-right">Saldo Atual</th>
@@ -1316,12 +1419,20 @@ export const ProdutosView: React.FC<ProdutosViewProps> = ({
                         )}
                       </td>
 
-                      {/* Grupo */}
+                      {/* Grupo / Subgrupo */}
                       <td className="py-2 px-3 text-slate-600 whitespace-nowrap">
-                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-slate-100 text-slate-700 font-medium text-[10px]">
-                          <Layers className="w-3 h-3 text-slate-400" />
-                          <span>{p.grupo_nome || 'ALMOXARIFADO CENTRAL'}</span>
-                        </span>
+                        <div className="flex flex-col gap-1 items-start">
+                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-slate-100 text-slate-700 font-medium text-[10px]">
+                            <Layers className="w-3 h-3 text-slate-400" />
+                            <span>{p.grupo_nome || 'ALMOXARIFADO CENTRAL'}</span>
+                          </span>
+                          {(p.subgrupo_nome || p.subgrupo_codigo) && (
+                            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-teal-50 text-teal-800 font-semibold text-[9px] border border-teal-200">
+                              <FolderTree className="w-2.5 h-2.5 text-teal-600" />
+                              <span>{p.subgrupo_nome || p.subgrupo_codigo}</span>
+                            </span>
+                          )}
+                        </div>
                       </td>
 
                       {/* UND */}
@@ -1467,6 +1578,18 @@ export const ProdutosView: React.FC<ProdutosViewProps> = ({
         isProcessing={isProcessing}
         onConfirm={handleConfirmDelete}
         onClose={() => setDeletingProduto(null)}
+      />
+
+      <GruposSubgruposModal
+        isOpen={isGruposModalOpen}
+        onClose={() => setIsGruposModalOpen(false)}
+        grupos={grupos}
+        subgrupos={subgrupos}
+        onUpdated={() => {
+          carregarGruposESubgrupos();
+          onRefresh();
+        }}
+        canEdit={Boolean(canEdit)}
       />
     </div>
   );

@@ -2380,10 +2380,248 @@ apiRouter.get('/lotes', (req, res) => {
 
 apiRouter.get('/grupos-produtos', (_req, res) => {
   try {
-    const rows = db.prepare('SELECT * FROM grupos_produtos WHERE ativo = 1 ORDER BY id ASC').all();
+    const rows = db.prepare(`
+      SELECT gp.*,
+             (SELECT COUNT(*) FROM produtos p WHERE p.grupo_id = gp.id AND p.ativo = 1) as total_produtos,
+             (SELECT COUNT(*) FROM subgrupos_produtos sg WHERE sg.grupo_id = gp.id AND sg.ativo = 1) as total_subgrupos
+      FROM grupos_produtos gp
+      WHERE gp.ativo = 1
+      ORDER BY gp.nome ASC
+    `).all();
     res.json(rows);
   } catch (err: any) {
     res.status(500).json({ error: 'Erro ao buscar grupos de produtos: ' + err.message });
+  }
+});
+
+apiRouter.post('/grupos-produtos', (req, res) => {
+  const user = authenticateRequest(req);
+  if (!user || (user.perfil !== 'admin' && user.perfil !== 'almoxarife')) {
+    res.status(403).json({ error: 'Apenas Administradores e Almoxarifes podem cadastrar grupos de produtos' });
+    return;
+  }
+
+  const { codigo, nome, tipo_padrao } = req.body || {};
+  if (!nome || !String(nome).trim()) {
+    res.status(400).json({ error: 'O nome do grupo de produtos é obrigatório' });
+    return;
+  }
+
+  const nomeNorm = String(nome).trim().toUpperCase();
+  const tipoNorm = tipo_padrao === 'nao_consumivel' ? 'nao_consumivel' : 'consumivel';
+  let codNorm = codigo && String(codigo).trim() ? String(codigo).trim().toUpperCase() : '';
+  if (!codNorm) {
+    const count = (db.prepare('SELECT COUNT(*) as c FROM grupos_produtos').get() as any)?.c || 0;
+    codNorm = `GRP-${String(count + 1).padStart(3, '0')}`;
+  }
+
+  try {
+    const info = db.prepare(`
+      INSERT INTO grupos_produtos (codigo, nome, tipo_padrao, ativo)
+      VALUES (?, ?, ?, 1)
+    `).run(codNorm, nomeNorm, tipoNorm);
+
+    const novo = db.prepare('SELECT * FROM grupos_produtos WHERE id = ?').get(info.lastInsertRowid);
+    res.status(201).json(novo);
+  } catch (err: any) {
+    res.status(500).json({ error: 'Erro ao cadastrar grupo de produtos: ' + err.message });
+  }
+});
+
+apiRouter.put('/grupos-produtos/:id', (req, res) => {
+  const user = authenticateRequest(req);
+  if (!user || (user.perfil !== 'admin' && user.perfil !== 'almoxarife')) {
+    res.status(403).json({ error: 'Apenas Administradores e Almoxarifes podem editar grupos' });
+    return;
+  }
+
+  const { id } = req.params;
+  const { codigo, nome, tipo_padrao, ativo } = req.body || {};
+
+  if (!nome || !String(nome).trim()) {
+    res.status(400).json({ error: 'O nome do grupo de produtos é obrigatório' });
+    return;
+  }
+
+  try {
+    db.prepare(`
+      UPDATE grupos_produtos
+      SET codigo = COALESCE(?, codigo),
+          nome = ?,
+          tipo_padrao = COALESCE(?, tipo_padrao),
+          ativo = COALESCE(?, ativo)
+      WHERE id = ?
+    `).run(
+      codigo ? String(codigo).trim().toUpperCase() : null,
+      String(nome).trim().toUpperCase(),
+      tipo_padrao === 'nao_consumivel' ? 'nao_consumivel' : (tipo_padrao ? 'consumivel' : null),
+      ativo !== undefined ? (ativo ? 1 : 0) : null,
+      Number(id)
+    );
+
+    const updated = db.prepare('SELECT * FROM grupos_produtos WHERE id = ?').get(Number(id));
+    res.json(updated);
+  } catch (err: any) {
+    res.status(500).json({ error: 'Erro ao atualizar grupo de produtos: ' + err.message });
+  }
+});
+
+apiRouter.delete('/grupos-produtos/:id', (req, res) => {
+  const user = authenticateRequest(req);
+  if (!user || user.perfil !== 'admin') {
+    res.status(403).json({ error: 'Apenas Administradores podem excluir grupos' });
+    return;
+  }
+
+  const { id } = req.params;
+  try {
+    const prodsCount = (db.prepare('SELECT COUNT(*) as c FROM produtos WHERE grupo_id = ?').get(Number(id)) as any)?.c || 0;
+    if (prodsCount > 0) {
+      // Soft-delete se houver produtos
+      db.prepare('UPDATE grupos_produtos SET ativo = 0 WHERE id = ?').run(Number(id));
+      res.json({ message: `Grupo desativado pois contém ${prodsCount} produto(s) associado(s).` });
+      return;
+    }
+
+    db.prepare('DELETE FROM subgrupos_produtos WHERE grupo_id = ?').run(Number(id));
+    db.prepare('DELETE FROM grupos_produtos WHERE id = ?').run(Number(id));
+    res.json({ message: 'Grupo excluído com sucesso.' });
+  } catch (err: any) {
+    res.status(500).json({ error: 'Erro ao excluir grupo: ' + err.message });
+  }
+});
+
+// ============================================================================
+// SUBGRUPOS DE PRODUTOS
+// ============================================================================
+
+apiRouter.get('/subgrupos-produtos', (req, res) => {
+  const { grupo_id } = req.query;
+  try {
+    let sql = `
+      SELECT sg.*,
+             gp.nome as grupo_nome,
+             gp.codigo as grupo_codigo,
+             (SELECT COUNT(*) FROM produtos p WHERE (p.subgrupo_id = sg.id OR UPPER(p.subgrupo_nome) = UPPER(sg.nome)) AND p.ativo = 1) as total_produtos
+      FROM subgrupos_produtos sg
+      LEFT JOIN grupos_produtos gp ON sg.grupo_id = gp.id
+      WHERE sg.ativo = 1
+    `;
+    const params: any[] = [];
+    if (grupo_id && String(grupo_id).trim()) {
+      sql += ' AND sg.grupo_id = ?';
+      params.push(Number(grupo_id));
+    }
+    sql += ' ORDER BY gp.nome ASC, sg.nome ASC';
+
+    const rows = db.prepare(sql).all(...params);
+    res.json(rows);
+  } catch (err: any) {
+    res.status(500).json({ error: 'Erro ao buscar subgrupos de produtos: ' + err.message });
+  }
+});
+
+apiRouter.post('/subgrupos-produtos', (req, res) => {
+  const user = authenticateRequest(req);
+  if (!user || (user.perfil !== 'admin' && user.perfil !== 'almoxarife')) {
+    res.status(403).json({ error: 'Apenas Administradores e Almoxarifes podem cadastrar subgrupos' });
+    return;
+  }
+
+  const { grupo_id, codigo, nome } = req.body || {};
+  if (!nome || !String(nome).trim()) {
+    res.status(400).json({ error: 'O nome do subgrupo é obrigatório' });
+    return;
+  }
+
+  const nomeNorm = String(nome).trim().toUpperCase();
+  let codNorm = codigo && String(codigo).trim() ? String(codigo).trim().toUpperCase() : '';
+  if (!codNorm) {
+    const count = (db.prepare('SELECT COUNT(*) as c FROM subgrupos_produtos').get() as any)?.c || 0;
+    codNorm = `SGRP-${String(count + 1).padStart(3, '0')}`;
+  }
+
+  try {
+    const info = db.prepare(`
+      INSERT INTO subgrupos_produtos (grupo_id, codigo, nome, ativo)
+      VALUES (?, ?, ?, 1)
+    `).run(grupo_id ? Number(grupo_id) : null, codNorm, nomeNorm);
+
+    const novo = db.prepare(`
+      SELECT sg.*, gp.nome as grupo_nome
+      FROM subgrupos_produtos sg
+      LEFT JOIN grupos_produtos gp ON sg.grupo_id = gp.id
+      WHERE sg.id = ?
+    `).get(info.lastInsertRowid);
+    res.status(201).json(novo);
+  } catch (err: any) {
+    res.status(500).json({ error: 'Erro ao cadastrar subgrupo: ' + err.message });
+  }
+});
+
+apiRouter.put('/subgrupos-produtos/:id', (req, res) => {
+  const user = authenticateRequest(req);
+  if (!user || (user.perfil !== 'admin' && user.perfil !== 'almoxarife')) {
+    res.status(403).json({ error: 'Apenas Administradores e Almoxarifes podem editar subgrupos' });
+    return;
+  }
+
+  const { id } = req.params;
+  const { grupo_id, codigo, nome, ativo } = req.body || {};
+
+  if (!nome || !String(nome).trim()) {
+    res.status(400).json({ error: 'O nome do subgrupo é obrigatório' });
+    return;
+  }
+
+  try {
+    db.prepare(`
+      UPDATE subgrupos_produtos
+      SET grupo_id = COALESCE(?, grupo_id),
+          codigo = COALESCE(?, codigo),
+          nome = ?,
+          ativo = COALESCE(?, ativo)
+      WHERE id = ?
+    `).run(
+      grupo_id !== undefined ? (grupo_id ? Number(grupo_id) : null) : null,
+      codigo ? String(codigo).trim().toUpperCase() : null,
+      String(nome).trim().toUpperCase(),
+      ativo !== undefined ? (ativo ? 1 : 0) : null,
+      Number(id)
+    );
+
+    const updated = db.prepare(`
+      SELECT sg.*, gp.nome as grupo_nome
+      FROM subgrupos_produtos sg
+      LEFT JOIN grupos_produtos gp ON sg.grupo_id = gp.id
+      WHERE sg.id = ?
+    `).get(Number(id));
+    res.json(updated);
+  } catch (err: any) {
+    res.status(500).json({ error: 'Erro ao atualizar subgrupo: ' + err.message });
+  }
+});
+
+apiRouter.delete('/subgrupos-produtos/:id', (req, res) => {
+  const user = authenticateRequest(req);
+  if (!user || user.perfil !== 'admin') {
+    res.status(403).json({ error: 'Apenas Administradores podem excluir subgrupos' });
+    return;
+  }
+
+  const { id } = req.params;
+  try {
+    const prodsCount = (db.prepare('SELECT COUNT(*) as c FROM produtos WHERE subgrupo_id = ?').get(Number(id)) as any)?.c || 0;
+    if (prodsCount > 0) {
+      db.prepare('UPDATE subgrupos_produtos SET ativo = 0 WHERE id = ?').run(Number(id));
+      res.json({ message: `Subgrupo desativado pois contém ${prodsCount} produto(s) associado(s).` });
+      return;
+    }
+
+    db.prepare('DELETE FROM subgrupos_produtos WHERE id = ?').run(Number(id));
+    res.json({ message: 'Subgrupo excluído com sucesso.' });
+  } catch (err: any) {
+    res.status(500).json({ error: 'Erro ao excluir subgrupo: ' + err.message });
   }
 });
 
@@ -2406,15 +2644,18 @@ apiRouter.get('/produtos/sugestao-codigo', (_req, res) => {
 });
 
 apiRouter.get('/produtos', (req, res) => {
-  const { tipo, busca, codigo, nome, grupo_id, estoque_baixo, apenas_ativos } = req.query;
+  const { tipo, busca, codigo, nome, grupo_id, subgrupo_id, estoque_baixo, apenas_ativos } = req.query;
 
   let query = `
     SELECT 
       p.*,
       gp.nome as grupo_nome,
-      gp.codigo as grupo_codigo
+      gp.codigo as grupo_codigo,
+      sg.codigo as subgrupo_codigo,
+      COALESCE(p.subgrupo_nome, sg.nome) as subgrupo_nome
     FROM produtos p
     LEFT JOIN grupos_produtos gp ON p.grupo_id = gp.id
+    LEFT JOIN subgrupos_produtos sg ON p.subgrupo_id = sg.id
     WHERE 1=1
   `;
   const params: any[] = [];
@@ -2433,6 +2674,11 @@ apiRouter.get('/produtos', (req, res) => {
     params.push(Number(grupo_id));
   }
 
+  if (subgrupo_id && String(subgrupo_id).trim()) {
+    query += ' AND (p.subgrupo_id = ? OR p.subgrupo_nome = ?)';
+    params.push(Number(subgrupo_id), String(subgrupo_id).trim());
+  }
+
   if (codigo && String(codigo).trim()) {
     query += ' AND p.codigo LIKE ?';
     params.push(`%${String(codigo).trim()}%`);
@@ -2449,9 +2695,9 @@ apiRouter.get('/produtos', (req, res) => {
   }
 
   if (busca && typeof busca === 'string' && busca.trim()) {
-    query += ' AND (p.codigo LIKE ? OR p.nome LIKE ? OR p.descricao LIKE ? OR p.localizacao LIKE ?)';
+    query += ' AND (p.codigo LIKE ? OR p.nome LIKE ? OR p.descricao LIKE ? OR p.localizacao LIKE ? OR p.subgrupo_nome LIKE ?)';
     const term = `%${busca.trim()}%`;
-    params.push(term, term, term, term);
+    params.push(term, term, term, term, term);
   }
 
   query += ' ORDER BY p.nome ASC';
@@ -2540,6 +2786,9 @@ apiRouter.get('/produtos', (req, res) => {
       grupo_id: p.grupo_id,
       grupo_nome: p.grupo_nome,
       grupo_codigo: p.grupo_codigo,
+      subgrupo_id: p.subgrupo_id,
+      subgrupo_nome: p.subgrupo_nome,
+      subgrupo_codigo: p.subgrupo_codigo,
     }));
     res.json(sanitized);
     return;
@@ -2629,7 +2878,23 @@ apiRouter.post('/produtos', (req, res) => {
     return;
   }
 
-  let { codigo, nome, descricao, grupo_id, unidade_medida, tipo, controla_validade, estoque_minimo, estoque_maximo, valor_unitario, custo_unitario, localizacao } = req.body;
+  let {
+    codigo,
+    nome,
+    descricao,
+    grupo_id,
+    subgrupo_id,
+    subgrupo_nome,
+    unidade_medida,
+    tipo,
+    controla_validade,
+    estoque_minimo,
+    estoque_maximo,
+    valor_unitario,
+    custo_unitario,
+    localizacao,
+  } = req.body;
+
   if (!nome || !unidade_medida || !tipo) {
     res.status(400).json({ error: 'Descrição padrão, unidade de medida e tipo são obrigatórios' });
     return;
@@ -2664,19 +2929,36 @@ apiRouter.post('/produtos', (req, res) => {
     ? Number(valor_unitario)
     : custoFinal;
 
+  let finalSubgrupoId = subgrupo_id ? Number(subgrupo_id) : null;
+  let finalSubgrupoNome = subgrupo_nome ? String(subgrupo_nome).trim().toUpperCase() : null;
+
+  if (finalSubgrupoId && !finalSubgrupoNome) {
+    try {
+      const sgRow = db.prepare('SELECT nome FROM subgrupos_produtos WHERE id = ?').get(finalSubgrupoId) as any;
+      if (sgRow) finalSubgrupoNome = sgRow.nome;
+    } catch {}
+  } else if (!finalSubgrupoId && finalSubgrupoNome) {
+    try {
+      const sgRow = db.prepare('SELECT id FROM subgrupos_produtos WHERE UPPER(nome) = ? LIMIT 1').get(finalSubgrupoNome) as any;
+      if (sgRow) finalSubgrupoId = Number(sgRow.id);
+    } catch {}
+  }
+
   try {
     const stmt = db.prepare(`
       INSERT INTO produtos (
-        codigo, nome, descricao, grupo_id, unidade_medida, tipo,
+        codigo, nome, descricao, grupo_id, subgrupo_id, subgrupo_nome, unidade_medida, tipo,
         controla_validade, estoque_minimo, estoque_maximo, quantidade_atual,
         valor_unitario, custo_unitario, localizacao, ativo
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, 1)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, 1)
     `);
     const info = stmt.run(
       codigo,
       nome.trim().toUpperCase(),
       descricao ? descricao.trim() : null,
       grupo_id ? Number(grupo_id) : null,
+      finalSubgrupoId,
+      finalSubgrupoNome,
       unidade_medida.trim().toUpperCase(),
       tipo,
       controla_validade === 0 || controla_validade === false ? 0 : 1,
@@ -2687,9 +2969,11 @@ apiRouter.post('/produtos', (req, res) => {
       localizacao ? localizacao.trim().toUpperCase() : null
     );
     const novo = db.prepare(`
-      SELECT p.*, gp.nome as grupo_nome, gp.codigo as grupo_codigo
+      SELECT p.*, gp.nome as grupo_nome, gp.codigo as grupo_codigo,
+             sg.codigo as subgrupo_codigo, COALESCE(p.subgrupo_nome, sg.nome) as subgrupo_nome
       FROM produtos p
       LEFT JOIN grupos_produtos gp ON p.grupo_id = gp.id
+      LEFT JOIN subgrupos_produtos sg ON p.subgrupo_id = sg.id
       WHERE p.id = ?
     `).get(info.lastInsertRowid);
     res.status(201).json(novo);
@@ -2710,7 +2994,23 @@ apiRouter.put('/produtos/:id', (req, res) => {
   }
 
   const { id } = req.params;
-  const { codigo, nome, descricao, grupo_id, unidade_medida, tipo, controla_validade, estoque_minimo, estoque_maximo, valor_unitario, custo_unitario, localizacao, ativo } = req.body;
+  const {
+    codigo,
+    nome,
+    descricao,
+    grupo_id,
+    subgrupo_id,
+    subgrupo_nome,
+    unidade_medida,
+    tipo,
+    controla_validade,
+    estoque_minimo,
+    estoque_maximo,
+    valor_unitario,
+    custo_unitario,
+    localizacao,
+    ativo,
+  } = req.body;
 
   const custoFinal = custo_unitario !== undefined && custo_unitario !== null && custo_unitario !== ''
     ? Number(custo_unitario)
@@ -2719,17 +3019,39 @@ apiRouter.put('/produtos/:id', (req, res) => {
     ? Number(valor_unitario)
     : custoFinal;
 
+  let finalSubgrupoId = subgrupo_id !== undefined ? (subgrupo_id ? Number(subgrupo_id) : null) : undefined;
+  let finalSubgrupoNome = subgrupo_nome !== undefined ? (subgrupo_nome ? String(subgrupo_nome).trim().toUpperCase() : null) : undefined;
+
+  if (finalSubgrupoId && !finalSubgrupoNome) {
+    try {
+      const sgRow = db.prepare('SELECT nome FROM subgrupos_produtos WHERE id = ?').get(finalSubgrupoId) as any;
+      if (sgRow) finalSubgrupoNome = sgRow.nome;
+    } catch {}
+  } else if (!finalSubgrupoId && finalSubgrupoNome) {
+    try {
+      const sgRow = db.prepare('SELECT id FROM subgrupos_produtos WHERE UPPER(nome) = ? LIMIT 1').get(finalSubgrupoNome) as any;
+      if (sgRow) finalSubgrupoId = Number(sgRow.id);
+    } catch {}
+  }
+
   try {
     db.prepare(`
       UPDATE produtos
-      SET codigo = ?, nome = ?, descricao = ?, grupo_id = ?, unidade_medida = ?, tipo = ?, controla_validade = ?,
+      SET codigo = ?, nome = ?, descricao = ?, grupo_id = ?,
+          subgrupo_id = CASE WHEN ? = 1 THEN ? ELSE subgrupo_id END,
+          subgrupo_nome = CASE WHEN ? = 1 THEN ? ELSE subgrupo_nome END,
+          unidade_medida = ?, tipo = ?, controla_validade = ?,
           estoque_minimo = ?, estoque_maximo = ?, valor_unitario = ?, custo_unitario = ?, localizacao = ?, ativo = ?
       WHERE id = ?
     `).run(
       codigo ? String(codigo).trim() : '',
       nome.trim().toUpperCase(),
       descricao ? descricao.trim() : null,
-      grupo_id ? Number(grupo_id) : null,
+      grupo_id !== undefined ? (grupo_id ? Number(grupo_id) : null) : null,
+      finalSubgrupoId !== undefined ? 1 : 0,
+      finalSubgrupoId || null,
+      finalSubgrupoNome !== undefined ? 1 : 0,
+      finalSubgrupoNome || null,
       unidade_medida.trim().toUpperCase(),
       tipo,
       controla_validade === 0 || controla_validade === false ? 0 : 1,
@@ -2743,9 +3065,11 @@ apiRouter.put('/produtos/:id', (req, res) => {
     );
 
     const atualizado = db.prepare(`
-      SELECT p.*, gp.nome as grupo_nome, gp.codigo as grupo_codigo
+      SELECT p.*, gp.nome as grupo_nome, gp.codigo as grupo_codigo,
+             sg.codigo as subgrupo_codigo, COALESCE(p.subgrupo_nome, sg.nome) as subgrupo_nome
       FROM produtos p
       LEFT JOIN grupos_produtos gp ON p.grupo_id = gp.id
+      LEFT JOIN subgrupos_produtos sg ON p.subgrupo_id = sg.id
       WHERE p.id = ?
     `).get(id);
     res.json(atualizado);
@@ -3693,9 +4017,189 @@ apiRouter.post('/notas-fiscais/:id/fechar', (req, res) => {
 });
 
 
-// ============================================================================
-// 8. WORKFLOW DE REQUISIÇÃO (PADRÃO SALUTEM COM PRIORIDADE E ABAS)
-// ============================================================================
+// ----------------------------------------------------------------------------
+// AVALIAÇÃO DE PERFORMANCE DO ATENDIMENTO (AGILIDADE, QUALIDADE, ENTREGA)
+// ----------------------------------------------------------------------------
+
+apiRouter.get('/requisicoes/pendente-avaliacao', (req, res) => {
+  const user = authenticateRequest(req);
+  if (!user) {
+    res.status(401).json({ error: 'Não autenticado' });
+    return;
+  }
+
+  try {
+    let query = `
+      SELECT 
+        r.id, r.numero_requisicao, r.data_atendimento, r.centro_custo_nome, r.solicitante_nome,
+        r.avaliacao_status, r.avaliacao_agilidade, r.avaliacao_qualidade, r.avaliacao_entrega,
+        r.avaliacao_sugestao
+      FROM requisicoes r
+      WHERE r.status IN ('aprovada_atendida', 'atendida', 'parcial')
+        AND (r.avaliacao_status IS NULL OR r.avaliacao_status = 'pendente')
+    `;
+    const params: any[] = [];
+
+    if (user.perfil === 'requisitante') {
+      if (user.centro_custo_id) {
+        query += ' AND (r.solicitante_id = ? OR r.centro_custo_id = ?)';
+        params.push(user.id, user.centro_custo_id);
+      } else {
+        query += ' AND r.solicitante_id = ?';
+        params.push(user.id);
+      }
+    }
+
+    query += ' ORDER BY r.id DESC LIMIT 1';
+
+    const pendingRow = db.prepare(query).get(...params) as any;
+    res.json(pendingRow || null);
+  } catch (err: any) {
+    res.status(500).json({ error: 'Erro ao verificar requisição pendente de avaliação: ' + err.message });
+  }
+});
+
+apiRouter.post('/requisicoes/:id/avaliar', (req, res) => {
+  const user = authenticateRequest(req);
+  if (!user) {
+    res.status(401).json({ error: 'Não autenticado' });
+    return;
+  }
+
+  const { id } = req.params;
+  const { agilidade, qualidade, entrega, sugestao } = req.body;
+
+  const nAgilidade = Math.min(5, Math.max(1, Number(agilidade) || 0));
+  const nQualidade = Math.min(5, Math.max(1, Number(qualidade) || 0));
+  const nEntrega = Math.min(5, Math.max(1, Number(entrega) || 0));
+
+  if (!nAgilidade || !nQualidade || !nEntrega) {
+    res.status(400).json({ error: 'Por favor, avalie com notas de 1 a 5 estrelas os 3 quesitos: Agilidade, Qualidade e Entrega.' });
+    return;
+  }
+
+  const possuiNotaBaixa = nAgilidade < 5 || nQualidade < 5 || nEntrega < 5;
+  const textoSugestao = sugestao ? String(sugestao).trim() : '';
+
+  if (possuiNotaBaixa && textoSugestao.length < 3) {
+    res.status(400).json({ error: 'Para avaliações abaixo de 5 estrelas, o preenchimento do campo "O que podemos melhorar?" é obrigatório.' });
+    return;
+  }
+
+  const media = parseFloat(((nAgilidade + nQualidade + nEntrega) / 3).toFixed(2));
+  const agora = new Date().toISOString();
+
+  try {
+    const reqRow = db.prepare('SELECT * FROM requisicoes WHERE id = ?').get(id) as any;
+    if (!reqRow) {
+      res.status(404).json({ error: 'Requisição não encontrada.' });
+      return;
+    }
+
+    db.prepare(`
+      UPDATE requisicoes
+      SET avaliacao_agilidade = ?,
+          avaliacao_qualidade = ?,
+          avaliacao_entrega = ?,
+          avaliacao_media = ?,
+          avaliacao_sugestao = ?,
+          avaliacao_data = ?,
+          avaliacao_status = 'avaliado'
+      WHERE id = ?
+    `).run(
+      nAgilidade,
+      nQualidade,
+      nEntrega,
+      media,
+      textoSugestao || null,
+      agora,
+      id
+    );
+
+    // Registra no histórico de auditoria
+    db.prepare(`
+      INSERT INTO historico_requisicoes (
+        requisicao_id, usuario_id, acao, detalhes, data_registro
+      ) VALUES (?, ?, 'avaliacao_atendimento', ?, ?)
+    `).run(
+      id,
+      user.id,
+      `Atendimento avaliado por ${user.nome} com Média ${media}⭐ (Agilidade: ${nAgilidade}⭐, Qualidade: ${nQualidade}⭐, Entrega: ${nEntrega}⭐). ${textoSugestao ? `Sugestão: "${textoSugestao}"` : ''}`,
+      agora
+    );
+
+    res.json({
+      message: 'Avaliação de performance registrada com sucesso! Muito obrigado pelo seu feedback.',
+      avaliacao: {
+        agilidade: nAgilidade,
+        qualidade: nQualidade,
+        entrega: nEntrega,
+        media,
+        sugestao: textoSugestao,
+      },
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: 'Erro ao registrar avaliação de performance: ' + err.message });
+  }
+});
+
+apiRouter.get('/relatorios/indicadores-performance', (req, res) => {
+  const user = authenticateRequest(req);
+  if (!user) {
+    res.status(401).json({ error: 'Não autenticado' });
+    return;
+  }
+
+  try {
+    const stats = db.prepare(`
+      SELECT 
+        COUNT(*) as total_avaliacoes,
+        ROUND(AVG(avaliacao_agilidade), 2) as media_agilidade,
+        ROUND(AVG(avaliacao_qualidade), 2) as media_qualidade,
+        ROUND(AVG(avaliacao_entrega), 2) as media_entrega,
+        ROUND(AVG(avaliacao_media), 2) as media_geral,
+        SUM(CASE WHEN avaliacao_agilidade = 5 AND avaliacao_qualidade = 5 AND avaliacao_entrega = 5 THEN 1 ELSE 0 END) as total_excelentes,
+        SUM(CASE WHEN avaliacao_agilidade < 5 OR avaliacao_qualidade < 5 OR avaliacao_entrega < 5 THEN 1 ELSE 0 END) as total_com_sugestao
+      FROM requisicoes
+      WHERE avaliacao_status = 'avaliado' AND avaliacao_media IS NOT NULL
+    `).get() as any;
+
+    const ultimasAvaliacoes = db.prepare(`
+      SELECT 
+        r.id,
+        r.numero_requisicao,
+        r.centro_custo_nome,
+        r.solicitante_nome,
+        r.data_atendimento,
+        r.avaliacao_agilidade,
+        r.avaliacao_qualidade,
+        r.avaliacao_entrega,
+        r.avaliacao_media,
+        r.avaliacao_sugestao,
+        r.avaliacao_data
+      FROM requisicoes r
+      WHERE r.avaliacao_status = 'avaliado' AND r.avaliacao_media IS NOT NULL
+      ORDER BY r.avaliacao_data DESC
+      LIMIT 100
+    `).all();
+
+    res.json({
+      stats: {
+        total_avaliacoes: Number(stats?.total_avaliacoes || 0),
+        media_agilidade: Number(stats?.media_agilidade || 0),
+        media_qualidade: Number(stats?.media_qualidade || 0),
+        media_entrega: Number(stats?.media_entrega || 0),
+        media_geral: Number(stats?.media_geral || 0),
+        total_excelentes: Number(stats?.total_excelentes || 0),
+        total_com_sugestao: Number(stats?.total_com_sugestao || 0),
+        percentual_excelencia: stats?.total_avaliacoes ? Math.round((Number(stats.total_excelentes) / Number(stats.total_avaliacoes)) * 100) : 0,
+      },
+      avaliacoes: ultimasAvaliacoes,
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: 'Erro ao gerar indicadores de performance: ' + err.message });
+  }
+});
 
 apiRouter.get('/requisicoes', (req, res) => {
   const user = authenticateRequest(req);
@@ -6206,7 +6710,7 @@ apiRouter.get('/relatorios/consumo-mensal', (req, res) => {
 });
 
 apiRouter.post('/relatorios/executar', (req, res) => {
-  const { tipo_relatorio, centro_custo_id, produto_id, tipo_produto, grupo_id, data_inicio, data_fim } = req.body;
+  const { tipo_relatorio, centro_custo_id, produto_id, tipo_produto, grupo_id, subgrupo_id, data_inicio, data_fim } = req.body;
 
   try {
     let titulo = '';
@@ -6399,6 +6903,67 @@ apiRouter.post('/relatorios/executar', (req, res) => {
         });
 
         resumo = `Total de ${dados.length} produtos cadastrados. Saldo físico total de ${totalItens} unidades, perfazendo um valor patrimonial avaliado em R$ ${totalValorGeral.toFixed(2)}.`;
+        break;
+      }
+
+      case 'posicao_estoque_grupo_subgrupo': {
+        titulo = 'Posição de Estoque por Grupo e Subgrupo de Produtos';
+        subtitulo = 'Demonstrativo consolidado e classificado por Grupo e Subgrupo cadastrados';
+        colunas = [
+          { chave: 'grupo_nome', rotulo: 'Grupo' },
+          { chave: 'subgrupo_nome', rotulo: 'Subgrupo' },
+          { chave: 'codigo', rotulo: 'Código' },
+          { chave: 'nome', rotulo: 'Descrição do Item' },
+          { chave: 'unidade_medida', rotulo: 'UN', alinhamento: 'center' },
+          { chave: 'quantidade_atual', rotulo: 'Saldo Físico', alinhamento: 'right' },
+          { chave: 'valor_unitario_formatado', rotulo: 'Valor Unit.', alinhamento: 'right' },
+          { chave: 'total_valor_formatado', rotulo: 'Valor Total', alinhamento: 'right' },
+          { chave: 'status_estoque', rotulo: 'Situação', alinhamento: 'center' },
+        ];
+
+        let sql = `
+          SELECT p.*,
+                 COALESCE(gp.nome, 'NÃO CLASSIFICADO') as grupo_nome,
+                 COALESCE(p.subgrupo_nome, sg.nome, 'GERAL') as subgrupo_nome
+          FROM produtos p
+          LEFT JOIN grupos_produtos gp ON p.grupo_id = gp.id
+          LEFT JOIN subgrupos_produtos sg ON p.subgrupo_id = sg.id
+          WHERE p.ativo = 1
+        `;
+        const params: any[] = [];
+        if (grupo_id) {
+          sql += ' AND p.grupo_id = ?';
+          params.push(Number(grupo_id));
+        }
+        if (subgrupo_id) {
+          sql += ' AND (p.subgrupo_id = ? OR p.subgrupo_nome = ?)';
+          params.push(Number(subgrupo_id), String(subgrupo_id).trim());
+        }
+        if (tipo_produto) {
+          sql += ' AND p.tipo = ?';
+          params.push(tipo_produto);
+        }
+        sql += ' ORDER BY gp.nome ASC, COALESCE(p.subgrupo_nome, sg.nome) ASC, p.nome ASC';
+
+        const rows = db.prepare(sql).all(...params) as any[];
+        let totalValorGeral = 0;
+        let totalItens = 0;
+
+        dados = rows.map((p) => {
+          const valUnit = Number(p.valor_unitario || p.custo_unitario) || 0;
+          const totalItem = p.quantidade_atual * valUnit;
+          totalValorGeral += totalItem;
+          totalItens += p.quantidade_atual;
+
+          return {
+            ...p,
+            valor_unitario_formatado: `R$ ${valUnit.toFixed(2)}`,
+            total_valor_formatado: `R$ ${totalItem.toFixed(2)}`,
+            status_estoque: p.quantidade_atual <= p.estoque_minimo ? 'CRÍTICO' : 'NORMAL',
+          };
+        });
+
+        resumo = `Relatório por Grupos e Subgrupos: ${dados.length} produtos classificados. Saldo total de ${totalItens} unidades no valor patrimonial de R$ ${totalValorGeral.toFixed(2)}.`;
         break;
       }
 
@@ -8772,28 +9337,48 @@ function handleImportacaoProdutosRoute(req: any, res: any) {
         grupoMap.set(g.nome_upper, g.id);
       }
 
+      // Mapeamento de subgrupos existentes no banco da área de destino
+      const todosSubgrupos = targetDb.prepare('SELECT id, grupo_id, UPPER(nome) as nome_upper FROM subgrupos_produtos').all() as any[];
+      const subgrupoMap = new Map<string, number>();
+      for (const sg of todosSubgrupos) {
+        const key = `${sg.grupo_id || 0}:::${sg.nome_upper}`;
+        subgrupoMap.set(key, sg.id);
+        if (!subgrupoMap.has(sg.nome_upper)) {
+          subgrupoMap.set(sg.nome_upper, sg.id);
+        }
+      }
+
       // Valida usuário para auditoria e chave estrangeira na área de destino
       const userExiste = targetDb.prepare('SELECT id FROM usuarios WHERE id = ?').get(user.id) as any;
       const auditoriaUserId = userExiste ? user.id : 1;
       const auditoriaUserNome = user.nome || 'Administrador Geral';
 
-      const stmtCheckProd = targetDb.prepare('SELECT id, codigo, nome, quantidade_atual, custo_unitario FROM produtos WHERE UPPER(codigo) = UPPER(?)');
+      const stmtCheckProd = targetDb.prepare('SELECT id, codigo, nome, grupo_id, subgrupo_id, subgrupo_nome, quantidade_atual, custo_unitario FROM produtos WHERE UPPER(codigo) = UPPER(?)');
       const stmtInsertGrupo = targetDb.prepare(`
         INSERT INTO grupos_produtos (codigo, nome, tipo_padrao, ativo)
         VALUES (?, ?, ?, 1)
       `);
+      const stmtInsertSubgrupo = targetDb.prepare(`
+        INSERT INTO subgrupos_produtos (grupo_id, codigo, nome, ativo)
+        VALUES (?, ?, ?, 1)
+      `);
       const stmtInsertProd = targetDb.prepare(`
         INSERT INTO produtos (
-          codigo, nome, descricao, grupo_id, unidade_medida, tipo, controla_validade,
+          codigo, nome, descricao, grupo_id, subgrupo_id, subgrupo_nome, unidade_medida, tipo, controla_validade,
           estoque_minimo, estoque_maximo, quantidade_atual, valor_unitario, custo_unitario, ativo
-        ) VALUES (?, ?, ?, ?, ?, ?, 1, 0, 0, ?, ?, ?, 1)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, 0, 0, ?, ?, ?, 1)
       `);
       const stmtUpdateProd = targetDb.prepare(`
         UPDATE produtos
         SET quantidade_atual = quantidade_atual + ?,
             custo_unitario = CASE WHEN ? > 0 THEN ? ELSE custo_unitario END,
             valor_unitario = CASE WHEN ? > 0 THEN ? ELSE valor_unitario END,
-            unidade_medida = COALESCE(?, unidade_medida)
+            unidade_medida = COALESCE(?, unidade_medida),
+            grupo_id = CASE WHEN ? IS NOT NULL THEN ? ELSE grupo_id END,
+            subgrupo_id = CASE WHEN ? IS NOT NULL THEN ? ELSE subgrupo_id END,
+            subgrupo_nome = CASE WHEN ? IS NOT NULL THEN ? ELSE subgrupo_nome END,
+            nome = CASE WHEN ? IS NOT NULL AND ? != '' THEN ? ELSE nome END,
+            descricao = CASE WHEN ? IS NOT NULL AND ? != '' THEN ? ELSE descricao END
         WHERE id = ?
       `);
 
@@ -8842,12 +9427,49 @@ function handleImportacaoProdutosRoute(req: any, res: any) {
         const saldoNum = item.saldo !== undefined && item.saldo !== null ? Number(item.saldo) : (item.sald !== undefined ? Number(item.sald) : 0);
         const custoNum = item.custo !== undefined && item.custo !== null ? Number(item.custo) : (item.custo_unitario !== undefined ? Number(item.custo_unitario) : 0);
         const totalNum = item.total !== undefined && item.total !== null ? Number(item.total) : (item.valor_total !== undefined ? Number(item.valor_total) : (saldoNum * custoNum));
-        const rawGrupoNome = String(item.grupo_nome || 'GERAL').trim();
+        const fallbackGrupoPadrao = req.body?.grupo_padrao_nome || (areaRow.sigla === 'CAF' ? 'MEDICAMENTOS' : 'ALMOXARIFADO CENTRAL');
+        const fallbackSubgrupoPadrao = req.body?.subgrupo_padrao_nome || 'GERAL';
+        const rawGrupoNome = String(item.grupo_nome || item.grupo || fallbackGrupoPadrao || '').trim();
+        const rawSubgrupoNome = String(item.subgrupo_nome || item.subgrupo || fallbackSubgrupoPadrao || '').trim();
         const tipoFinal = item.tipo === 'nao_consumivel' ? 'nao_consumivel' : 'consumivel';
 
         if (!rawCod || !rawDesc) {
           avisos.push(`Linha ${i + 1}: Registro ignorado por falta de Código ou Descrição.`);
           continue;
+        }
+
+        // 1. Resolução do Grupo de Produto na área de destino
+        let grupoId: number | null = null;
+        let grupoNomeFinal: string | null = null;
+        if (rawGrupoNome) {
+          grupoNomeFinal = rawGrupoNome.toUpperCase();
+          if (grupoMap.has(grupoNomeFinal)) {
+            grupoId = grupoMap.get(grupoNomeFinal)!;
+          } else {
+            const nextGrupoCod = `GRP-${Math.floor(100 + Math.random() * 900)}`;
+            const infoGrupo = stmtInsertGrupo.run(nextGrupoCod, grupoNomeFinal, tipoFinal);
+            grupoId = Number(infoGrupo.lastInsertRowid);
+            grupoMap.set(grupoNomeFinal, grupoId);
+          }
+        }
+
+        // 2. Resolução do Subgrupo de Produto na área de destino
+        let subgrupoId: number | null = null;
+        let subgrupoNomeFinal: string | null = null;
+        if (rawSubgrupoNome) {
+          subgrupoNomeFinal = rawSubgrupoNome.toUpperCase();
+          const keyComGrupo = `${grupoId || 0}:::${subgrupoNomeFinal}`;
+          if (subgrupoMap.has(keyComGrupo)) {
+            subgrupoId = subgrupoMap.get(keyComGrupo)!;
+          } else if (subgrupoMap.has(subgrupoNomeFinal)) {
+            subgrupoId = subgrupoMap.get(subgrupoNomeFinal)!;
+          } else {
+            const nextSubgrupoCod = `SGRP-${Math.floor(100 + Math.random() * 900)}`;
+            const infoSg = stmtInsertSubgrupo.run(grupoId, nextSubgrupoCod, subgrupoNomeFinal);
+            subgrupoId = Number(infoSg.lastInsertRowid);
+            subgrupoMap.set(keyComGrupo, subgrupoId);
+            subgrupoMap.set(subgrupoNomeFinal, subgrupoId);
+          }
         }
 
         let produtoId: number;
@@ -8856,12 +9478,25 @@ function handleImportacaoProdutosRoute(req: any, res: any) {
         const existe = stmtCheckProd.get(rawCod) as any;
         if (existe) {
           produtoId = Number(existe.id);
-          stmtUpdateProd.run(saldoNum, custoNum, custoNum, custoNum, custoNum, rawUnd, produtoId);
+          stmtUpdateProd.run(
+            saldoNum,
+            custoNum, custoNum,
+            custoNum, custoNum,
+            rawUnd,
+            grupoId, grupoId,
+            subgrupoId, subgrupoId,
+            subgrupoNomeFinal, subgrupoNomeFinal,
+            rawDesc, rawDesc, rawDesc,
+            rawDesc, rawDesc, rawDesc,
+            produtoId
+          );
           atualizados.push({
             id: produtoId,
             codigo: rawCod,
             nome: rawDesc,
             unidade: rawUnd,
+            grupo: grupoNomeFinal || rawGrupoNome,
+            subgrupo: subgrupoNomeFinal || rawSubgrupoNome,
             lote: rawLote,
             validade: rawValidade,
             saldo: saldoNum,
@@ -8870,25 +9505,13 @@ function handleImportacaoProdutosRoute(req: any, res: any) {
           });
         } else {
           isNovo = true;
-          // Resolução / criação do Grupo de Produto na área de destino
-          let grupoId: number | null = null;
-          if (rawGrupoNome) {
-            const upperGrupo = rawGrupoNome.toUpperCase();
-            if (grupoMap.has(upperGrupo)) {
-              grupoId = grupoMap.get(upperGrupo)!;
-            } else {
-              const nextGrupoCod = `GRP-${Math.floor(100 + Math.random() * 900)}`;
-              const infoGrupo = stmtInsertGrupo.run(nextGrupoCod, rawGrupoNome, tipoFinal);
-              grupoId = Number(infoGrupo.lastInsertRowid);
-              grupoMap.set(upperGrupo, grupoId);
-            }
-          }
-
           const insertInfo = stmtInsertProd.run(
             rawCod,
             rawDesc,
             rawDesc,
             grupoId,
+            subgrupoId,
+            subgrupoNomeFinal,
             rawUnd,
             tipoFinal,
             saldoNum,
@@ -8902,6 +9525,8 @@ function handleImportacaoProdutosRoute(req: any, res: any) {
             codigo: rawCod,
             nome: rawDesc,
             unidade: rawUnd,
+            grupo: grupoNomeFinal || rawGrupoNome,
+            subgrupo: subgrupoNomeFinal || rawSubgrupoNome,
             lote: rawLote,
             validade: rawValidade,
             saldo: saldoNum,

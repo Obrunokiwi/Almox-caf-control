@@ -17,12 +17,14 @@ import {
   RotateCcw,
   ShieldAlert,
   HelpCircle,
-  Eye
+  Eye,
+  Layers,
+  FolderTree
 } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import { jsPDF } from 'jspdf';
 import autoTable from 'jspdf-autotable';
-import type { Usuario, Produto, Fornecedor, Area } from '../types/index.ts';
+import type { Usuario, Produto, Fornecedor, Area, GrupoProduto, SubgrupoProduto } from '../types/index.ts';
 import { AutocompleteSelect } from './AutocompleteSelect.tsx';
 import { useToast } from '../context/ToastContext.tsx';
 
@@ -32,14 +34,15 @@ interface ImportacaoCadastrosViewProps {
   onVoltar: () => void;
 }
 
-// Estrutura de Produto parsed da planilha com os 8 campos solicitados:
-// codigo | descricao | unidade | lote | validade | sald | custo | total
+// Estrutura de Produto parsed da planilha com suporte a grupo, subgrupo e lotes:
+// codigo | descricao | grupo | subgrupo | unidade | lote | validade | sald | custo | total
 interface ProdutoImportItem {
   id_temp: string;
   codigo: string;
   nome: string;
   descricao?: string;
   grupo_nome: string;
+  subgrupo_nome?: string;
   unidade_medida: string;
   lote: string;
   validade: string | null;
@@ -51,6 +54,7 @@ interface ProdutoImportItem {
   valido: boolean;
   motivo_invalido?: string;
   ja_existe_no_banco?: boolean;
+  codigo_repetido_na_planilha?: boolean;
 }
 
 // Estrutura de Fornecedor parsed da planilha
@@ -528,7 +532,13 @@ export const ImportacaoCadastrosView: React.FC<ImportacaoCadastrosViewProps> = (
   // Base existente no banco da área de destino (para checagem em tempo real na prévia)
   const [bancoProdutos, setBancoProdutos] = useState<Produto[]>([]);
   const [bancoFornecedores, setBancoFornecedores] = useState<Fornecedor[]>([]);
+  const [bancoGrupos, setBancoGrupos] = useState<GrupoProduto[]>([]);
+  const [bancoSubgrupos, setBancoSubgrupos] = useState<SubgrupoProduto[]>([]);
   const [carregandoBase, setCarregandoBase] = useState(false);
+
+  // Seletores de Grupo e Subgrupo Padrão / Fallback para a Importação
+  const [grupoPadraoId, setGrupoPadraoId] = useState<string>('AUTO');
+  const [subgrupoPadraoId, setSubgrupoPadraoId] = useState<string>('AUTO');
 
   // Estados Card 1 - Produtos
   const [arquivoProdNome, setArquivoProdNome] = useState<string>('');
@@ -575,7 +585,7 @@ export const ImportacaoCadastrosView: React.FC<ImportacaoCadastrosViewProps> = (
     arquivo_db: selectedTargetSigla === 'CAF' ? 'caf.db' : 'almoxarifado.db',
   };
 
-  // Carrega produtos e fornecedores cadastrados na ÁREA DE DESTINO selecionada
+  // Carrega produtos, fornecedores, grupos e subgrupos cadastrados na ÁREA DE DESTINO selecionada
   const carregarBaseExistente = async (siglaAlvo?: string) => {
     const sigla = siglaAlvo || selectedTargetSigla;
     setCarregandoBase(true);
@@ -585,12 +595,16 @@ export const ImportacaoCadastrosView: React.FC<ImportacaoCadastrosViewProps> = (
         Authorization: `Bearer ${token}`,
         'X-Area-Sigla': sigla,
       };
-      const [resProd, resForn] = await Promise.all([
+      const [resProd, resForn, resG, resSg] = await Promise.all([
         fetch('/api/produtos?apenas_ativos=false', { headers }),
         fetch('/api/fornecedores?apenas_ativos=false', { headers }),
+        fetch('/api/grupos-produtos', { headers }),
+        fetch('/api/subgrupos-produtos', { headers }),
       ]);
       if (resProd.ok) setBancoProdutos(await resProd.json());
       if (resForn.ok) setBancoFornecedores(await resForn.json());
+      if (resG.ok) setBancoGrupos(await resG.json());
+      if (resSg.ok) setBancoSubgrupos(await resSg.json());
     } catch (err) {
       console.error('Erro ao buscar base existente:', err);
     } finally {
@@ -683,6 +697,7 @@ export const ImportacaoCadastrosView: React.FC<ImportacaoCadastrosViewProps> = (
         }
 
         let currentGrupo = 'GERAL';
+        let currentSubgrupo = 'GERAL';
         let colCod = -1;
         let colDesc = -1;
         let colUnd = -1;
@@ -691,9 +706,12 @@ export const ImportacaoCadastrosView: React.FC<ImportacaoCadastrosViewProps> = (
         let colSaldo = -1;
         let colCusto = -1;
         let colTotal = -1;
+        let colGrupo = -1;
+        let colSubgrupo = -1;
 
         const itens: ProdutoImportItem[] = [];
         const codigosNoBanco = new Set(bancoProdutos.map((p) => String(p.codigo).toUpperCase().trim()));
+        const seenCodesInSheet = new Map<string, number>();
 
         const normalizeColHeader = (val: any) =>
           String(val || '')
@@ -731,12 +749,39 @@ export const ImportacaoCadastrosView: React.FC<ImportacaoCadastrosViewProps> = (
             }
             if (grupoTexto) {
               currentGrupo = grupoTexto;
+              currentSubgrupo = 'GERAL';
             }
             continue;
           }
 
-          // 2. Detecta cabeçalhos com suporte aos 8 campos:
-          // codigo | descricao | unidade | lote | validade | sald | custo | total
+          // 1.1 Detecta linha de subgrupo: "SUBGRUPO DE PRODUTO: ...", "SUBGRUPO: ...", "SUB-GRUPO: ..."
+          if (rowString.toUpperCase().includes('SUBGRUPO') || rowString.toUpperCase().includes('SUB-GRUPO')) {
+            let subgrupoTexto = '';
+            for (let c = 0; c < row.length; c++) {
+              const cellVal = String(row[c] || '').trim();
+              if (/SUB[\-_]?GRUPO(?:\s+DE\s+PRODUTO)?:\s*/i.test(cellVal)) {
+                const after = cellVal.replace(/SUB[\-_]?GRUPO(?:\s+DE\s+PRODUTO)?:\s*/i, '').trim();
+                if (after) {
+                  subgrupoTexto = after;
+                } else if (row[c + 1]) {
+                  subgrupoTexto = String(row[c + 1] || '').trim();
+                }
+                break;
+              }
+            }
+            if (!subgrupoTexto) {
+              const match = rowString.match(/SUB[\-_]?GRUPO(?:\s+DE\s+PRODUTO)?:\s*(.+)$/i);
+              if (match && match[1]) {
+                subgrupoTexto = match[1].replace(/^[;,\s]+|[;,\s]+$/g, '').trim();
+              }
+            }
+            if (subgrupoTexto) {
+              currentSubgrupo = subgrupoTexto;
+              continue;
+            }
+          }
+
+          // 2. Detecta cabeçalhos com suporte aos 10 campos (incluindo Grupo e Subgrupo)
           const isHeaderRow = row.some((c) => {
             const s = normalizeColHeader(c);
             return s === 'COD' || s === 'CODIGO' || s === 'ID' || s === 'COD.';
@@ -772,13 +817,32 @@ export const ImportacaoCadastrosView: React.FC<ImportacaoCadastrosViewProps> = (
                 colCusto = c;
               } else if (val === 'TOTAL' || val.includes('TOTAL') || val === 'SUBTOTAL') {
                 colTotal = c;
+              } else if (
+                val.includes('SUBGRUPO') ||
+                val.includes('SUB-GRUPO') ||
+                val.includes('SUB_GRUPO') ||
+                val.includes('SUB GRP') ||
+                val === 'SGRP' ||
+                val === 'SUB'
+              ) {
+                colSubgrupo = c;
+              } else if (
+                val === 'GRUPO' ||
+                val === 'GRUPO_PRODUTO' ||
+                val === 'GRUPO DE PRODUTO' ||
+                val.includes('GRUPO') ||
+                val === 'CATEGORIA' ||
+                val === 'GRP' ||
+                val === 'FAMILIA' ||
+                val === 'CLASSE'
+              ) {
+                colGrupo = c;
               }
             }
             continue; // Ignora a linha do cabeçalho
           }
 
           // Se as colunas ainda não foram mapeadas pelo cabeçalho, assume índices padrão
-          // Ordem padrão solicitada: codigo(0) | descricao(1) | unidade(2) | lote(3) | validade(4) | sald(5) | custo(6) | total(7)
           const cCodIdx = colCod >= 0 ? colCod : 0;
           const cDescIdx = colDesc >= 0 ? colDesc : 1;
           const cUndIdx = colUnd >= 0 ? colUnd : 2;
@@ -796,6 +860,9 @@ export const ImportacaoCadastrosView: React.FC<ImportacaoCadastrosViewProps> = (
           const rawSaldoCell = cSaldoIdx < row.length ? row[cSaldoIdx] : undefined;
           const rawCustoCell = cCustoIdx < row.length ? row[cCustoIdx] : undefined;
           const rawTotalCell = cTotalIdx < row.length ? row[cTotalIdx] : undefined;
+
+          const rowGrupo = colGrupo >= 0 && row[colGrupo] ? String(row[colGrupo]).trim() : '';
+          const rowSubgrupo = colSubgrupo >= 0 && row[colSubgrupo] ? String(row[colSubgrupo]).trim() : '';
 
           // Ignora linhas totalmente vazias
           if (!rawCod && !rawDesc) continue;
@@ -824,19 +891,43 @@ export const ImportacaoCadastrosView: React.FC<ImportacaoCadastrosViewProps> = (
           // Lote normalizado
           const loteFinal = rawLote ? rawLote.toUpperCase() : 'SEM LOTE';
 
-          // Mapeamento de tipo conforme grupo (equipamento/imobilizado = nao_consumivel, demais = consumivel)
-          const upperG = currentGrupo.toUpperCase();
+          // Resolução inteligente do Grupo e Subgrupo (coluna > quebra de seção > seletor padrão do Card > padrão da área)
+          const fallbackNomeGrupo = (grupoPadraoId && grupoPadraoId !== 'AUTO')
+            ? (bancoGrupos.find((g) => String(g.id) === grupoPadraoId)?.nome || grupoPadraoId)
+            : (selectedTargetSigla === 'CAF' ? 'MEDICAMENTOS' : 'ALMOXARIFADO CENTRAL');
+
+          const fallbackNomeSubgrupo = (subgrupoPadraoId && subgrupoPadraoId !== 'AUTO')
+            ? (bancoSubgrupos.find((sg) => String(sg.id) === subgrupoPadraoId)?.nome || subgrupoPadraoId)
+            : 'GERAL';
+
+          const finalGrupo = (rowGrupo && rowGrupo.toUpperCase() !== 'GERAL' ? rowGrupo : null) ||
+                             (currentGrupo && currentGrupo.toUpperCase() !== 'GERAL' ? currentGrupo : null) ||
+                             fallbackNomeGrupo;
+
+          const finalSubgrupo = (rowSubgrupo && rowSubgrupo.toUpperCase() !== 'GERAL' ? rowSubgrupo : null) ||
+                                (currentSubgrupo && currentSubgrupo.toUpperCase() !== 'GERAL' ? currentSubgrupo : null) ||
+                                fallbackNomeSubgrupo;
+
+          // Mapeamento de tipo conforme grupo
+          const upperG = finalGrupo.toUpperCase();
           const isNaoConsumivel = upperG.includes('EQUIPAMENTO') || upperG.includes('IMOBILIZADO');
           const tipo: 'consumivel' | 'nao_consumivel' = isNaoConsumivel ? 'nao_consumivel' : 'consumivel';
 
-          const jaExiste = codigosNoBanco.has(rawCod.toUpperCase());
+          // Verificação de código repetido na planilha ou já existente no banco de dados da área
+          const normCod = rawCod.toUpperCase();
+          const countSoFar = seenCodesInSheet.get(normCod) || 0;
+          seenCodesInSheet.set(normCod, countSoFar + 1);
+
+          const jaExisteNoBanco = codigosNoBanco.has(normCod);
+          const repetidoNaPlanilha = countSoFar > 0;
 
           itens.push({
             id_temp: `prod-${rowIndex}-${rawCod}`,
             codigo: rawCod, // Preservado exatamente como texto original
             nome: rawDesc,
             descricao: rawDesc,
-            grupo_nome: currentGrupo || 'GERAL',
+            grupo_nome: finalGrupo,
+            subgrupo_nome: finalSubgrupo,
             unidade_medida: rawUnd,
             lote: loteFinal,
             validade: validadeObj.iso,
@@ -847,7 +938,8 @@ export const ImportacaoCadastrosView: React.FC<ImportacaoCadastrosViewProps> = (
             tipo,
             valido,
             motivo_invalido: motivoInvalido,
-            ja_existe_no_banco: jaExiste,
+            ja_existe_no_banco: jaExisteNoBanco || repetidoNaPlanilha,
+            codigo_repetido_na_planilha: repetidoNaPlanilha,
           });
         }
 
@@ -862,8 +954,20 @@ export const ImportacaoCadastrosView: React.FC<ImportacaoCadastrosViewProps> = (
     };
 
     reader.readAsArrayBuffer(file);
-    // Limpa o valor do input para permitir selecionar o mesmo arquivo novamente se desejar
     e.target.value = '';
+  };
+
+  // Alteração de Grupo em Massa na Prévia
+  const handleAplicarGrupoEmMassaNaPrevia = (grupoNome: string) => {
+    if (!grupoNome) return;
+    const gUpper = grupoNome.trim().toUpperCase();
+    setProdutosParsed((prev) =>
+      prev.map((p) => ({
+        ...p,
+        grupo_nome: gUpper,
+      }))
+    );
+    toast.success('Grupo Atualizado', `Todos os ${produtosParsed.length} itens da prévia foram definidos com o grupo "${gUpper}".`);
   };
 
   // Confirmar Importação de Produtos no Banco de Destino
@@ -879,6 +983,15 @@ export const ImportacaoCadastrosView: React.FC<ImportacaoCadastrosViewProps> = (
     setIsGravandoProd(true);
     try {
       const token = localStorage.getItem('multi_almox_token') || localStorage.getItem('token') || '';
+
+      const fallbackNomeGrupo = (grupoPadraoId && grupoPadraoId !== 'AUTO')
+        ? (bancoGrupos.find((g) => String(g.id) === grupoPadraoId)?.nome || grupoPadraoId)
+        : (selectedTargetSigla === 'CAF' ? 'MEDICAMENTOS' : 'ALMOXARIFADO CENTRAL');
+
+      const fallbackNomeSubgrupo = (subgrupoPadraoId && subgrupoPadraoId !== 'AUTO')
+        ? (bancoSubgrupos.find((sg) => String(sg.id) === subgrupoPadraoId)?.nome || subgrupoPadraoId)
+        : 'GERAL';
+
       const res = await fetch(`/api/importacao/${selectedTargetSigla}/produtos`, {
         method: 'POST',
         headers: {
@@ -886,7 +999,12 @@ export const ImportacaoCadastrosView: React.FC<ImportacaoCadastrosViewProps> = (
           Authorization: `Bearer ${token}`,
           'X-Area-Sigla': selectedTargetSigla,
         },
-        body: JSON.stringify({ produtos: registrosParaGravar, targetSigla: selectedTargetSigla }),
+        body: JSON.stringify({
+          produtos: registrosParaGravar,
+          targetSigla: selectedTargetSigla,
+          grupo_padrao_nome: fallbackNomeGrupo,
+          subgrupo_padrao_nome: fallbackNomeSubgrupo,
+        }),
       });
 
       const data = await res.json();
@@ -1469,40 +1587,113 @@ export const ImportacaoCadastrosView: React.FC<ImportacaoCadastrosViewProps> = (
               </div>
             </div>
 
-            <div className="bg-slate-50 rounded-lg p-3.5 border border-slate-200 text-xs text-slate-600 space-y-2.5">
-              <div className="font-semibold text-slate-700 flex items-center gap-1.5">
-                <HelpCircle className="w-3.5 h-3.5 text-teal-600" />
-                <span>Colunas Obrigatórias da Planilha (.CSV / .XLS / .XLSX):</span>
+            <div className="bg-slate-50 rounded-lg p-3.5 border border-slate-200 text-xs text-slate-600 space-y-3">
+              <div className="font-semibold text-slate-700 flex items-center justify-between">
+                <div className="flex items-center gap-1.5">
+                  <HelpCircle className="w-3.5 h-3.5 text-teal-600" />
+                  <span>Colunas Reconhecidas da Planilha (.CSV / .XLS / .XLSX):</span>
+                </div>
+                <span className="text-[10px] font-bold text-teal-700 uppercase bg-teal-100/70 px-2 py-0.5 rounded">
+                  Suporta 10 Campos
+                </span>
               </div>
-              <div className="bg-[#24478f] text-white font-mono text-[11px] p-2 rounded-lg flex flex-wrap gap-x-2.5 gap-y-1 font-bold shadow-sm items-center">
-                <span>codigo</span>
+
+              <div className="bg-[#24478f] text-white font-mono text-[11px] p-2.5 rounded-lg flex flex-wrap gap-x-2 gap-y-1.5 font-bold shadow-sm items-center">
+                <span className="bg-blue-900/70 px-1.5 py-0.5 rounded">codigo</span>
                 <span className="text-blue-300 font-light">|</span>
-                <span>descricao</span>
+                <span className="bg-blue-900/70 px-1.5 py-0.5 rounded">descricao</span>
                 <span className="text-blue-300 font-light">|</span>
-                <span>unidade</span>
+                <span className="bg-emerald-600 px-2 py-0.5 rounded text-white font-black shadow-xs flex items-center gap-1 border border-emerald-400">
+                  <Layers className="w-3 h-3" />
+                  <span>grupo</span>
+                </span>
                 <span className="text-blue-300 font-light">|</span>
-                <span>lote</span>
+                <span className="bg-teal-600 px-2 py-0.5 rounded text-white font-black shadow-xs flex items-center gap-1 border border-teal-400">
+                  <FolderTree className="w-3 h-3" />
+                  <span>subgrupo</span>
+                </span>
                 <span className="text-blue-300 font-light">|</span>
-                <span>validade</span>
+                <span className="bg-blue-900/70 px-1.5 py-0.5 rounded">unidade</span>
                 <span className="text-blue-300 font-light">|</span>
-                <span>sald</span>
+                <span className="bg-blue-900/70 px-1.5 py-0.5 rounded">lote</span>
                 <span className="text-blue-300 font-light">|</span>
-                <span>custo</span>
+                <span className="bg-blue-900/70 px-1.5 py-0.5 rounded">validade</span>
                 <span className="text-blue-300 font-light">|</span>
-                <span>total</span>
+                <span className="bg-blue-900/70 px-1.5 py-0.5 rounded">sald</span>
+                <span className="text-blue-300 font-light">|</span>
+                <span className="bg-blue-900/70 px-1.5 py-0.5 rounded">custo</span>
+                <span className="text-blue-300 font-light">|</span>
+                <span className="bg-blue-900/70 px-1.5 py-0.5 rounded">total</span>
               </div>
-              <ul className="list-disc pl-4 space-y-1 text-[11px] text-slate-600">
+
+              {/* Classificação de Grupo e Subgrupo Padrão / Destino */}
+              <div className="p-3 bg-teal-50/80 rounded-lg border border-teal-200 space-y-2">
+                <div className="flex items-center justify-between">
+                  <span className="text-[11px] font-bold text-teal-900 flex items-center gap-1.5 uppercase tracking-wider">
+                    <Layers className="w-3.5 h-3.5 text-teal-700" />
+                    <span>Classificação Padrão de Grupo e Subgrupo ({targetArea.sigla})</span>
+                  </span>
+                  <span className="text-[10px] text-teal-800 font-bold bg-white px-2 py-0.5 rounded border border-teal-200">
+                    Área: {targetArea.nome}
+                  </span>
+                </div>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-xs">
+                  <div>
+                    <label className="block text-[10px] font-bold text-slate-600 uppercase mb-1">
+                      Grupo do Produto (Caso ausente na planilha):
+                    </label>
+                    <select
+                      value={grupoPadraoId}
+                      onChange={(e) => {
+                        setGrupoPadraoId(e.target.value);
+                        setSubgrupoPadraoId('AUTO');
+                      }}
+                      className="w-full px-2.5 py-1.5 bg-white border border-teal-300 rounded text-xs font-semibold text-slate-800 focus:outline-none focus:border-teal-600 shadow-inner"
+                    >
+                      <option value="AUTO">
+                        Detectar da Planilha (ou padrão: {targetArea.sigla === 'CAF' ? 'MEDICAMENTOS' : 'ALMOXARIFADO CENTRAL'})
+                      </option>
+                      {bancoGrupos.map((g) => (
+                        <option key={g.id} value={g.id}>
+                          {g.codigo ? `${g.codigo} - ` : ''}{g.nome}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-[10px] font-bold text-slate-600 uppercase mb-1">
+                      Subgrupo do Produto (Opcional):
+                    </label>
+                    <select
+                      value={subgrupoPadraoId}
+                      onChange={(e) => setSubgrupoPadraoId(e.target.value)}
+                      className="w-full px-2.5 py-1.5 bg-white border border-teal-300 rounded text-xs font-semibold text-slate-800 focus:outline-none focus:border-teal-600 shadow-inner"
+                    >
+                      <option value="AUTO">Detectar da Planilha (ou GERAL)</option>
+                      {bancoSubgrupos
+                        .filter((sg) => grupoPadraoId === 'AUTO' || !sg.grupo_id || String(sg.grupo_id) === grupoPadraoId)
+                        .map((sg) => (
+                          <option key={sg.id} value={sg.id}>
+                            {sg.codigo ? `${sg.codigo} - ` : ''}{sg.nome}
+                          </option>
+                        ))}
+                    </select>
+                  </div>
+                </div>
+              </div>
+
+              <ul className="list-disc pl-4 space-y-1.5 text-[11px] text-slate-600">
                 <li>
-                  Suporta arquivos <strong>.CSV</strong>, <strong>.XLS</strong> ou <strong>.XLSX</strong> com os 8 campos acima.
+                  <strong>Grupo e Subgrupo:</strong> reconhece colunas dedicadas (<em>grupo, subgrupo</em>) ou quebras de seção (<em>GRUPO DE PRODUTO:, SUBGRUPO:</em>). Caso ausente na linha, aplica a classificação selecionada acima.
                 </li>
                 <li>
-                  <strong>Carga de Estoque e Lotes:</strong> cadastra os lotes com validade e quantidade, atualiza o saldo físico do item e gera movimentação de entrada inicial para o Kardex.
+                  <strong>Atualização por Código Repetido:</strong> ao identificar produto com código já cadastrado na base (ou códigos repetidos na própria planilha), o sistema <strong>atualiza automaticamente no banco de dados o grupo e subgrupo corretos</strong>, além de descrição, custo e unidade, somando os saldos e cadastrando os novos lotes sem gerar duplicidades.
                 </li>
                 <li>
-                  <strong>Produtos Existentes:</strong> se o código já estiver cadastrado, adiciona o lote e incrementa o saldo correspondente.
+                  <strong>Carga de Estoque e FEFO:</strong> cadastra os lotes com validade e quantidade, atualizando o saldo físico e registrando a entrada inicial no Kardex.
                 </li>
                 <li>
-                  <strong>Código original preservado:</strong> como texto (alfanumérico ou numérico), sem preencher zeros à esquerda.
+                  <strong>Código original preservado:</strong> como texto (alfanumérico ou numérico), sem suprimir ou preencher zeros à esquerda.
                 </li>
               </ul>
             </div>
@@ -1696,21 +1887,53 @@ export const ImportacaoCadastrosView: React.FC<ImportacaoCadastrosViewProps> = (
             </div>
           </div>
 
-          {/* Tabela de Amostragem da Prévia com os 8 CAMPOS EXATOS:
-              codigo | descricao | unidade | lote | validade | sald | custo | total */}
+          {/* Ações Rápidas de Classificação em Massa na Prévia */}
+          <div className="bg-slate-50 p-3 rounded-lg border border-teal-200 flex flex-wrap items-center justify-between gap-3 text-xs">
+            <div className="flex items-center gap-2">
+              <span className="font-bold text-slate-700 flex items-center gap-1.5">
+                <Layers className="w-4 h-4 text-teal-700" />
+                <span>Aplicar Grupo em Massa a Todos os Itens da Prévia:</span>
+              </span>
+              <select
+                id="select-massa-grupo"
+                defaultValue=""
+                onChange={(e) => {
+                  if (e.target.value) {
+                    handleAplicarGrupoEmMassaNaPrevia(e.target.value);
+                    e.target.value = '';
+                  }
+                }}
+                className="px-2.5 py-1.5 bg-white border border-slate-300 rounded text-xs font-semibold text-slate-800 focus:border-teal-500 shadow-xs"
+              >
+                <option value="">Selecione um grupo para aplicar em todos...</option>
+                {bancoGrupos.map((g) => (
+                  <option key={g.id} value={g.nome}>
+                    {g.codigo ? `${g.codigo} - ` : ''}{g.nome}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div className="text-[11px] text-slate-500 italic">
+              * Itens com códigos repetidos ou existentes no banco serão atualizados com o novo grupo selecionado.
+            </div>
+          </div>
+
+          {/* Tabela de Amostragem da Prévia com os 10 CAMPOS COMPLETOS */}
           <div className="border border-slate-300 rounded-lg overflow-x-auto max-h-96 shadow-inner">
             <table className="w-full text-left text-xs border-collapse">
               <thead className="bg-[#24478f] text-white sticky top-0 border-b border-blue-950 uppercase font-bold text-[10px] tracking-wider">
                 <tr>
                   <th className="py-2.5 px-3">codigo</th>
                   <th className="py-2.5 px-3">descricao</th>
+                  <th className="py-2.5 px-3">grupo</th>
+                  <th className="py-2.5 px-3">subgrupo</th>
                   <th className="py-2.5 px-2 text-center">unidade</th>
                   <th className="py-2.5 px-3">lote</th>
                   <th className="py-2.5 px-3 text-center">validade</th>
                   <th className="py-2.5 px-3 text-right">sald</th>
                   <th className="py-2.5 px-3 text-right">custo</th>
                   <th className="py-2.5 px-3 text-right">total</th>
-                  <th className="py-2.5 px-3 text-center">status</th>
+                  <th className="py-2.5 px-3 text-center">status / ação no banco</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100 font-sans">
@@ -1720,6 +1943,8 @@ export const ImportacaoCadastrosView: React.FC<ImportacaoCadastrosViewProps> = (
                     className={
                       !p.valido
                         ? 'bg-rose-50/70 text-rose-900'
+                        : p.codigo_repetido_na_planilha
+                        ? 'bg-amber-50/40 text-slate-800 hover:bg-amber-50/70'
                         : p.ja_existe_no_banco
                         ? 'bg-indigo-50/40 text-slate-800 hover:bg-indigo-50/70'
                         : 'hover:bg-slate-50'
@@ -1727,6 +1952,18 @@ export const ImportacaoCadastrosView: React.FC<ImportacaoCadastrosViewProps> = (
                   >
                     <td className="py-2 px-3 font-mono font-bold text-slate-900">{p.codigo}</td>
                     <td className="py-2 px-3 font-medium text-slate-800">{p.nome}</td>
+                    <td className="py-2 px-3 text-slate-600 whitespace-nowrap">
+                      <span className="bg-slate-100 text-slate-700 px-1.5 py-0.5 rounded text-[10px] font-semibold flex items-center gap-1 w-fit">
+                        <Layers className="w-2.5 h-2.5 text-teal-600" />
+                        <span>{p.grupo_nome}</span>
+                      </span>
+                    </td>
+                    <td className="py-2 px-3 text-slate-600 whitespace-nowrap">
+                      <span className="bg-teal-50 text-teal-800 border border-teal-200 px-1.5 py-0.5 rounded text-[10px] font-medium flex items-center gap-1 w-fit">
+                        <FolderTree className="w-2.5 h-2.5 text-teal-600" />
+                        <span>{p.subgrupo_nome || 'GERAL'}</span>
+                      </span>
+                    </td>
                     <td className="py-2 px-2 text-center font-bold text-slate-600">{p.unidade_medida}</td>
                     <td className="py-2 px-3 font-mono text-slate-700">{p.lote || 'SEM LOTE'}</td>
                     <td className="py-2 px-3 text-center font-mono text-slate-700">{p.validade_formatada || '-'}</td>
@@ -1745,14 +1982,19 @@ export const ImportacaoCadastrosView: React.FC<ImportacaoCadastrosViewProps> = (
                           <XCircle className="w-3 h-3" />
                           <span>{p.motivo_invalido}</span>
                         </span>
+                      ) : p.codigo_repetido_na_planilha ? (
+                        <span className="inline-flex items-center gap-1 text-[10px] font-bold text-amber-800 bg-amber-100 border border-amber-300 px-2 py-0.5 rounded shadow-2xs" title="Código repetido na planilha: atualiza grupo/subgrupo e adiciona lote">
+                          <AlertTriangle className="w-3 h-3 text-amber-600" />
+                          <span>Atualiza (Código Repetido na Planilha)</span>
+                        </span>
                       ) : p.ja_existe_no_banco ? (
-                        <span className="inline-flex items-center gap-1 text-[10px] font-bold text-indigo-700 bg-indigo-100 px-2 py-0.5 rounded">
-                          <CheckCircle2 className="w-3 h-3" />
-                          <span>{p.saldo > 0 ? 'Já existe (Atualizar Saldo/Lote)' : 'Já existe no Catálogo'}</span>
+                        <span className="inline-flex items-center gap-1 text-[10px] font-bold text-indigo-800 bg-indigo-100 border border-indigo-300 px-2 py-0.5 rounded shadow-2xs" title="Código já existe no banco: atualiza grupo, subgrupo, descrição, custos e soma saldos">
+                          <CheckCircle2 className="w-3 h-3 text-indigo-600" />
+                          <span>Atualiza (Código Existente no Banco)</span>
                         </span>
                       ) : (
-                        <span className="inline-flex items-center gap-1 text-[10px] font-bold text-emerald-700 bg-emerald-100 px-2 py-0.5 rounded">
-                          <CheckCircle2 className="w-3 h-3" />
+                        <span className="inline-flex items-center gap-1 text-[10px] font-bold text-emerald-800 bg-emerald-100 border border-emerald-300 px-2 py-0.5 rounded shadow-2xs">
+                          <CheckCircle2 className="w-3 h-3 text-emerald-600" />
                           <span>{p.saldo > 0 ? 'Novo + Carga Estoque' : 'Novo Produto'}</span>
                         </span>
                       )}

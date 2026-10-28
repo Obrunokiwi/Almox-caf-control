@@ -30,7 +30,8 @@ import {
   FileText,
   Download,
   Layers,
-  Tag
+  Tag,
+  Star
 } from 'lucide-react';
 import type {
   Requisicao,
@@ -50,6 +51,7 @@ import {
 import { PdfPrintModal } from './PdfPrintModal.tsx';
 import { HelpFloatingModal } from './HelpFloatingModal.tsx';
 import { CentroCustoAlertBanner } from './CentroCustoAlertBanner.tsx';
+import { AvaliacaoAtendimentoModal } from './AvaliacaoAtendimentoModal.tsx';
 import { useToast } from '../context/ToastContext.tsx';
 import { ConfirmDeleteModal } from './ConfirmDeleteModal.tsx';
 import { QuantityStepper } from './QuantityStepper.tsx';
@@ -308,8 +310,41 @@ export const RequisicoesView: React.FC<RequisicoesViewProps> = ({
     return filteredRequisicoes.slice(start, start + pageSize);
   }, [filteredRequisicoes, currentPage, pageSize]);
 
-  // Abre criação de nova requisição
-  const handleAbrirCriacao = () => {
+  // Modal de Avaliação de Atendimento
+  const [pendingReqToRate, setPendingReqToRate] = useState<{
+    id: number;
+    numero_requisicao: string;
+    centro_custo_nome?: string;
+    data_atendimento?: string | null;
+  } | null>(null);
+  const [isRatingModalOpen, setIsRatingModalOpen] = useState(false);
+
+  // Abre criação de nova requisição (verifica se há avaliação pendente antes)
+  const handleAbrirCriacao = async () => {
+    try {
+      const res = await fetch('/api/requisicoes/pendente-avaliacao', {
+        headers: getAuthHeaders(),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        if (data.requisicao) {
+          setPendingReqToRate(data.requisicao);
+          setIsRatingModalOpen(true);
+          toast.info(
+            'Avaliação de Atendimento Pendente',
+            'Sua opinião é fundamental! Avalie o atendimento da requisição anterior para prosseguir com o novo pedido.'
+          );
+          return;
+        }
+      }
+    } catch (err) {
+      console.error('Erro ao verificar avaliação pendente:', err);
+    }
+
+    abrirFormularioNovaRequisicao();
+  };
+
+  const abrirFormularioNovaRequisicao = () => {
     setFormCcId(currentUser?.centro_custo_id || centrosCusto[0]?.id || 1);
     setFormPrioridade('normal');
     setFormObservacao('');
@@ -1380,6 +1415,31 @@ export const RequisicoesView: React.FC<RequisicoesViewProps> = ({
                           <Eye className="w-3.5 h-3.5" />
                           <span>{isAlmoxarifeOrAdmin && r.status === 'pendente' ? 'ANALISAR' : 'VER'}</span>
                         </button>
+
+                        {r.status === 'aprovada_atendida' && (
+                          (r as any).avaliacao_status === 'avaliado' ? (
+                            <span
+                              title={`Avaliação registrada: Média ${Number((r as any).avaliacao_media || 5).toFixed(1)} / 5.0 ⭐`}
+                              className="px-2 py-1 rounded bg-amber-50 text-amber-800 border border-amber-300 text-xs font-bold flex items-center gap-1 font-mono shrink-0"
+                            >
+                              <Star className="w-3.5 h-3.5 fill-amber-400 text-amber-500" />
+                              <span>{Number((r as any).avaliacao_media || 5).toFixed(1)}</span>
+                            </span>
+                          ) : (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setPendingReqToRate(r);
+                                setIsRatingModalOpen(true);
+                              }}
+                              title="Avaliar atendimento desta requisição"
+                              className="px-2 py-1 rounded bg-amber-100 hover:bg-amber-200 text-amber-900 border border-amber-300 text-xs font-bold flex items-center gap-1 cursor-pointer shrink-0"
+                            >
+                              <Star className="w-3.5 h-3.5 fill-amber-400 text-amber-600" />
+                              <span>AVALIAR</span>
+                            </button>
+                          )
+                        )}
 
                         <button
                           type="button"
@@ -2637,6 +2697,17 @@ export const RequisicoesView: React.FC<RequisicoesViewProps> = ({
           </div>
         </div>
       )}
+
+      <AvaliacaoAtendimentoModal
+        isOpen={isRatingModalOpen}
+        requisicao={pendingReqToRate}
+        onClose={() => setIsRatingModalOpen(false)}
+        onAvaliacaoConcluida={() => {
+          setIsRatingModalOpen(false);
+          setPendingReqToRate(null);
+          abrirFormularioNovaRequisicao();
+        }}
+      />
 
       <PdfPrintModal
         pdfDoc={pdfPreviewDoc}
