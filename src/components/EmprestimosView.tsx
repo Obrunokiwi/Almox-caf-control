@@ -30,6 +30,7 @@ import type {
 import { useToast } from '../context/ToastContext.tsx';
 import { HelpFloatingModal } from './HelpFloatingModal.tsx';
 import { SearchableSelect, type SearchableOption } from './SearchableSelect.tsx';
+import { getAuthHeaders } from '../utils/apiUtils.ts';
 
 interface EmprestimosViewProps {
   emprestimos?: Emprestimo[];
@@ -121,8 +122,8 @@ export const EmprestimosView: React.FC<EmprestimosViewProps> = ({
     setIsLoading(true);
     try {
       const [resLoans, resForn] = await Promise.all([
-        fetch('/api/emprestimos-institucionais'),
-        fetch('/api/fornecedores'),
+        fetch('/api/emprestimos-institucionais', { headers: getAuthHeaders() }),
+        fetch('/api/fornecedores', { headers: getAuthHeaders() }),
       ]);
       if (resLoans.ok) {
         const dataLoans = await resLoans.json();
@@ -330,10 +331,7 @@ export const EmprestimosView: React.FC<EmprestimosViewProps> = ({
     try {
       const res = await fetch('/api/emprestimos-institucionais', {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `user:${currentUser?.id}`,
-        },
+        headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify({
           tipo: formTipo,
           entidade_id: formEntidadeId,
@@ -411,10 +409,7 @@ export const EmprestimosView: React.FC<EmprestimosViewProps> = ({
 
       const res = await fetch(`/api/emprestimos-institucionais/${devolucaoLoan.id}/devolver`, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `user:${currentUser?.id}`,
-        },
+        headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify({
           responsavel_entidade_parceira: devolucaoRespParceiro.trim() || null,
           observacao: devolucaoObs.trim() || null,

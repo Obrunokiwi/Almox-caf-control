@@ -33,6 +33,7 @@ import {
 import { PdfPrintModal } from './PdfPrintModal.tsx';
 import { HelpFloatingModal } from './HelpFloatingModal.tsx';
 import { useToast } from '../context/ToastContext.tsx';
+import { getAuthHeaders } from '../utils/apiUtils.ts';
 
 interface MovimentacoesViewProps {
   movimentacoes: Movimentacao[];
@@ -112,7 +113,7 @@ export const MovimentacoesView: React.FC<MovimentacoesViewProps> = ({
     setIsLoadingRequisicoesAtendidas(true);
     try {
       const res = await fetch(`/api/requisicoes/atendidas-por-centro-custo/${ccId}`, {
-        headers: { Authorization: `user:${currentUser?.id}` },
+        headers: getAuthHeaders(),
       });
       if (res.ok) {
         const data = await res.json();
@@ -243,10 +244,7 @@ export const MovimentacoesView: React.FC<MovimentacoesViewProps> = ({
     try {
       const res = await fetch('/api/movimentacoes/diversas', {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `user:${currentUser?.id}`,
-        },
+        headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify({
           natureza: naturezaDiversa,
           motivo_diverso: motivoDiverso,
@@ -349,10 +347,7 @@ export const MovimentacoesView: React.FC<MovimentacoesViewProps> = ({
     try {
       const res = await fetch(`/api/movimentacoes/${estornoItem.id}/estornar`, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `user:${currentUser?.id}`,
-        },
+        headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify({ justificativa: justificativa.trim() }),
       });
 

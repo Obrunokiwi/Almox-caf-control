@@ -31,6 +31,7 @@ import { useToast } from '../context/ToastContext.tsx';
 import { ConfirmDeleteModal } from './ConfirmDeleteModal.tsx';
 import { HelpFloatingModal } from './HelpFloatingModal.tsx';
 import { SearchableSelect, type SearchableOption } from './SearchableSelect.tsx';
+import { getAuthHeaders } from '../utils/apiUtils.ts';
 
 interface ProdutosViewProps {
   produtos: Produto[];
@@ -146,10 +147,7 @@ export const ProdutosView: React.FC<ProdutosViewProps> = ({
     const token = sessionStorage.getItem('multi_almox_token') || localStorage.getItem('multi_almox_token');
     const areaSigla = sessionStorage.getItem('multi_almox_area_sigla') || localStorage.getItem('multi_almox_area_sigla') || currentUser?.area_sigla || 'ALM';
     fetch('/api/grupos-produtos', {
-      headers: {
-        'Authorization': `Bearer ${token}`,
-        'X-Area-Sigla': areaSigla,
-      },
+      headers: getAuthHeaders(),
     })
       .then((r) => r.json())
       .then((data) => {
@@ -269,7 +267,9 @@ export const ProdutosView: React.FC<ProdutosViewProps> = ({
     // Sugere código sequencial numérico de 7 dígitos no padrão 414XXXX
     let codigoSugerido = '4140001';
     try {
-      const res = await fetch('/api/produtos/sugestao-codigo');
+      const res = await fetch('/api/produtos/sugestao-codigo', {
+        headers: getAuthHeaders(),
+      });
       if (res.ok) {
         const data = await res.json();
         if (data.codigo) codigoSugerido = data.codigo;
@@ -362,10 +362,7 @@ export const ProdutosView: React.FC<ProdutosViewProps> = ({
 
       const res = await fetch(url, {
         method,
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `user:${currentUser?.id}`,
-        },
+        headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify(payload),
       });
 
@@ -406,9 +403,7 @@ export const ProdutosView: React.FC<ProdutosViewProps> = ({
     try {
       const res = await fetch(`/api/produtos/${deletingProduto.id}`, {
         method: 'DELETE',
-        headers: {
-          'Authorization': `user:${currentUser?.id}`,
-        },
+        headers: getAuthHeaders(),
       });
       const data = await res.json();
       if (!res.ok) {
@@ -441,10 +436,7 @@ export const ProdutosView: React.FC<ProdutosViewProps> = ({
     try {
       const res = await fetch(`/api/produtos/${editingId}/fornecedores`, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `user:${currentUser?.id}`,
-        },
+        headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify({
           fornecedor_id: vincFornecedorId,
           marca: vincMarca ? vincMarca.trim().toUpperCase() : null,
@@ -475,7 +467,7 @@ export const ProdutosView: React.FC<ProdutosViewProps> = ({
     try {
       const res = await fetch(`/api/produtos/${editingId}/fornecedores/${vinculoId}`, {
         method: 'DELETE',
-        headers: { 'Authorization': `user:${currentUser?.id}` },
+        headers: getAuthHeaders(),
       });
       if (res.ok) {
         toast.info('Vínculo Removido', 'O vínculo de fornecedor/marca foi removido deste produto.');

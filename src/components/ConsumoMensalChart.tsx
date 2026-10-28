@@ -12,6 +12,7 @@ import {
 import { TrendingUp, RefreshCw, ChevronDown, ChevronUp } from 'lucide-react';
 import type { CentroCusto, Produto, Movimentacao } from '../types/index.ts';
 import { SearchableSelect, type SearchableOption } from './SearchableSelect.tsx';
+import { getAuthHeaders } from '../utils/apiUtils.ts';
 
 interface ConsumoMensalChartProps {
   centrosCusto: CentroCusto[];
@@ -229,7 +230,9 @@ export const ConsumoMensalChart: React.FC<ConsumoMensalChartProps> = ({
       if (selectedProdutoId) params.set('produto_id', selectedProdutoId);
       if (selectedCcId) params.set('centro_custo_id', selectedCcId);
 
-      const res = await fetch(`/api/relatorios/consumo-mensal?${params.toString()}`);
+      const res = await fetch(`/api/relatorios/consumo-mensal?${params.toString()}`, {
+        headers: getAuthHeaders(),
+      });
       if (res.ok) {
         const json = await res.json();
         setApiData(json);

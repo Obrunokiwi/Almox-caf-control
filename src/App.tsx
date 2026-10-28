@@ -69,6 +69,8 @@ export default function App() {
   const [isNovoEmprestimoOpen, setIsNovoEmprestimoOpen] = useState<boolean>(false);
   const [isResetDbModalOpen, setIsResetDbModalOpen] = useState<boolean>(false);
   const [isResettingDb, setIsResettingDb] = useState<boolean>(false);
+  const [isResetOperacionalModalOpen, setIsResetOperacionalModalOpen] = useState<boolean>(false);
+  const [isResettingOperacionalDb, setIsResettingOperacionalDb] = useState<boolean>(false);
 
   const { toast } = useToast();
 
@@ -360,6 +362,40 @@ export default function App() {
       toast.error('Falha de Conexão', 'Não foi possível comunicar com o servidor.');
     } finally {
       setIsResettingDb(false);
+    }
+  };
+
+  // Zerar banco de dados operacional (estoque, fornecedores, produtos, movimentações e requisições)
+  const handleResetOperacionalDb = () => {
+    setIsResetOperacionalModalOpen(true);
+  };
+
+  const handleConfirmResetOperacionalDb = async () => {
+    setIsResettingOperacionalDb(true);
+    try {
+      const token = sessionStorage.getItem('multi_almox_token') || localStorage.getItem('multi_almox_token');
+      const res = await fetch('/api/system/reset-operacional', {
+        method: 'POST',
+        headers: { 
+          'Authorization': `Bearer ${token}`,
+          'X-Area-Sigla': currentUser?.area_sigla || 'ALM'
+        },
+      });
+      const data = await res.json();
+      if (res.ok) {
+        toast.success(
+          'Banco Operacional Zerado',
+          data.message || 'Banco de dados de produtos, estoque, fornecedores e movimentações zerado com sucesso.'
+        );
+        setIsResetOperacionalModalOpen(false);
+        loadData();
+      } else {
+        toast.error('Erro ao Zerar Banco', data.error || 'Erro ao zerar banco de dados operacional.');
+      }
+    } catch {
+      toast.error('Falha de Conexão', 'Não foi possível comunicar com o servidor.');
+    } finally {
+      setIsResettingOperacionalDb(false);
     }
   };
 
@@ -710,6 +746,8 @@ export default function App() {
                 <BackupView
                   currentUser={currentUser}
                   onVoltar={handleReturnToGrid}
+                  onResetLogs={handleResetDb}
+                  onResetOperacional={handleResetOperacionalDb}
                 />
               )}
 
@@ -756,6 +794,16 @@ export default function App() {
         isProcessing={isResettingDb}
         onConfirm={handleConfirmResetDb}
         onClose={() => setIsResetDbModalOpen(false)}
+      />
+
+      <ConfirmDeleteModal
+        isOpen={isResetOperacionalModalOpen}
+        title="Zerar Banco de Dados Operacional"
+        entityName="Catálogo de Produtos, Estoque, Fornecedores e Movimentações"
+        description="ATENÇÃO: Esta ação excluirá PERMANENTEMENTE todos os produtos, lotes, movimentações, requisições, empréstimos, fornecedores e inventários do sistema. Usuários e Centros de Custo serão mantidos."
+        isProcessing={isResettingOperacionalDb}
+        onConfirm={handleConfirmResetOperacionalDb}
+        onClose={() => setIsResetOperacionalModalOpen(false)}
       />
     </div>
   );

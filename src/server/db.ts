@@ -1163,6 +1163,44 @@ export function resetDatabase() {
   clearAccessLogs();
 }
 
+export function resetOperationalDatabase() {
+  const areas = getAllActiveAreas();
+
+  for (const area of areas) {
+    try {
+      const areaDb = getAreaDb(area.sigla);
+      areaDb.exec(`
+        DELETE FROM movimentacoes;
+        DELETE FROM itens_requisicao;
+        DELETE FROM historico_requisicoes;
+        DELETE FROM requisicoes;
+        DELETE FROM itens_emprestimo_institucional;
+        DELETE FROM emprestimos_institucionais;
+        DELETE FROM emprestimos;
+        DELETE FROM itens_inventario;
+        DELETE FROM inventarios_estoque;
+        DELETE FROM itens_lista_reposicao;
+        DELETE FROM listas_reposicao;
+        DELETE FROM historico_notas_fiscais;
+        DELETE FROM notas_fiscais;
+        DELETE FROM produto_fornecedores;
+        DELETE FROM lotes_estoque;
+        DELETE FROM produtos;
+        DELETE FROM fornecedores;
+      `);
+    } catch (err: any) {
+      console.error(`[DB] Erro ao zerar banco da área ${area.sigla}:`, err.message);
+    }
+  }
+
+  try {
+    const central = getCentralDb();
+    central.exec(`DELETE FROM fornecedores;`);
+  } catch (err: any) {
+    console.error('[DB Central] Erro ao zerar fornecedores central:', err.message);
+  }
+}
+
 /**
  * Inicialização completa da camada de banco de dados com diagnóstico detalhado
  */

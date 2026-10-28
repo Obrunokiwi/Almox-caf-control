@@ -51,6 +51,7 @@ import { HelpFloatingModal } from './HelpFloatingModal.tsx';
 import { CentroCustoAlertBanner } from './CentroCustoAlertBanner.tsx';
 import { SearchableSelect, type SearchableOption } from './SearchableSelect.tsx';
 import { useToast } from '../context/ToastContext.tsx';
+import { getAuthHeaders } from '../utils/apiUtils.ts';
 
 interface EntradasViewProps {
   produtos: Produto[];
@@ -196,9 +197,7 @@ export const EntradasView: React.FC<EntradasViewProps> = ({
       if (filtroSituacao !== 'todas') params.append('situacao', filtroSituacao);
 
       const res = await fetch(`/api/notas-fiscais?${params.toString()}`, {
-        headers: {
-          Authorization: `user:${currentUser?.id}`,
-        },
+        headers: getAuthHeaders(),
       });
       if (res.ok) {
         const data = await res.json();
@@ -209,7 +208,7 @@ export const EntradasView: React.FC<EntradasViewProps> = ({
     } finally {
       setIsLoadingNotas(false);
     }
-  }, [canManage, filtroDoc, filtroProduto, filtroSituacao, currentUser?.id]);
+  }, [canManage, filtroDoc, filtroProduto, filtroSituacao]);
 
   useEffect(() => {
     carregarNotas();
@@ -221,9 +220,7 @@ export const EntradasView: React.FC<EntradasViewProps> = ({
     setValidationError(null);
     try {
       const res = await fetch(`/api/notas-fiscais/${notaId}`, {
-        headers: {
-          Authorization: `user:${currentUser?.id}`,
-        },
+        headers: getAuthHeaders(),
       });
       if (!res.ok) {
         const errData = await res.json();
@@ -378,10 +375,7 @@ export const EntradasView: React.FC<EntradasViewProps> = ({
     try {
       const res = await fetch('/api/entradas', {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `user:${currentUser?.id}`,
-        },
+        headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify({
           documento_referencia: newNotaDoc.trim().toUpperCase(),
           fornecedor_id: newNotaFornecedorId,
@@ -508,10 +502,7 @@ export const EntradasView: React.FC<EntradasViewProps> = ({
     try {
       const res = await fetch(`/api/notas-fiscais/${detalheNota.id}`, {
         method: 'PUT',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `user:${currentUser?.id}`,
-        },
+        headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify({
           numero_documento: detalheNota.numero_documento.trim().toUpperCase(),
           fornecedor_id: detalheNota.fornecedor_id || null,
@@ -562,9 +553,7 @@ export const EntradasView: React.FC<EntradasViewProps> = ({
     try {
       const res = await fetch(`/api/notas-fiscais/${detalheNota.id}/fechar`, {
         method: 'POST',
-        headers: {
-          Authorization: `user:${currentUser?.id}`,
-        },
+        headers: getAuthHeaders(),
       });
 
       const data = await res.json();
@@ -597,7 +586,7 @@ export const EntradasView: React.FC<EntradasViewProps> = ({
       let itensNota = detalheItens;
       if (!detalheNota || detalheNota.id !== nota.id) {
         const res = await fetch(`/api/notas-fiscais/${nota.id}`, {
-          headers: { Authorization: `user:${currentUser?.id}` },
+          headers: getAuthHeaders(),
         });
         if (res.ok) {
           const data = await res.json();

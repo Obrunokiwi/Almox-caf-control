@@ -53,6 +53,7 @@ import { CentroCustoAlertBanner } from './CentroCustoAlertBanner.tsx';
 import { useToast } from '../context/ToastContext.tsx';
 import { ConfirmDeleteModal } from './ConfirmDeleteModal.tsx';
 import { QuantityStepper } from './QuantityStepper.tsx';
+import { getAuthHeaders } from '../utils/apiUtils.ts';
 
 interface RequisicoesViewProps {
   requisicoes: Requisicao[];
@@ -383,10 +384,7 @@ export const RequisicoesView: React.FC<RequisicoesViewProps> = ({
     try {
       const res = await fetch('/api/requisicoes', {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `user:${currentUser?.id}`,
-        },
+        headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify({
           centro_custo_id: formCcId,
           prioridade: formPrioridade,
@@ -432,7 +430,7 @@ export const RequisicoesView: React.FC<RequisicoesViewProps> = ({
 
     try {
       const res = await fetch(`/api/requisicoes/${req.id}`, {
-        headers: { 'Authorization': `user:${currentUser?.id}` },
+        headers: getAuthHeaders(),
       });
       const data = await res.json();
       if (res.ok) {
@@ -618,10 +616,7 @@ export const RequisicoesView: React.FC<RequisicoesViewProps> = ({
     try {
       const res = await fetch(`/api/requisicoes/${selectedReq.id}/aprovar`, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `user:${currentUser?.id}`,
-        },
+        headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify({
           decisoes_itens: decisoesPayload,
         }),
@@ -668,10 +663,7 @@ export const RequisicoesView: React.FC<RequisicoesViewProps> = ({
     try {
       const res = await fetch(`/api/requisicoes/${selectedReq.id}/rejeitar`, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `user:${currentUser?.id}`,
-        },
+        headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify({ motivo_rejeicao: motivoFinal }),
       });
       const data = await res.json();
@@ -704,9 +696,7 @@ export const RequisicoesView: React.FC<RequisicoesViewProps> = ({
     try {
       const res = await fetch(`/api/requisicoes/${deletingRequisicao.id}`, {
         method: 'DELETE',
-        headers: {
-          'Authorization': `user:${currentUser?.id}`,
-        },
+        headers: getAuthHeaders(),
       });
       const data = await res.json();
       if (!res.ok) {

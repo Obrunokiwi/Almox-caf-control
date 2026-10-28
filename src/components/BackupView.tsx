@@ -13,7 +13,9 @@ import {
   Layers,
   Archive,
   Info,
-  Clock
+  Clock,
+  Trash2,
+  AlertTriangle
 } from 'lucide-react';
 import type { Usuario } from '../types/index.ts';
 import { BackupConfirmationModal, type ExportFormat } from './BackupConfirmationModal.tsx';
@@ -21,6 +23,8 @@ import { BackupConfirmationModal, type ExportFormat } from './BackupConfirmation
 interface BackupViewProps {
   currentUser: Usuario;
   onVoltar: () => void;
+  onResetLogs?: () => void;
+  onResetOperacional?: () => void;
 }
 
 interface BackupInfo {
@@ -40,6 +44,8 @@ interface BackupInfo {
 export const BackupView: React.FC<BackupViewProps> = ({
   currentUser,
   onVoltar,
+  onResetLogs,
+  onResetOperacional,
 }) => {
   const [info, setInfo] = useState<BackupInfo | null>(null);
   const [loading, setLoading] = useState(false);
@@ -312,6 +318,67 @@ export const BackupView: React.FC<BackupViewProps> = ({
           </div>
         </div>
       </div>
+
+      {/* =========================================================================
+          MANUTENÇÃO DE DADOS & ZONA DE PERIGO (APENAS ADMINISTRADORES)
+         ========================================================================= */}
+      {currentUser?.perfil === 'admin' && (
+        <div className="bg-rose-50/60 rounded-xl border border-rose-200/80 p-6 space-y-4">
+          <div>
+            <h2 className="text-sm font-bold text-rose-900 uppercase tracking-wider flex items-center gap-2">
+              <AlertTriangle className="w-4 h-4 text-rose-600" />
+              Zona de Perigo & Manutenção de Banco de Dados
+            </h2>
+            <p className="text-xs text-rose-700/80 mt-0.5">
+              Operações destrutivas de limpeza de logs e reinicialização completa da base operacional de estoque e fornecedores.
+            </p>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            {/* Limpar Logs */}
+            <div className="bg-white rounded-lg border border-rose-200 p-4.5 flex flex-col justify-between space-y-3 shadow-xs">
+              <div>
+                <div className="flex items-center gap-2 mb-1">
+                  <RefreshCw className="w-4 h-4 text-amber-600" />
+                  <h3 className="font-bold text-slate-800 text-sm">Limpar Logs de Auditoria</h3>
+                </div>
+                <p className="text-xs text-slate-600 leading-relaxed">
+                  Exclui o histórico de acesso e auditoria. Os dados operacionais (produtos, lotes, requisições) são mantidos intactos.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={onResetLogs}
+                className="w-full py-2 px-3 bg-amber-600 hover:bg-amber-700 active:bg-amber-800 text-white font-bold rounded-lg text-xs uppercase tracking-wider transition-all flex items-center justify-center gap-2 cursor-pointer shadow-xs"
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+                <span>Limpar Logs de Acesso e Auditoria</span>
+              </button>
+            </div>
+
+            {/* Zerar Banco Operacional */}
+            <div className="bg-white rounded-lg border border-rose-300 p-4.5 flex flex-col justify-between space-y-3 shadow-xs">
+              <div>
+                <div className="flex items-center gap-2 mb-1">
+                  <AlertTriangle className="w-4 h-4 text-rose-600" />
+                  <h3 className="font-bold text-rose-900 text-sm">Zerar Banco Operacional</h3>
+                </div>
+                <p className="text-xs text-slate-600 leading-relaxed">
+                  Exclui <strong>TODOS</strong> os produtos, estoques, lotes, fornecedores, movimentações e requisições. Mantém usuários e setores.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={onResetOperacional}
+                className="w-full py-2 px-3 bg-rose-600 hover:bg-rose-700 active:bg-rose-800 text-white font-bold rounded-lg text-xs uppercase tracking-wider transition-all flex items-center justify-center gap-2 cursor-pointer shadow-sm shadow-rose-900/20"
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+                <span>Zerar Banco de Dados Operacional</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* =========================================================================
           DETALHAMENTO DE REGISTROS POR TABELA

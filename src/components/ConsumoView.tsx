@@ -20,6 +20,7 @@ import {
 } from 'lucide-react';
 import type { Consumo, ItemConsumo, Produto, LoteEstoque, CentroCusto, Usuario } from '../types/index.ts';
 import { SearchableSelect, type SearchableOption } from './SearchableSelect.tsx';
+import { getAuthHeaders } from '../utils/apiUtils.ts';
 
 interface ConsumoViewProps {
   currentUser: Usuario;
@@ -110,10 +111,7 @@ export const ConsumoView: React.FC<ConsumoViewProps> = ({
       if (searchTerm) url += `busca=${encodeURIComponent(searchTerm)}&`;
 
       const res = await fetch(url, {
-        headers: {
-          Authorization: `Bearer ${localStorage.getItem('token') || ''}`,
-          'X-Area-Sigla': activeAreaSigla,
-        },
+        headers: getAuthHeaders(),
       });
       if (!res.ok) throw new Error('Falha ao carregar registros de consumo.');
       const data = await res.json();
@@ -141,10 +139,7 @@ export const ConsumoView: React.FC<ConsumoViewProps> = ({
       setLoadingLotes(true);
       try {
         const res = await fetch(`/api/produtos/${prodSelectId}/lotes`, {
-          headers: {
-            Authorization: `Bearer ${localStorage.getItem('token') || ''}`,
-            'X-Area-Sigla': activeAreaSigla,
-          },
+          headers: getAuthHeaders(),
         });
         if (res.ok) {
           const data: LoteEstoque[] = await res.json();
@@ -251,11 +246,7 @@ export const ConsumoView: React.FC<ConsumoViewProps> = ({
     try {
       const res = await fetch('/api/consumos', {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${localStorage.getItem('token') || ''}`,
-          'X-Area-Sigla': activeAreaSigla,
-        },
+        headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify({
           centro_custo_id: novoCentroCustoId,
           responsavel_recebimento: novoResponsavel.trim(),
@@ -294,10 +285,7 @@ export const ConsumoView: React.FC<ConsumoViewProps> = ({
   const handleOpenDetalhes = async (c: Consumo) => {
     try {
       const res = await fetch(`/api/consumos/${c.id}`, {
-        headers: {
-          Authorization: `Bearer ${localStorage.getItem('token') || ''}`,
-          'X-Area-Sigla': activeAreaSigla,
-        },
+        headers: getAuthHeaders(),
       });
       if (res.ok) {
         const fullConsumo = await res.json();
@@ -313,10 +301,7 @@ export const ConsumoView: React.FC<ConsumoViewProps> = ({
   const handleOpenPrint = async (c: Consumo) => {
     try {
       const res = await fetch(`/api/consumos/${c.id}`, {
-        headers: {
-          Authorization: `Bearer ${localStorage.getItem('token') || ''}`,
-          'X-Area-Sigla': activeAreaSigla,
-        },
+        headers: getAuthHeaders(),
       });
       if (res.ok) {
         const fullConsumo = await res.json();
@@ -342,11 +327,7 @@ export const ConsumoView: React.FC<ConsumoViewProps> = ({
     try {
       const res = await fetch(`/api/consumos/${selectedConsumo.id}/estorno`, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${localStorage.getItem('token') || ''}`,
-          'X-Area-Sigla': activeAreaSigla,
-        },
+        headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify({ justificativa: justificativaEstorno.trim() }),
       });
 

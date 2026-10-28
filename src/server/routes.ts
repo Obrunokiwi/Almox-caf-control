@@ -14,6 +14,7 @@ import {
   getSeedSql, 
   runInTransaction, 
   resetDatabase, 
+  resetOperationalDatabase,
   updateOverdueLoans, 
   registrarLogAcesso 
 } from './db.ts';
@@ -7049,6 +7050,22 @@ apiRouter.post('/system/reset', (req, res) => {
     res.json({ message: 'Logs de acesso e auditoria limpos com sucesso. Os dados operacionais foram mantidos intactos.' });
   } catch (err: any) {
     res.status(500).json({ error: 'Erro ao limpar logs de acesso: ' + err.message });
+  }
+});
+
+apiRouter.post('/system/reset-operacional', (req, res) => {
+  const user = authenticateRequest(req);
+  if (!user || user.perfil !== 'admin') {
+    res.status(403).json({ error: 'Apenas Administradores podem zerar o banco de dados operacional' });
+    return;
+  }
+
+  try {
+    resetOperationalDatabase();
+    registrarLogAcesso(user, 'ZERAR_BANCO_OPERACIONAL', 'Catálogo de produtos, estoques, lotes, movimentações, fornecedores e requisições zerados pelo administrador.');
+    res.json({ message: 'Banco de dados operacional (produtos, estoques, lotes, fornecedores, requisições e movimentações) zerado com sucesso.' });
+  } catch (err: any) {
+    res.status(500).json({ error: 'Erro ao zerar banco de dados operacional: ' + err.message });
   }
 });
 
