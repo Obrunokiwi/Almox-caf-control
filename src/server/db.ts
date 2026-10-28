@@ -1014,6 +1014,28 @@ export function syncMirrorsToArea(areaDb: DatabaseSync) {
       );
     }
 
+    // 3. Grupos de produtos
+    const grupos = central.prepare('SELECT id, codigo, nome, tipo_padrao, ativo FROM grupos_produtos').all() as any[];
+    const insG = areaDb.prepare(`
+      INSERT OR REPLACE INTO grupos_produtos (id, codigo, nome, tipo_padrao, ativo)
+      VALUES (?, ?, ?, ?, ?)
+    `);
+    for (const g of grupos) {
+      insG.run(g.id, g.codigo, g.nome, g.tipo_padrao, g.ativo ?? 1);
+    }
+
+    // 4. Subgrupos de produtos
+    const subgrupos = central.prepare('SELECT id, grupo_id, codigo, nome, ativo, criado_em FROM subgrupos_produtos').all() as any[];
+    const insSg = areaDb.prepare(`
+      INSERT OR REPLACE INTO subgrupos_produtos (id, grupo_id, codigo, nome, ativo, criado_em)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `);
+    for (const sg of subgrupos) {
+      insSg.run(sg.id, sg.grupo_id, sg.codigo, sg.nome, sg.ativo ?? 1, sg.criado_em || new Date().toISOString());
+    }
+
+
+
     const userIds = users.map((u) => u.id);
     if (userIds.length > 0) {
       const placeholders = userIds.map(() => '?').join(',');
