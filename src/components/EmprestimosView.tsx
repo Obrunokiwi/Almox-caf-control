@@ -303,8 +303,8 @@ export const EmprestimosView: React.FC<EmprestimosViewProps> = ({
     setDraftItens((prev) => prev.filter((i) => i.tempId !== tempId));
   };
 
-  const handleSalvarEmprestimo = async (e: React.FormEvent) => {
-    e.preventDefault();
+  const handleSalvarEmprestimo = async (e: React.FormEvent, gerarFicha: boolean = true) => {
+    if (e && e.preventDefault) e.preventDefault();
     if (!formEntidadeId) {
       const msg = 'Selecione o Hospital / Entidade Parceira (ou Fornecedor) para registrar a operação.';
       setFormError(msg);
@@ -378,7 +378,7 @@ export const EmprestimosView: React.FC<EmprestimosViewProps> = ({
       await fetchInstitucionalData();
       onRefresh();
 
-      if (data.data) {
+      if (gerarFicha && data.data) {
         setFichaImpressao({
           loan: data.data,
           modoFicha: 'emprestimo',
@@ -828,7 +828,7 @@ export const EmprestimosView: React.FC<EmprestimosViewProps> = ({
                     <span className="absolute left-2.5 top-2 text-xs font-bold text-slate-400">R$</span>
                     <input
                       type="number"
-                      step="0.01"
+                      step="any"
                       min="0"
                       value={itemCustoUnitario}
                       onChange={(e) => setItemCustoUnitario(Math.max(0, parseFloat(e.target.value) || 0))}
@@ -846,6 +846,7 @@ export const EmprestimosView: React.FC<EmprestimosViewProps> = ({
                   <input
                     type="number"
                     min="1"
+                    step="any"
                     value={itemQuantidade}
                     onChange={(e) => setItemQuantidade(Math.max(1, Number(e.target.value)))}
                     className="w-full px-3 py-2 bg-white border border-slate-300 rounded text-xs text-slate-800 font-mono font-bold"
@@ -948,30 +949,42 @@ export const EmprestimosView: React.FC<EmprestimosViewProps> = ({
               />
             </div>
 
-            <div className="pt-3 border-t border-slate-200 flex items-center justify-end gap-3">
+            <div className="pt-3 border-t border-slate-200 flex flex-wrap items-center justify-end gap-2.5">
               <button
                 type="button"
                 onClick={() => setIsFormOpen(false)}
-                className="px-4 py-2 rounded text-xs font-semibold text-slate-600 hover:bg-slate-100 cursor-pointer"
+                className="px-4 py-2 rounded-lg text-xs font-semibold text-slate-600 hover:bg-slate-100 cursor-pointer transition-colors"
               >
                 Cancelar
               </button>
+
+              <button
+                type="button"
+                disabled={isSubmitting}
+                onClick={(e) => handleSalvarEmprestimo(e, false)}
+                className="px-4 py-2 bg-slate-800 hover:bg-slate-900 active:bg-black text-white font-bold rounded-lg text-xs shadow flex items-center gap-1.5 uppercase tracking-wider cursor-pointer disabled:opacity-50 transition-colors"
+              >
+                <Save className="w-4 h-4 text-emerald-400" />
+                <span>{isSubmitting ? 'Salvando...' : 'Salvar Empréstimo'}</span>
+              </button>
+
               <button
                 type="submit"
                 disabled={isSubmitting}
-                className={`px-5 py-2 rounded text-xs font-bold uppercase tracking-wider text-white flex items-center gap-1.5 shadow cursor-pointer disabled:opacity-50 ${
+                onClick={(e) => handleSalvarEmprestimo(e, true)}
+                className={`px-5 py-2 rounded-lg text-xs font-bold uppercase tracking-wider text-white flex items-center gap-1.5 shadow cursor-pointer disabled:opacity-50 transition-colors ${
                   formTipo === 'recebido'
                     ? 'bg-emerald-600 hover:bg-emerald-700'
                     : 'bg-indigo-600 hover:bg-indigo-700'
                 }`}
               >
-                <Save className="w-4 h-4" />
+                <CheckCircle2 className="w-4 h-4" />
                 <span>
                   {isSubmitting
-                    ? 'Registrando...'
+                    ? 'Confirmando...'
                     : formTipo === 'recebido'
-                    ? 'Confirmar Entrada por Empréstimo Recebido e Gerar Ficha'
-                    : 'Confirmar Empréstimo Concedido e Gerar Ficha p/ Assinatura'}
+                    ? 'Confirmar Entrada e Gerar Ficha'
+                    : 'Confirmar Concessão e Gerar Ficha'}
                 </span>
               </button>
             </div>
