@@ -1013,6 +1013,35 @@ apiRouter.post('/auth/login', (req, res) => {
     return;
   }
 
+  // Verifica se o cadastro está aguardando autorização do Administrador
+  if (user.status_autorizacao === 'pendente') {
+    registrarLogAcesso(user, clientIp, 'login_bloqueado', 'Cadastro aguardando autorização do Administrador', area_sigla);
+    res.status(403).json({
+      status: 'pendente',
+      error: 'Seu cadastro está na lista de espera aguardando autorização do Administrador. Aguarde a liberação do seu acesso para entrar no sistema.',
+    });
+    return;
+  }
+
+  // Verifica se o cadastro foi recusado
+  if (user.status_autorizacao === 'rejeitado') {
+    registrarLogAcesso(user, clientIp, 'login_bloqueado', 'Cadastro recusado pelo Administrador', area_sigla);
+    res.status(403).json({
+      status: 'rejeitado',
+      error: 'Sua solicitação de cadastro foi recusada pelo Administrador. Caso necessário, contate a gestão do Almoxarifado.',
+    });
+    return;
+  }
+
+  // Verifica se o usuário está inativo
+  if (user.ativo === 0) {
+    registrarLogAcesso(user, clientIp, 'login_bloqueado', 'Usuário inativo', area_sigla);
+    res.status(403).json({
+      error: 'Este usuário está inativo no sistema. Contate o Administrador.',
+    });
+    return;
+  }
+
   // Se o admin logou com senha padrão mas o banco continha outro hash legado, sincroniza para admin123
   if (isDefaultAdminMatch && user.senha_hash !== hash && (senha === 'admin123' || senha === '123456')) {
     try {
@@ -1120,8 +1149,8 @@ apiRouter.post('/auth/cadastrar-solicitante', (req, res) => {
 
     runInTransaction(() => {
       const stmt = central.prepare(`
-        INSERT INTO usuarios (codigo, nome, login, senha_hash, cpf, email, perfil, cargo_nome, permissoes, centro_custo_id, ativo)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+        INSERT INTO usuarios (codigo, nome, login, senha_hash, cpf, email, perfil, cargo_nome, permissoes, centro_custo_id, ativo, status_autorizacao)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 'pendente')
       `);
       const resStmt = stmt.run(
         codFinal,
@@ -1149,11 +1178,12 @@ apiRouter.post('/auth/cadastrar-solicitante', (req, res) => {
 
     // Sincroniza espelhos locais
     syncMirrorsToAllAreas();
-    registrarLogAcesso({ login: cleanLogin }, clientIp, 'cadastro_solicitante', `Novo auto-cadastro de Solicitante: ${nome.trim()} (CPF ${formattedCpf})`);
+    registrarLogAcesso({ login: cleanLogin }, clientIp, 'cadastro_solicitante_pendente', `Novo cadastro de Solicitante na Lista de Espera: ${nome.trim()} (CPF ${formattedCpf})`);
 
     res.status(201).json({
       success: true,
-      message: 'Usuário Solicitante cadastrado com sucesso! Você já pode realizar o login com seu usuário e senha.',
+      status: 'pendente',
+      message: 'Solicitação enviada com sucesso! Seu cadastro está na Lista de Espera e aguarda autorização do Administrador para liberação do acesso.',
       login: cleanLogin,
     });
   } catch (err: any) {
@@ -1680,13 +1710,15 @@ apiRouter.delete('/centros-custo/:id', (req, res) => {
 // ============================================================================
 
 apiRouter.get('/usuarios', (req, res) => {
-  const { busca, ativo, perfil, centro_custo_id } = req.query;
+  const { busca, ativo, perfil, centro_custo_id, status_autorizacao } = req.query;
   const central = getCentralDb();
 
   let sql = `
     SELECT u.id, u.codigo, u.nome, u.login, u.cpf, u.email, u.perfil, 
            u.cargo_nome, u.permissoes,
-           u.centro_custo_id, u.empresa_id, u.ativo, u.criado_em, u.ultimo_acesso,
+           u.centro_custo_id, u.empresa_id, u.ativo, 
+           COALESCE(u.status_autorizacao, 'aprovado') as status_autorizacao,
+           u.criado_em, u.ultimo_acesso,
            cc.nome as centro_custo_nome, cc.codigo as centro_custo_codigo,
            eu.nome as empresa_nome
     FROM usuarios u
@@ -1695,6 +1727,11 @@ apiRouter.get('/usuarios', (req, res) => {
     WHERE 1=1
   `;
   const params: any[] = [];
+
+  if (status_autorizacao && status_autorizacao !== 'todos') {
+    sql += " AND COALESCE(u.status_autorizacao, 'aprovado') = ?";
+    params.push(status_autorizacao);
+  }
 
   if (ativo === '1' || ativo === 'true') {
     sql += ' AND u.ativo = 1';
@@ -1718,7 +1755,7 @@ apiRouter.get('/usuarios', (req, res) => {
     params.push(term, term, term, term, term);
   }
 
-  sql += ' ORDER BY u.nome ASC';
+  sql += " ORDER BY CASE WHEN u.status_autorizacao = 'pendente' THEN 0 ELSE 1 END ASC, u.nome ASC";
   const rawList = central.prepare(sql).all(...params) as any[];
   const userModStmt = central.prepare('SELECT modulo_chave FROM usuario_modulos WHERE usuario_id = ?');
   const userAreaStmt = central.prepare(`
@@ -2021,6 +2058,121 @@ apiRouter.patch('/usuarios/:id/toggle', (req, res) => {
   syncMirrorsToAllAreas();
 
   res.json({ id, ativo: novoAtivo, message: novoAtivo ? 'Usuário ativado' : 'Usuário inativado' });
+});
+
+apiRouter.patch('/usuarios/:id/autorizar', (req, res) => {
+  const user = authenticateRequest(req);
+  if (!user || user.perfil !== 'admin') {
+    res.status(403).json({ error: 'Apenas Administradores podem autorizar cadastros da lista de espera' });
+    return;
+  }
+
+  const { id } = req.params;
+  const { area_ids, centro_custo_id, perfil, modulos } = req.body || {};
+  const central = getCentralDb();
+  const alvo = central.prepare('SELECT id, nome, login, perfil, status_autorizacao FROM usuarios WHERE id = ?').get(id) as any;
+
+  if (!alvo) {
+    res.status(404).json({ error: 'Usuário não encontrado' });
+    return;
+  }
+
+  try {
+    runInTransaction(() => {
+      const targetPerfil = perfil || alvo.perfil || 'requisitante';
+      const targetCcId = centro_custo_id !== undefined ? (centro_custo_id ? Number(centro_custo_id) : null) : undefined;
+
+      if (targetCcId !== undefined) {
+        central.prepare(`
+          UPDATE usuarios 
+          SET status_autorizacao = 'aprovado', 
+              ativo = 1,
+              centro_custo_id = ?,
+              perfil = ?,
+              cargo_nome = ?
+          WHERE id = ?
+        `).run(targetCcId, targetPerfil, targetPerfil, id);
+      } else {
+        central.prepare(`
+          UPDATE usuarios 
+          SET status_autorizacao = 'aprovado', 
+              ativo = 1,
+              perfil = ?,
+              cargo_nome = ?
+          WHERE id = ?
+        `).run(targetPerfil, targetPerfil, id);
+      }
+
+      // Atualiza áreas autorizadas se especificadas
+      if (Array.isArray(area_ids)) {
+        central.prepare('DELETE FROM usuario_areas WHERE usuario_id = ?').run(id);
+        const insArea = central.prepare('INSERT OR IGNORE INTO usuario_areas (usuario_id, area_id) VALUES (?, ?)');
+        const finalAreaIds = area_ids.length > 0 ? area_ids : [1, 2];
+        for (const aId of finalAreaIds) {
+          insArea.run(id, Number(aId));
+        }
+      }
+
+      // Atualiza módulos se especificados
+      if (Array.isArray(modulos) && modulos.length > 0) {
+        central.prepare('DELETE FROM usuario_modulos WHERE usuario_id = ?').run(id);
+        const insMod = central.prepare('INSERT OR IGNORE INTO usuario_modulos (usuario_id, modulo_chave) VALUES (?, ?)');
+        for (const m of modulos) {
+          insMod.run(id, m);
+        }
+      }
+    }, central);
+
+    syncMirrorsToAllAreas();
+
+    const clientIp = String(req.headers['x-forwarded-for'] || req.socket.remoteAddress || '127.0.0.1');
+    registrarLogAcesso(user, clientIp, 'usuario_autorizado', `Cadastro do usuário "${alvo.nome}" (${alvo.login}) foi autorizado e liberado com sucesso`);
+
+    const updatedUser = getUserById(Number(id));
+    res.json({
+      success: true,
+      message: `Usuário "${alvo.nome}" autorizado com sucesso! O acesso já está liberado.`,
+      user: updatedUser,
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: 'Erro ao autorizar usuário: ' + err.message });
+  }
+});
+
+apiRouter.patch('/usuarios/:id/rejeitar', (req, res) => {
+  const user = authenticateRequest(req);
+  if (!user || user.perfil !== 'admin') {
+    res.status(403).json({ error: 'Apenas Administradores podem recusar cadastros da lista de espera' });
+    return;
+  }
+
+  const { id } = req.params;
+  const { motivo } = req.body || {};
+  const central = getCentralDb();
+  const alvo = central.prepare('SELECT id, nome, login FROM usuarios WHERE id = ?').get(id) as any;
+
+  if (!alvo) {
+    res.status(404).json({ error: 'Usuário não encontrado' });
+    return;
+  }
+
+  try {
+    central.prepare("UPDATE usuarios SET status_autorizacao = 'rejeitado', ativo = 0 WHERE id = ?").run(id);
+    syncMirrorsToAllAreas();
+
+    const clientIp = String(req.headers['x-forwarded-for'] || req.socket.remoteAddress || '127.0.0.1');
+    registrarLogAcesso(user, clientIp, 'usuario_recusado', `Cadastro de "${alvo.nome}" (${alvo.login}) recusado pelo Administrador. Motivo: ${motivo || 'Sem justificativa informada'}`);
+
+    res.json({
+      success: true,
+      message: `Solicitação de cadastro de "${alvo.nome}" foi recusada.`,
+      id: Number(id),
+      status_autorizacao: 'rejeitado',
+      ativo: 0,
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: 'Erro ao recusar usuário: ' + err.message });
+  }
 });
 
 apiRouter.delete('/usuarios/:id', (req, res) => {
@@ -3227,6 +3379,7 @@ apiRouter.post('/entradas', (req, res) => {
     numero_lote?: string | null;
     data_validade?: string | null;
     valor_unitario?: number | null;
+    valor_total?: number | null;
     marca?: string | null;
     nomenclatura_fornecedor?: string | null;
     codigo_referencia_fornecedor?: string | null;
@@ -3326,19 +3479,15 @@ apiRouter.post('/entradas', (req, res) => {
           throw new Error(`Produto #${prodId} não encontrado ou inativo no catálogo`);
         }
 
-        // Valida obrigatoriedade de Lote e Data de Validade para itens perecíveis/médicos/hospitalares
-        const exigeLoteValidade = prod.controla_validade === undefined ? prod.tipo === 'consumivel' : prod.controla_validade === 1;
-        if (exigeLoteValidade && (!itemLote || !itemValidade)) {
-          throw new Error(
-            `O item "${prod.codigo} - ${prod.nome}" exige controle de Lote e Data de Validade obrigatórios na entrada.`
-          );
-        }
+        // Lote e validade: se não informado ou se o produto não exige lote, define SEM LOTE para não travar
+        const finalLote = itemLote && itemLote.trim() ? itemLote.trim().toUpperCase() : 'SEM LOTE';
+        const finalValidade = itemValidade && itemValidade.trim() ? itemValidade.trim().slice(0, 10) : null;
 
         // 2. Registra/atualiza Lote em lotes_estoque vinculado ao código único do produto
         const loteReg = upsertLoteEstoque({
           produto_id: prodId,
-          numero_lote: itemLote || `LT-${docRefUpper}`,
-          data_validade: itemValidade,
+          numero_lote: finalLote,
+          data_validade: finalValidade,
           quantidade: qtd,
           fornecedor_id: fornRow ? fornRow.id : null,
           documento_referencia: docRefUpper,
@@ -3354,8 +3503,13 @@ apiRouter.post('/entradas', (req, res) => {
           WHERE id = ?
         `).run(qtd, prodId);
 
-        if (valUnit && valUnit > 0) {
-          db.prepare('UPDATE produtos SET valor_unitario = ? WHERE id = ?').run(valUnit, prodId);
+        let finalValUnit = valUnit && valUnit > 0 ? valUnit : 0;
+        if ((!finalValUnit || finalValUnit === 0) && item.valor_total && Number(item.valor_total) > 0 && qtd > 0) {
+          finalValUnit = Number(item.valor_total) / qtd;
+        }
+
+        if (finalValUnit > 0) {
+          db.prepare('UPDATE produtos SET valor_unitario = ? WHERE id = ?').run(finalValUnit, prodId);
         }
 
         // 4. Se houver fornecedor_id cadastrado, registra/atualiza equivalência em produto_fornecedores
@@ -5226,6 +5380,189 @@ apiRouter.post('/requisicoes/:id/rejeitar', (req, res) => {
   }
 });
 
+apiRouter.post('/requisicoes/:id/reabrir', (req, res) => {
+  const user = authenticateRequest(req);
+  if (!user || (user.perfil !== 'admin' && user.perfil !== 'almoxarife')) {
+    res.status(403).json({ error: 'Apenas Almoxarifes e Administradores podem reabrir requisições' });
+    return;
+  }
+
+  const { id } = req.params;
+  const { motivo_reabertura } = req.body || {};
+
+  try {
+    const result = runInTransaction(() => {
+      const reqRow = db.prepare('SELECT * FROM requisicoes WHERE id = ?').get(id) as any;
+      if (!reqRow) {
+        throw new Error('Requisição não encontrada');
+      }
+
+      if (reqRow.status === 'pendente') {
+        throw new Error('Esta requisição já está aberta e pendente de atendimento.');
+      }
+
+      const statusAnterior = reqRow.status;
+
+      // 1. Busca todos os itens da requisição
+      const itens = db.prepare('SELECT * FROM itens_requisicao WHERE requisicao_id = ?').all(id) as any[];
+
+      // 2. Se a requisição foi atendida com baixa de estoque, estorna o saldo nos produtos e lotes
+      for (const it of itens) {
+        if (it.status_item === 'aprovado' && it.quantidade_atendida > 0) {
+          // Devolve para os lotes específicos caso existam
+          if (it.lotes_atendidos) {
+            try {
+              const lotesConsumidos = JSON.parse(it.lotes_atendidos);
+              if (Array.isArray(lotesConsumidos)) {
+                for (const l of lotesConsumidos) {
+                  if (l.lote_id && l.quantidade > 0) {
+                    db.prepare('UPDATE lotes_estoque SET quantidade_atual = quantidade_atual + ? WHERE id = ?').run(
+                      l.quantidade,
+                      l.lote_id
+                    );
+                  }
+                }
+              }
+            } catch (e) {
+              console.warn('[Reabrir Requisição] Aviso ao ler lotes_atendidos:', e);
+            }
+          }
+
+          // Devolve a quantidade para o produto geral
+          db.prepare('UPDATE produtos SET quantidade_atual = quantidade_atual + ? WHERE id = ?').run(
+            it.quantidade_atendida,
+            it.produto_id
+          );
+        }
+
+        // Reseta o item para status pendente e quantidade atendida = 0 (mantém quantidade_solicitada)
+        db.prepare(`
+          UPDATE itens_requisicao 
+          SET quantidade_atendida = 0, status_item = 'pendente', analisado_por_id = NULL, data_analise = NULL, motivo_decisao = NULL, lotes_atendidos = NULL
+          WHERE id = ?
+        `).run(it.id);
+      }
+
+      // 3. Remove movimentações de saída associadas a este atendimento
+      db.prepare(`
+        DELETE FROM movimentacoes 
+        WHERE (requisicao_id = ? OR documento_referencia = ?) 
+          AND tipo = 'saida' 
+          AND (motivo_diverso LIKE '%Atendimento%' OR observacao LIKE '%Atendimento%')
+      `).run(id, reqRow.numero_requisicao);
+
+      // 4. Volta status da requisição para 'pendente'
+      db.prepare(`
+        UPDATE requisicoes 
+        SET status = 'pendente', data_atendimento = NULL, almoxarife_id = NULL, motivo_rejeicao = NULL
+        WHERE id = ?
+      `).run(id);
+
+      // 5. Registra auditoria da reabertura
+      const motivoFinal = motivo_reabertura?.trim() || 'Reabertura autorizada para conferência e nova dispensação';
+      db.prepare(`
+        INSERT INTO historico_requisicoes (
+          requisicao_id, item_requisicao_id, produto_id, usuario_id, acao,
+          status_anterior, status_novo, quantidade_solicitada, quantidade_atendida,
+          detalhes, justificativa
+        ) VALUES (?, NULL, NULL, ?, 'reabertura', ?, 'pendente', NULL, NULL, ?, ?)
+      `).run(
+        id,
+        user.id,
+        statusAnterior,
+        `Requisição ${reqRow.numero_requisicao} REABERTA por ${user.nome} (${user.perfil.toUpperCase()}). Saldo dispensado foi integralmente estornado ao estoque para permitir nova conferência e ajustes.`,
+        motivoFinal
+      );
+
+      return {
+        numero_requisicao: reqRow.numero_requisicao,
+        status_anterior: statusAnterior,
+      };
+    });
+
+    res.json({
+      message: `Requisição ${result.numero_requisicao} reaberta com sucesso! Saldo estornado e requisição liberada para edição.`,
+      id,
+      status: 'pendente',
+    });
+  } catch (err: any) {
+    res.status(400).json({ error: err.message || 'Erro ao reabrir requisição.' });
+  }
+});
+
+apiRouter.post('/requisicoes/:id/salvar-rascunho', (req, res) => {
+  const user = authenticateRequest(req);
+  if (!user || (user.perfil !== 'admin' && user.perfil !== 'almoxarife')) {
+    res.status(403).json({ error: 'Apenas Almoxarifes e Administradores podem salvar rascunho de requisições' });
+    return;
+  }
+
+  const { id } = req.params;
+  const { decisoes_itens, observacao_atendimento, prioridade } = req.body || {};
+
+  try {
+    runInTransaction(() => {
+      const reqRow = db.prepare('SELECT * FROM requisicoes WHERE id = ?').get(id) as any;
+      if (!reqRow) {
+        throw new Error('Requisição não encontrada');
+      }
+      if (reqRow.status !== 'pendente') {
+        throw new Error('Apenas requisições pendentes podem ter rascunho de conferência salvo');
+      }
+
+      if (prioridade === 'normal' || prioridade === 'urgente') {
+        db.prepare('UPDATE requisicoes SET prioridade = ? WHERE id = ?').run(prioridade, id);
+      }
+
+      if (observacao_atendimento !== undefined) {
+        db.prepare('UPDATE requisicoes SET motivo_rejeicao = ? WHERE id = ?').run(observacao_atendimento, id);
+      }
+
+      if (Array.isArray(decisoes_itens)) {
+        for (const dec of decisoes_itens) {
+          if (!dec.item_id) continue;
+          const lotesJson = dec.lotes_dispensados && dec.lotes_dispensados.length > 0
+            ? JSON.stringify(dec.lotes_dispensados)
+            : null;
+
+          db.prepare(`
+            UPDATE itens_requisicao 
+            SET quantidade_atendida = ?, motivo_decisao = ?, lotes_atendidos = ?, analisado_por_id = ?
+            WHERE id = ? AND requisicao_id = ?
+          `).run(
+            dec.decisao === 'aprovado' ? (Number(dec.quantidade_atendida) || 0) : 0,
+            dec.motivo_decisao || null,
+            lotesJson,
+            user.id,
+            dec.item_id,
+            id
+          );
+        }
+      }
+
+      db.prepare(`
+        INSERT INTO historico_requisicoes (
+          requisicao_id, item_requisicao_id, produto_id, usuario_id, acao,
+          status_anterior, status_novo, quantidade_solicitada, quantidade_atendida,
+          detalhes, justificativa
+        ) VALUES (?, NULL, NULL, ?, 'salvar_rascunho', 'pendente', 'pendente', NULL, NULL, ?, NULL)
+      `).run(
+        id,
+        user.id,
+        `Conferência parcial salva em rascunho por ${user.nome} (${user.perfil.toUpperCase()}). Saldo em estoque não foi debitado.`
+      );
+    });
+
+    res.json({
+      message: 'Rascunho de conferência salvo com sucesso!',
+      id,
+      status: 'pendente',
+    });
+  } catch (err: any) {
+    res.status(400).json({ error: err.message || 'Erro ao salvar rascunho.' });
+  }
+});
+
 apiRouter.post('/requisicoes/:id/cancelar', (req, res) => {
   const user = authenticateRequest(req);
   const { id } = req.params;
@@ -5617,15 +5954,20 @@ function getEmprestimoInstitucionalCompleto(id: number | string) {
       iei.*,
       p.codigo as produto_codigo,
       p.nome as produto_nome,
-      p.unidade_medida
+      p.unidade_medida,
+      COALESCE(iei.valor_unitario, p.valor_unitario, p.custo_unitario, 0) as valor_unitario,
+      COALESCE(p.valor_unitario, p.custo_unitario, 0) as custo_produto
     FROM itens_emprestimo_institucional iei
     JOIN produtos p ON iei.produto_id = p.id
     WHERE iei.emprestimo_id = ?
     ORDER BY iei.id ASC
-  `).all(id);
+  `).all(id) as any[];
+
+  const valor_total = itens.reduce((acc, it) => acc + (Number(it.valor_unitario || 0) * Number(it.quantidade || 0)), 0);
 
   return {
     ...emp,
+    valor_total,
     itens,
   };
 }
@@ -5678,17 +6020,24 @@ apiRouter.get('/emprestimos-institucionais', (req, res) => {
       iei.*,
       p.codigo as produto_codigo,
       p.nome as produto_nome,
-      p.unidade_medida
+      p.unidade_medida,
+      COALESCE(iei.valor_unitario, p.valor_unitario, p.custo_unitario, 0) as valor_unitario,
+      COALESCE(p.valor_unitario, p.custo_unitario, 0) as custo_produto
     FROM itens_emprestimo_institucional iei
     JOIN produtos p ON iei.produto_id = p.id
     WHERE iei.emprestimo_id = ?
     ORDER BY iei.id ASC
   `);
 
-  const result = rows.map((row) => ({
-    ...row,
-    itens: itensStmt.all(row.id),
-  }));
+  const result = rows.map((row) => {
+    const itens = itensStmt.all(row.id) as any[];
+    const valor_total = itens.reduce((acc, it) => acc + (Number(it.valor_unitario || 0) * Number(it.quantidade || 0)), 0);
+    return {
+      ...row,
+      valor_total,
+      itens,
+    };
+  });
 
   res.json(result);
 });
@@ -5714,6 +6063,8 @@ apiRouter.post('/emprestimos-institucionais', (req, res) => {
     entidade_id,
     responsavel_entidade_parceira,
     observacao,
+    data_operacao,
+    data_emprestimo,
     itens,
   } = req.body || {};
 
@@ -5732,6 +6083,13 @@ apiRouter.post('/emprestimos-institucionais', (req, res) => {
     return;
   }
 
+  const rawDataOp = data_operacao || data_emprestimo;
+  const dataOperacaoFinal = rawDataOp && String(rawDataOp).trim()
+    ? (String(rawDataOp).includes(':')
+        ? String(rawDataOp).trim()
+        : `${String(rawDataOp).trim()} ${new Date().toTimeString().slice(0, 8)}`)
+    : new Date().toISOString().replace('T', ' ').slice(0, 19);
+
   const year = new Date().getFullYear();
   const prefix = tipo === 'recebido' ? `EMP-REC-${year}` : `EMP-CON-${year}`;
   const countRow = db.prepare(`SELECT COUNT(*) as count FROM emprestimos_institucionais WHERE numero_documento LIKE ?`).get(`${prefix}-%`) as { count: number };
@@ -5748,15 +6106,16 @@ apiRouter.post('/emprestimos-institucionais', (req, res) => {
       const empInfo = db.prepare(`
         INSERT INTO emprestimos_institucionais (
           numero_documento, tipo, entidade_id, responsavel_almoxarifado_id,
-          responsavel_entidade_parceira, status, observacao
-        ) VALUES (?, ?, ?, ?, ?, 'pendente_devolucao', ?)
+          responsavel_entidade_parceira, status, observacao, data_operacao
+        ) VALUES (?, ?, ?, ?, ?, 'pendente_devolucao', ?, ?)
       `).run(
         numero_documento,
         tipo,
         entidade.id,
         user.id,
         responsavel_entidade_parceira ? String(responsavel_entidade_parceira).trim() : null,
-        observacao ? String(observacao).trim() : null
+        observacao ? String(observacao).trim() : null,
+        dataOperacaoFinal
       );
 
       const emprestimoId = Number(empInfo.lastInsertRowid);
@@ -5764,16 +6123,16 @@ apiRouter.post('/emprestimos-institucionais', (req, res) => {
       const itemStmt = db.prepare(`
         INSERT INTO itens_emprestimo_institucional (
           emprestimo_id, produto_id, lote_id, numero_lote, data_validade,
-          quantidade, quantidade_devolvida
-        ) VALUES (?, ?, ?, ?, ?, ?, 0)
+          quantidade, quantidade_devolvida, valor_unitario
+        ) VALUES (?, ?, ?, ?, ?, ?, 0, ?)
       `);
 
       const movStmt = db.prepare(`
         INSERT INTO movimentacoes (
           tipo, motivo_diverso, produto_id, lote_id, quantidade, centro_custo_id,
           fornecedor_id, emprestimo_institucional_id, usuario_id, responsavel_nome,
-          documento_referencia, numero_lote, data_validade, observacao
-        ) VALUES (?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?)
+          documento_referencia, numero_lote, data_validade, valor_unitario, observacao, data_movimentacao
+        ) VALUES (?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `);
 
       const nomeEntidadeLabel = `${entidade.codigo} - ${entidade.nome_fantasia || entidade.razao_social}`;
@@ -5789,6 +6148,10 @@ apiRouter.post('/emprestimos-institucionais', (req, res) => {
         if (!prod) {
           throw new Error(`Produto #${prodId} não encontrado ou inativo`);
         }
+
+        const valorUnitario = it.valor_unitario !== undefined && it.valor_unitario !== null
+          ? Number(it.valor_unitario)
+          : (Number(prod.valor_unitario || prod.custo_unitario) || 0);
 
         if (tipo === 'recebido') {
           // Cenário A - Pegamos emprestado de outra entidade:
@@ -5815,7 +6178,7 @@ apiRouter.post('/emprestimos-institucionais', (req, res) => {
 
           db.prepare('UPDATE produtos SET quantidade_atual = quantidade_atual + ? WHERE id = ?').run(qtd, prodId);
 
-          itemStmt.run(emprestimoId, prodId, loteReg.id, loteReg.numero_lote, loteReg.data_validade, qtd);
+          itemStmt.run(emprestimoId, prodId, loteReg.id, loteReg.numero_lote, loteReg.data_validade, qtd, valorUnitario);
 
           movStmt.run(
             'entrada',
@@ -5830,7 +6193,9 @@ apiRouter.post('/emprestimos-institucionais', (req, res) => {
             numero_documento,
             loteReg.numero_lote,
             loteReg.data_validade,
-            `Entrada por Empréstimo Recebido de ${nomeEntidadeLabel}${observacao ? ` | Obs: ${observacao}` : ''}`
+            valorUnitario,
+            `Entrada por Empréstimo Recebido de ${nomeEntidadeLabel}${observacao ? ` | Obs: ${observacao}` : ''}`,
+            dataOperacaoFinal
           );
         } else {
           // Cenário B - Emprestamos para outra entidade:
@@ -5855,7 +6220,8 @@ apiRouter.post('/emprestimos-institucionais', (req, res) => {
             lotePrincipal.lote_id,
             lotePrincipal.numero_lote,
             lotePrincipal.data_validade,
-            qtd
+            qtd,
+            valorUnitario
           );
 
           movStmt.run(
@@ -5871,7 +6237,9 @@ apiRouter.post('/emprestimos-institucionais', (req, res) => {
             numero_documento,
             lotePrincipal.numero_lote,
             lotePrincipal.data_validade,
-            `Empréstimo Concedido a Terceiros (${nomeEntidadeLabel})${observacao ? ` | Obs: ${observacao}` : ''}`
+            valorUnitario,
+            `Empréstimo Concedido a Terceiros (${nomeEntidadeLabel})${observacao ? ` | Obs: ${observacao}` : ''}`,
+            dataOperacaoFinal
           );
         }
       }
@@ -6346,17 +6714,13 @@ apiRouter.post('/movimentacoes/diversas', (req, res) => {
           }
         }
 
-        const exigeLote = prod.controla_validade === undefined ? prod.tipo === 'consumivel' : prod.controla_validade === 1;
-        if (exigeLote && (!numLoteUsado || !dtValidadeUsada)) {
-          throw new Error(
-            `O item "${prod.codigo} - ${prod.nome}" exige informação de Lote e Data de Validade para entrada no estoque.`
-          );
-        }
+        const finalNumLote = numLoteUsado && String(numLoteUsado).trim() ? String(numLoteUsado).trim().toUpperCase() : 'SEM LOTE';
+        const finalDtValidade = dtValidadeUsada && String(dtValidadeUsada).trim() ? String(dtValidadeUsada).trim().slice(0, 10) : null;
 
         const loteReg = upsertLoteEstoque({
           produto_id: prod.id,
-          numero_lote: numLoteUsado || `LT-${docRefFinal}`,
-          data_validade: dtValidadeUsada,
+          numero_lote: finalNumLote,
+          data_validade: finalDtValidade,
           quantidade: qtd,
           fornecedor_id: entidade_id ? Number(entidade_id) : null,
           centro_custo_id: centro_custo_id ? Number(centro_custo_id) : null,
@@ -8024,7 +8388,10 @@ apiRouter.get('/inventarios/sugestao-codigo', (req, res) => {
 // 2. Consulta de itens base para contagem física de um Centro de Custo
 apiRouter.get('/inventarios/itens-base', (req, res) => {
   try {
-    const { centro_custo_id, grupo_id } = req.query;
+    const { centro_custo_id, grupo_id, incluir_zerados_vencidos } = req.query;
+    const permitirZeradosVencidos = incluir_zerados_vencidos === '1' || incluir_zerados_vencidos === 'true';
+    const hojeStr = new Date().toISOString().slice(0, 10);
+
     // Lista todos os produtos ativos do catálogo
     let prodQuery = `
       SELECT 
@@ -8055,7 +8422,17 @@ apiRouter.get('/inventarios/itens-base', (req, res) => {
       `).all(prod.id) as any[];
 
       if (lotes.length > 0) {
+        let lotesAdicionados = 0;
         for (const lot of lotes) {
+          const isZerado = Number(lot.quantidade_atual || 0) <= 0;
+          const isVencido = Boolean(lot.data_validade && String(lot.data_validade).slice(0, 10) < hojeStr);
+
+          // REGRA DE NEGÓCIO: medicamentos e insumos zerados e fora da validade (ao mesmo tempo)
+          // são ignorados no inventário por padrão, a não ser que o almoxarife solicite explicitamente.
+          if (!permitirZeradosVencidos && isZerado && isVencido) {
+            continue;
+          }
+
           itensBase.push({
             produto_id: prod.id,
             produto_codigo: prod.codigo,
@@ -8072,6 +8449,7 @@ apiRouter.get('/inventarios/itens-base', (req, res) => {
             quantidade_fisica: Number(lot.quantidade_atual || 0),
             diferenca: 0,
           });
+          lotesAdicionados++;
         }
       } else {
         itensBase.push({

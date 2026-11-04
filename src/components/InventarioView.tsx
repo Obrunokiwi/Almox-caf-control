@@ -118,6 +118,7 @@ export const InventarioView: React.FC<InventarioViewProps> = ({
   const [formCentroCustoId, setFormCentroCustoId] = useState<number | ''>('');
   const [formZeraPorLote, setFormZeraPorLote] = useState(false);
   const [formZeraNaoListados, setFormZeraNaoListados] = useState(false);
+  const [formIncluirZeradosVencidos, setFormIncluirZeradosVencidos] = useState(false);
   const [formObservacao, setFormObservacao] = useState('');
   const [formFinalizado, setFormFinalizado] = useState<number>(0);
 
@@ -232,6 +233,7 @@ export const InventarioView: React.FC<InventarioViewProps> = ({
 
     setFormZeraPorLote(false);
     setFormZeraNaoListados(false);
+    setFormIncluirZeradosVencidos(false);
     setFormObservacao('');
     setFormFinalizado(0);
 
@@ -250,9 +252,9 @@ export const InventarioView: React.FC<InventarioViewProps> = ({
       setFormCodigo(`INV-${hoje.getFullYear()}-0001`);
     }
 
-    // Carrega itens base de produtos e lotes
+    // Carrega itens base de produtos e lotes (por padrão, filtra zerados e vencidos)
     try {
-      const itemsRes = await fetch('/api/inventarios/itens-base', {
+      const itemsRes = await fetch('/api/inventarios/itens-base?incluir_zerados_vencidos=0', {
         headers: getAuthHeaders(),
       });
       if (itemsRes.ok) {
@@ -263,6 +265,27 @@ export const InventarioView: React.FC<InventarioViewProps> = ({
       }
     } catch {
       setFormItens([]);
+    }
+  };
+
+  const handleToggleIncluirZeradosVencidos = async (incluir: boolean) => {
+    setFormIncluirZeradosVencidos(incluir);
+    if (formFinalizado === 1) return;
+    try {
+      const res = await fetch(`/api/inventarios/itens-base?incluir_zerados_vencidos=${incluir ? '1' : '0'}${formCentroCustoId ? `&centro_custo_id=${formCentroCustoId}` : ''}`, {
+        headers: getAuthHeaders(),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setFormItens(data);
+        if (incluir) {
+          toast.info('Filtro do Inventário', 'Medicamentos e insumos zerados e com validade vencida foram incluídos na recontagem.');
+        } else {
+          toast.info('Filtro do Inventário', 'Medicamentos e insumos zerados e com validade vencida foram ignorados por padrão.');
+        }
+      }
+    } catch {
+      toast.error('Erro', 'Falha ao recarregar lista de itens para recontagem.');
     }
   };
 
@@ -1166,6 +1189,37 @@ export const InventarioView: React.FC<InventarioViewProps> = ({
                       <span
                         className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out ${
                           formZeraNaoListados ? 'translate-x-5' : 'translate-x-0'
+                        }`}
+                      />
+                    </button>
+                  </label>
+
+                  <div className="border-t border-slate-200" />
+
+                  {/* Toggle: Exibir medicamentos/insumos zerados e vencidos */}
+                  <label className="flex items-center justify-between cursor-pointer group">
+                    <div className="pr-3">
+                      <div className="text-xs font-semibold text-slate-800 flex items-center gap-1.5">
+                        <span>Exibir itens com estoque zerado e validade vencida</span>
+                        <span className="text-[10px] bg-amber-100 text-amber-900 border border-amber-300 font-bold px-1.5 py-0.2 rounded uppercase">
+                          Ocultos por padrão
+                        </span>
+                      </div>
+                      <div className="text-[11px] text-slate-500">
+                        Medicamentos e insumos zerados e fora da validade (ao mesmo tempo) são ignorados do inventário por padrão. Ative se o almoxarife precisar recontá-los.
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      disabled={formFinalizado === 1}
+                      onClick={() => handleToggleIncluirZeradosVencidos(!formIncluirZeradosVencidos)}
+                      className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none ${
+                        formIncluirZeradosVencidos ? 'bg-teal-600' : 'bg-slate-300'
+                      } ${formFinalizado === 1 ? 'opacity-50 cursor-not-allowed' : ''}`}
+                    >
+                      <span
+                        className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out ${
+                          formIncluirZeradosVencidos ? 'translate-x-5' : 'translate-x-0'
                         }`}
                       />
                     </button>

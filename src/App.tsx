@@ -403,6 +403,7 @@ export default function App() {
   const pendingReqCount = stats?.kpis?.requisicoes_pendentes ?? requisicoes.filter((r) => r.status === 'pendente').length;
   const overdueLoanCount = stats?.kpis?.emprestimos_atrasados ?? emprestimos.filter((e) => e.status === 'atrasado').length;
   const lowStockCount = stats?.kpis?.itens_estoque_baixo ?? produtos.filter((p) => p.ativo !== 0 && p.quantidade_atual <= p.estoque_minimo).length;
+  const pendingUsersCount = usuarios.filter((u) => u.status_autorizacao === 'pendente').length;
 
   const isMainAdmin = currentUser?.id === 1 || currentUser?.login === 'admin';
 
@@ -542,6 +543,7 @@ export default function App() {
             pendingRequisitionsCount={pendingReqCount}
             overdueLoansCount={overdueLoanCount}
             lowStockCount={lowStockCount}
+            pendingUsersCount={pendingUsersCount}
           />
         )}
 

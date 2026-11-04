@@ -39,6 +39,7 @@ CREATE TABLE IF NOT EXISTS usuarios (
     centro_custo_id INTEGER REFERENCES centros_custo(id) ON DELETE SET NULL,
     empresa_id INTEGER REFERENCES empresas_unidades(id) ON DELETE SET NULL,
     ativo INTEGER NOT NULL DEFAULT 1,
+    status_autorizacao TEXT NOT NULL DEFAULT 'aprovado',
     criado_em DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     ultimo_acesso DATETIME
 );
@@ -354,7 +355,8 @@ CREATE TABLE IF NOT EXISTS itens_emprestimo_institucional (
     numero_lote TEXT,
     data_validade DATE,
     quantidade REAL NOT NULL CHECK (quantidade > 0),
-    quantidade_devolvida REAL NOT NULL DEFAULT 0 CHECK (quantidade_devolvida >= 0)
+    quantidade_devolvida REAL NOT NULL DEFAULT 0 CHECK (quantidade_devolvida >= 0),
+    valor_unitario REAL NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_itens_emp_inst_emp ON itens_emprestimo_institucional (emprestimo_id);
 CREATE INDEX IF NOT EXISTS idx_itens_emp_inst_prod ON itens_emprestimo_institucional (produto_id);

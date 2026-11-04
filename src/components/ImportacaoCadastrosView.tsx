@@ -27,6 +27,7 @@ import autoTable from 'jspdf-autotable';
 import type { Usuario, Produto, Fornecedor, Area, GrupoProduto, SubgrupoProduto } from '../types/index.ts';
 import { AutocompleteSelect } from './AutocompleteSelect.tsx';
 import { useToast } from '../context/ToastContext.tsx';
+import { formatDateTimeBrasilia } from '../utils/dateUtils.ts';
 
 interface ImportacaoCadastrosViewProps {
   currentUser: Usuario | null;
@@ -2261,7 +2262,7 @@ export const ImportacaoCadastrosView: React.FC<ImportacaoCadastrosViewProps> = (
                     </h3>
                     <p className="text-xs text-slate-500">
                       Arquivo: <strong>{rel.arquivo}</strong> • Processado em{' '}
-                      {new Date(rel.dataHora).toLocaleString('pt-BR')}
+                      {formatDateTimeBrasilia(rel.dataHora)}
                     </p>
                   </div>
                 </div>

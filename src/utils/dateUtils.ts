@@ -2,13 +2,19 @@
  * Utilitários de data e hora formatados no padrão brasileiro e horário de Brasília (America/Sao_Paulo)
  */
 
-export function formatDateTimeBrasilia(dateInput?: string | Date | null): string {
+export function formatDateTimeBrasilia(
+  dateInput?: string | Date | null,
+  options?: { hideSeconds?: boolean }
+): string {
   if (!dateInput) return '-';
   try {
     if (dateInput instanceof Date) {
       if (isNaN(dateInput.getTime())) return '-';
       const pad = (n: number) => String(n).padStart(2, '0');
-      return `${pad(dateInput.getDate())}/${pad(dateInput.getMonth() + 1)}/${dateInput.getFullYear()} ${pad(dateInput.getHours())}:${pad(dateInput.getMinutes())}:${pad(dateInput.getSeconds())}`;
+      const timePart = options?.hideSeconds
+        ? `${pad(dateInput.getHours())}:${pad(dateInput.getMinutes())}`
+        : `${pad(dateInput.getHours())}:${pad(dateInput.getMinutes())}:${pad(dateInput.getSeconds())}`;
+      return `${pad(dateInput.getDate())}/${pad(dateInput.getMonth() + 1)}/${dateInput.getFullYear()} ${timePart}`;
     }
 
     let dateStr = String(dateInput).trim();
@@ -29,15 +35,23 @@ export function formatDateTimeBrasilia(dateInput?: string | Date | null): string
       const fallback = new Date(dateInput);
       if (isNaN(fallback.getTime())) return String(dateInput);
       const pad = (n: number) => String(n).padStart(2, '0');
-      return `${pad(fallback.getDate())}/${pad(fallback.getMonth() + 1)}/${fallback.getFullYear()} ${pad(fallback.getHours())}:${pad(fallback.getMinutes())}:${pad(fallback.getSeconds())}`;
+      const timePart = options?.hideSeconds
+        ? `${pad(fallback.getHours())}:${pad(fallback.getMinutes())}`
+        : `${pad(fallback.getHours())}:${pad(fallback.getMinutes())}:${pad(fallback.getSeconds())}`;
+      return `${pad(fallback.getDate())}/${pad(fallback.getMonth() + 1)}/${fallback.getFullYear()} ${timePart}`;
     }
 
     const pad = (n: number) => String(n).padStart(2, '0');
-    return `${pad(d.getDate())}/${pad(d.getMonth() + 1)}/${d.getFullYear()} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+    const timePart = options?.hideSeconds
+      ? `${pad(d.getHours())}:${pad(d.getMinutes())}`
+      : `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+    return `${pad(d.getDate())}/${pad(d.getMonth() + 1)}/${d.getFullYear()} ${timePart}`;
   } catch {
     return String(dateInput);
   }
 }
+
+export const formatDataHoraBrasilia = formatDateTimeBrasilia;
 
 export function formatDateBrasilia(dateInput?: string | Date | null): string {
   if (!dateInput) return '-';

@@ -334,6 +334,13 @@ function migrateCentralDb(db: DatabaseSync, dbFilePath: string) {
     db.exec('ALTER TABLE usuarios ADD COLUMN ultimo_acesso DATETIME;');
     appliedMigrations++;
   }
+  if (!userCols.has('status_autorizacao')) {
+    db.exec("ALTER TABLE usuarios ADD COLUMN status_autorizacao TEXT NOT NULL DEFAULT 'aprovado';");
+    appliedMigrations++;
+  }
+  try {
+    db.exec("UPDATE usuarios SET status_autorizacao = 'aprovado' WHERE status_autorizacao IS NULL OR status_autorizacao = '';");
+  } catch {}
 
   const ccCols = new Set((db.prepare("PRAGMA table_info('centros_custo')").all() as Array<{ name: string }>).map((c) => c.name));
   if (!ccCols.has('empresa_id')) {
@@ -341,19 +348,39 @@ function migrateCentralDb(db: DatabaseSync, dbFilePath: string) {
     appliedMigrations++;
   }
 
-  // Garante que centros_custo existentes nos bancos de área estejam no banco central
+  // Garante que centros_custo existam no banco central
   try {
     const ccCount = (db.prepare('SELECT COUNT(*) as c FROM centros_custo').get() as any)?.c || 0;
     if (ccCount === 0) {
       const almPath = path.join(DB_DIR, 'almoxarifado.db');
+      let foundInAlm = false;
       if (fs.existsSync(almPath)) {
-        const areaDb = new DatabaseSync(almPath);
-        const rows = areaDb.prepare("SELECT * FROM centros_custo").all() as any[];
-        for (const row of rows) {
-          db.prepare(`
-            INSERT OR IGNORE INTO centros_custo (id, codigo, nome, departamento, responsavel, ativo)
-            VALUES (?, ?, ?, ?, ?, ?)
-          `).run(row.id, row.codigo, row.nome, row.departamento, row.responsavel, row.ativo ?? 1);
+        try {
+          const areaDb = new DatabaseSync(almPath);
+          const rows = areaDb.prepare("SELECT * FROM centros_custo").all() as any[];
+          for (const row of rows) {
+            db.prepare(`
+              INSERT OR IGNORE INTO centros_custo (id, codigo, nome, departamento, responsavel, ativo)
+              VALUES (?, ?, ?, ?, ?, ?)
+            `).run(row.id, row.codigo, row.nome, row.departamento, row.responsavel, row.ativo ?? 1);
+            foundInAlm = true;
+          }
+        } catch {}
+      }
+      if (!foundInAlm) {
+        const defaultCcs = [
+          { id: 1, codigo: 'CC-001', nome: 'CENTRO CIRÚRGICO', departamento: 'BLOCO CIRÚRGICO', responsavel: 'Coordenação Cirúrgica' },
+          { id: 2, codigo: 'CC-002', nome: 'UTI ADULTO GERAL', departamento: 'TERAPIA INTENSIVA', responsavel: 'Coordenação UTI' },
+          { id: 3, codigo: 'CC-003', nome: 'PRONTO SOCORRO / EMERGÊNCIA', departamento: 'URGÊNCIA E EMERGÊNCIA', responsavel: 'Enfermagem Chefe PS' },
+          { id: 4, codigo: 'CC-004', nome: 'ENFERMARIA GERAL', departamento: 'INTERNAÇÃO', responsavel: 'Supervisão de Enfermagem' },
+          { id: 5, codigo: 'CC-005', nome: 'ALMOXARIFADO CENTRAL', departamento: 'SUPRIMENTOS E LOGÍSTICA', responsavel: 'Gestão de Estoque' },
+        ];
+        const insDefault = db.prepare(`
+          INSERT OR IGNORE INTO centros_custo (id, codigo, nome, departamento, responsavel, ativo)
+          VALUES (?, ?, ?, ?, ?, 1)
+        `);
+        for (const c of defaultCcs) {
+          insDefault.run(c.id, c.codigo, c.nome, c.departamento, c.responsavel);
         }
       }
     }
@@ -1138,6 +1165,13 @@ function migrateAreaDb(areaDb: DatabaseSync, areaSigla: string, dbFilePath: stri
       appliedMigrations++;
     }
 
+    // 10.1 Verificação e adição idempotente de colunas na tabela 'itens_emprestimo_institucional'
+    const itemEmpCols = new Set((areaDb.prepare("PRAGMA table_info('itens_emprestimo_institucional')").all() as Array<{ name: string }>).map((c) => c.name));
+    if (!itemEmpCols.has('valor_unitario')) {
+      areaDb.exec('ALTER TABLE itens_emprestimo_institucional ADD COLUMN valor_unitario REAL NOT NULL DEFAULT 0;');
+      appliedMigrations++;
+    }
+
     // 11. Índices de performance essenciais (Kardex, Notas Fiscais, Movimentações e Inventários)
     areaDb.exec(`
       CREATE INDEX IF NOT EXISTS idx_movimentacoes_prod_data ON movimentacoes (produto_id, data_movimentacao);
@@ -1194,19 +1228,26 @@ export function syncMirrorsToArea(areaDb: DatabaseSync) {
     }
 
     // 2. Usuários (espelho completo para consultas e integridade, sem senha_hash)
+    try {
+      const areaUserCols = new Set((areaDb.prepare("PRAGMA table_info('usuarios')").all() as Array<{ name: string }>).map((c) => c.name));
+      if (!areaUserCols.has('status_autorizacao')) {
+        areaDb.exec("ALTER TABLE usuarios ADD COLUMN status_autorizacao TEXT NOT NULL DEFAULT 'aprovado';");
+      }
+    } catch {}
+
     const users = central.prepare(`
-      SELECT id, codigo, nome, login, cpf, email, perfil, cargo_nome, permissoes, centro_custo_id, ativo, criado_em, ultimo_acesso
+      SELECT id, codigo, nome, login, cpf, email, perfil, cargo_nome, permissoes, centro_custo_id, ativo, status_autorizacao, criado_em, ultimo_acesso
       FROM usuarios
     `).all() as any[];
     const insUser = areaDb.prepare(`
-      INSERT OR REPLACE INTO usuarios (id, codigo, nome, login, senha_hash, cpf, email, perfil, cargo_nome, permissoes, centro_custo_id, ativo, criado_em, ultimo_acesso)
-      VALUES (?, ?, ?, ?, '', ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT OR REPLACE INTO usuarios (id, codigo, nome, login, senha_hash, cpf, email, perfil, cargo_nome, permissoes, centro_custo_id, ativo, status_autorizacao, criado_em, ultimo_acesso)
+      VALUES (?, ?, ?, ?, '', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
     for (const u of users) {
       insUser.run(
         u.id, u.codigo, u.nome, u.login, u.cpf, u.email,
         u.perfil, u.cargo_nome, u.permissoes, u.centro_custo_id,
-        u.ativo ?? 1, u.criado_em || new Date().toISOString(), u.ultimo_acesso
+        u.ativo ?? 1, u.status_autorizacao || 'aprovado', u.criado_em || new Date().toISOString(), u.ultimo_acesso
       );
     }
 

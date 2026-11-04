@@ -26,6 +26,7 @@ import * as XLSX from 'xlsx';
 import type { Usuario, Produto, CentroCusto } from '../types/index.ts';
 import { AutocompleteSelect, type AutocompleteOption } from './AutocompleteSelect.tsx';
 import { useToast } from '../context/ToastContext.tsx';
+import { formatDateTimeBrasilia } from '../utils/dateUtils.ts';
 
 interface ListaComprasViewProps {
   produtos: Produto[];
@@ -921,7 +922,7 @@ export const ListaComprasView: React.FC<ListaComprasViewProps> = ({
                         {l.numero_documento}
                       </td>
                       <td className="py-2.5 px-3 text-slate-600 font-medium">
-                        {new Date(l.criado_em).toLocaleString('pt-BR')}
+                        {formatDateTimeBrasilia(l.criado_em)}
                       </td>
                       <td className="py-2.5 px-3 font-medium">
                         {l.data_inicio.split('-').reverse().join('/')} a {l.data_fim.split('-').reverse().join('/')}

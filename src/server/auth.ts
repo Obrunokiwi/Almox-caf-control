@@ -23,6 +23,7 @@ export interface UserSession {
   centro_custo_nome?: string;
   centro_custo_codigo?: string;
   ativo: number;
+  status_autorizacao?: 'aprovado' | 'pendente' | 'rejeitado';
   ultimo_acesso?: string | null;
   modulos?: string[];
   area_id?: number;
@@ -145,11 +146,11 @@ export function getUserById(id: number, activeAreaSigla?: string): UserSession |
     const row = central.prepare(`
       SELECT u.id, u.codigo, u.nome, u.login, u.cpf, u.email, u.perfil, 
              u.cargo_nome, u.permissoes,
-             u.centro_custo_id, u.ativo, u.ultimo_acesso,
+             u.centro_custo_id, u.ativo, u.status_autorizacao, u.ultimo_acesso,
              cc.nome as centro_custo_nome, cc.codigo as centro_custo_codigo
       FROM usuarios u
       LEFT JOIN centros_custo cc ON u.centro_custo_id = cc.id
-      WHERE u.id = ? AND u.ativo = 1
+      WHERE u.id = ? AND u.ativo = 1 AND COALESCE(u.status_autorizacao, 'aprovado') != 'pendente'
     `).get(id) as any;
 
     if (row) {
@@ -168,18 +169,18 @@ export function getUserById(id: number, activeAreaSigla?: string): UserSession |
   }
 }
 
-export function getUserByLogin(login: string, activeAreaSigla?: string): (UserSession & { senha_hash: string }) | null {
+export function getUserByLogin(login: string, activeAreaSigla?: string): (UserSession & { senha_hash: string; status_autorizacao?: string }) | null {
   try {
     const central = getCentralDb();
     const row = central.prepare(`
       SELECT u.id, u.codigo, u.nome, u.login, u.senha_hash, u.cpf, u.email, u.perfil, 
              u.cargo_nome, u.permissoes,
-             u.centro_custo_id, u.ativo, u.ultimo_acesso,
+             u.centro_custo_id, u.ativo, u.status_autorizacao, u.ultimo_acesso,
              cc.nome as centro_custo_nome, cc.codigo as centro_custo_codigo
       FROM usuarios u
       LEFT JOIN centros_custo cc ON u.centro_custo_id = cc.id
-      WHERE u.login = ? AND u.ativo = 1
-    `).get(login) as any;
+      WHERE LOWER(u.login) = ?
+    `).get(login.toLowerCase().trim()) as any;
 
     if (row) {
       if (row.cargo_nome) row.perfil = row.cargo_nome;

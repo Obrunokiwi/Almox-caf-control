@@ -13,6 +13,7 @@ import {
   RotateCcw
 } from 'lucide-react';
 import type { Produto, Requisicao, Usuario } from '../types/index.ts';
+import { formatDateTimeBrasilia } from '../utils/dateUtils.ts';
 
 interface NotificationsDropdownProps {
   produtos: Produto[];
@@ -135,14 +136,7 @@ export const NotificationsDropdown: React.FC<NotificationsDropdownProps> = ({
 
   const formatDateShort = (dateStr: string) => {
     if (!dateStr) return '';
-    const d = new Date(dateStr);
-    if (isNaN(d.getTime())) return dateStr;
-    return d.toLocaleDateString('pt-BR', {
-      day: '2-digit',
-      month: '2-digit',
-      hour: '2-digit',
-      minute: '2-digit',
-    });
+    return formatDateTimeBrasilia(dateStr, { hideSeconds: true });
   };
 
   return (

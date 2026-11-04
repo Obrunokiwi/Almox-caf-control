@@ -42,6 +42,7 @@ import {
 } from 'lucide-react';
 import type { Usuario, CentroCusto, PerfilUsuario, EmpresaUnidade } from '../types/index.ts';
 import { maskCpf } from '../utils/cpfUtils.ts';
+import { formatDateTimeBrasilia } from '../utils/dateUtils.ts';
 
 export const TODOS_MODULOS_SISTEMA = [
   { id: 'fornecedores', label: 'Fornecedores / Entidades', desc: 'Cadastro de fornecedores comerciais e hospitais parceiros', icon: Truck },
@@ -270,6 +271,15 @@ export const UsuariosView: React.FC<UsuariosViewProps> = ({
     estornar_movimentacoes: false,
   });
 
+  // Abas de Status / Lista de Espera
+  const [filtroStatusAba, setFiltroStatusAba] = useState<'todos' | 'aguardando' | 'ativos' | 'inativos' | 'recusados'>('todos');
+  const [authorizingUser, setAuthorizingUser] = useState<Usuario | null>(null);
+  const [authCcId, setAuthCcId] = useState<number | ''>('');
+  const [authAreaIds, setAuthAreaIds] = useState<number[]>([1, 2]);
+  const [authPerfil, setAuthPerfil] = useState<PerfilUsuario>('requisitante');
+  const [rejectingUser, setRejectingUser] = useState<Usuario | null>(null);
+  const [motivoRecusa, setMotivoRecusa] = useState('');
+
   // Paginação
   const [currentPage, setCurrentPage] = useState(1);
   const pageSize = 15;
@@ -280,9 +290,109 @@ export const UsuariosView: React.FC<UsuariosViewProps> = ({
   const { toast } = useToast();
   const isAdmin = currentUser?.perfil === 'admin';
 
+  // Contadores analíticos
+  const pendingCount = useMemo(() => {
+    return usuarios.filter((u) => u.status_autorizacao === 'pendente').length;
+  }, [usuarios]);
+
+  const activeCount = useMemo(() => {
+    return usuarios.filter((u) => u.ativo === 1 && u.status_autorizacao !== 'pendente').length;
+  }, [usuarios]);
+
+  const inactiveCount = useMemo(() => {
+    return usuarios.filter((u) => u.ativo === 0 && u.status_autorizacao !== 'pendente' && u.status_autorizacao !== 'rejeitado').length;
+  }, [usuarios]);
+
+  const rejectedCount = useMemo(() => {
+    return usuarios.filter((u) => u.status_autorizacao === 'rejeitado').length;
+  }, [usuarios]);
+
+  const handleAbrirModalAutorizar = (u: Usuario) => {
+    setAuthorizingUser(u);
+    setAuthCcId(u.centro_custo_id || centrosCusto[0]?.id || '');
+    setAuthAreaIds(u.area_ids && u.area_ids.length > 0 ? [...u.area_ids] : [1, 2]);
+    setAuthPerfil(u.perfil || 'requisitante');
+  };
+
+  const handleAbrirModalRecusar = (u: Usuario) => {
+    setRejectingUser(u);
+    setMotivoRecusa('');
+  };
+
+  const handleConfirmarAutorizacao = async () => {
+    if (!authorizingUser) return;
+    setIsProcessing(true);
+    try {
+      const res = await fetch(`/api/usuarios/${authorizingUser.id}/autorizar`, {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `user:${currentUser?.id}`,
+        },
+        body: JSON.stringify({
+          centro_custo_id: authCcId || null,
+          area_ids: authAreaIds,
+          perfil: authPerfil,
+        }),
+      });
+
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || 'Erro ao autorizar usuário');
+      }
+
+      toast.success('Usuário Autorizado', data.message || `Usuário "${authorizingUser.nome}" autorizado com sucesso!`);
+      setAuthorizingUser(null);
+      onRefresh();
+    } catch (err: any) {
+      toast.error('Erro na Autorização', err.message);
+    } finally {
+      setIsProcessing(false);
+    }
+  };
+
+  const handleConfirmarRecusa = async () => {
+    if (!rejectingUser) return;
+    setIsProcessing(true);
+    try {
+      const res = await fetch(`/api/usuarios/${rejectingUser.id}/rejeitar`, {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `user:${currentUser?.id}`,
+        },
+        body: JSON.stringify({ motivo: motivoRecusa.trim() }),
+      });
+
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || 'Erro ao recusar usuário');
+      }
+
+      toast.success('Cadastro Recusado', data.message || 'Solicitação recusada com sucesso.');
+      setRejectingUser(null);
+      onRefresh();
+    } catch (err: any) {
+      toast.error('Erro ao Recusar', err.message);
+    } finally {
+      setIsProcessing(false);
+    }
+  };
+
   // Filtragem dos usuários
   const filteredUsers = useMemo(() => {
     return usuarios.filter((u) => {
+      // Filtro da aba superior
+      if (filtroStatusAba === 'aguardando') {
+        if (u.status_autorizacao !== 'pendente') return false;
+      } else if (filtroStatusAba === 'ativos') {
+        if (u.ativo !== 1 || u.status_autorizacao === 'pendente') return false;
+      } else if (filtroStatusAba === 'inativos') {
+        if (u.ativo !== 0 || u.status_autorizacao === 'pendente' || u.status_autorizacao === 'rejeitado') return false;
+      } else if (filtroStatusAba === 'recusados') {
+        if (u.status_autorizacao !== 'rejeitado') return false;
+      }
+
       if (filtroCodigo && !u.codigo?.toLowerCase().includes(filtroCodigo.toLowerCase()) && !String(u.id).includes(filtroCodigo)) {
         return false;
       }
@@ -304,7 +414,7 @@ export const UsuariosView: React.FC<UsuariosViewProps> = ({
       }
       return true;
     });
-  }, [usuarios, filtroCodigo, filtroNome, filtroLogin, filtroCpf, filtroEmail, filtroAtivo]);
+  }, [usuarios, filtroStatusAba, filtroCodigo, filtroNome, filtroLogin, filtroCpf, filtroEmail, filtroAtivo]);
 
   // Paginação calculada
   const totalPages = Math.ceil(filteredUsers.length / pageSize) || 1;
@@ -358,8 +468,8 @@ export const UsuariosView: React.FC<UsuariosViewProps> = ({
     setFormEmpresaId(u.empresa_id || 1);
     setFormAtivo(u.ativo);
     setFormAreaIds(u.area_ids && u.area_ids.length > 0 ? [...u.area_ids] : [1, 2]);
-    setFormHistoricoCriacao(u.criado_em ? new Date(u.criado_em).toLocaleString('pt-BR') : '29/09/2026');
-    setFormHistoricoAcesso(u.ultimo_acesso ? new Date(u.ultimo_acesso).toLocaleString('pt-BR') : 'Sem registros recentes');
+    setFormHistoricoCriacao(u.criado_em ? formatDateTimeBrasilia(u.criado_em) : '29/09/2026');
+    setFormHistoricoAcesso(u.ultimo_acesso ? formatDateTimeBrasilia(u.ultimo_acesso) : 'Sem registros recentes');
     const isTargetAdmin = u.id === 1 || u.login === 'admin';
     setFormModulos(
       isTargetAdmin
@@ -1322,6 +1432,128 @@ export const UsuariosView: React.FC<UsuariosViewProps> = ({
         </div>
       )}
 
+      {/* Banner de alerta caso existam usuários aguardando aprovação */}
+      {pendingCount > 0 && filtroStatusAba !== 'aguardando' && (
+        <div className="bg-gradient-to-r from-amber-500/15 via-amber-400/10 to-transparent border border-amber-300 rounded-xl p-3.5 flex flex-col sm:flex-row sm:items-center justify-between gap-3 shadow-2xs animate-fadeIn">
+          <div className="flex items-center gap-2.5">
+            <div className="p-2 bg-amber-500 text-white rounded-lg shrink-0 shadow-xs">
+              <Clock className="w-5 h-5 animate-pulse" />
+            </div>
+            <div>
+              <div className="text-xs font-bold text-amber-950 flex items-center gap-1.5 flex-wrap">
+                <span>{pendingCount} novo(s) cadastro(s) na Lista de Espera aguardando autorização</span>
+                <span className="bg-amber-500 text-white text-[10px] font-extrabold px-2 py-0.2 rounded-full uppercase tracking-wider">
+                  Ação Necessária
+                </span>
+              </div>
+              <p className="text-[11px] text-amber-800 mt-0.5">
+                Novos usuários solicitantes não têm acesso ao sistema até que o Administrador revise e aprove a solicitação.
+              </p>
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={() => {
+              setFiltroStatusAba('aguardando');
+              setCurrentPage(1);
+            }}
+            className="px-3.5 py-1.5 bg-amber-600 hover:bg-amber-700 active:bg-amber-800 text-white font-bold text-xs rounded-lg shrink-0 shadow-sm transition-all cursor-pointer flex items-center gap-1 self-start sm:self-auto"
+          >
+            <span>Ver Lista de Espera ({pendingCount})</span>
+            <ChevronRight className="w-4 h-4" />
+          </button>
+        </div>
+      )}
+
+      {/* Abas Superiores de Status / Lista de Espera */}
+      <div className="flex items-center gap-2 border-b border-slate-200 pb-2 overflow-x-auto">
+        <button
+          type="button"
+          onClick={() => { setFiltroStatusAba('todos'); setCurrentPage(1); }}
+          className={`px-3.5 py-2 rounded-lg text-xs font-bold flex items-center gap-1.5 transition-all cursor-pointer shrink-0 ${
+            filtroStatusAba === 'todos'
+              ? 'bg-slate-800 text-white shadow-xs'
+              : 'bg-white border border-slate-200 text-slate-600 hover:bg-slate-50'
+          }`}
+        >
+          <span>Todos os Usuários</span>
+          <span className={`text-[10px] px-1.5 py-0.2 rounded-full font-bold ${filtroStatusAba === 'todos' ? 'bg-slate-700 text-white' : 'bg-slate-100 text-slate-700'}`}>
+            {usuarios.length}
+          </span>
+        </button>
+
+        <button
+          type="button"
+          onClick={() => { setFiltroStatusAba('aguardando'); setCurrentPage(1); }}
+          className={`px-3.5 py-2 rounded-lg text-xs font-bold flex items-center gap-1.5 transition-all cursor-pointer shrink-0 relative ${
+            filtroStatusAba === 'aguardando'
+              ? 'bg-amber-600 text-white shadow-xs ring-2 ring-amber-400'
+              : pendingCount > 0
+                ? 'bg-amber-50 border border-amber-300 text-amber-900 hover:bg-amber-100'
+                : 'bg-white border border-slate-200 text-slate-600 hover:bg-slate-50'
+          }`}
+        >
+          <Clock className={`w-3.5 h-3.5 ${pendingCount > 0 ? 'text-amber-500 animate-pulse' : 'text-slate-400'}`} />
+          <span>Aguardando Autorização</span>
+          {pendingCount > 0 && (
+            <span className={`text-[10px] px-1.5 py-0.2 rounded-full font-extrabold ${
+              filtroStatusAba === 'aguardando' ? 'bg-amber-800 text-white' : 'bg-amber-500 text-white animate-pulse'
+            }`}>
+              {pendingCount}
+            </span>
+          )}
+        </button>
+
+        <button
+          type="button"
+          onClick={() => { setFiltroStatusAba('ativos'); setCurrentPage(1); }}
+          className={`px-3.5 py-2 rounded-lg text-xs font-bold flex items-center gap-1.5 transition-all cursor-pointer shrink-0 ${
+            filtroStatusAba === 'ativos'
+              ? 'bg-emerald-700 text-white shadow-xs'
+              : 'bg-white border border-slate-200 text-slate-600 hover:bg-slate-50'
+          }`}
+        >
+          <CheckCircle2 className="w-3.5 h-3.5 text-emerald-500" />
+          <span>Ativos / Liberados</span>
+          <span className={`text-[10px] px-1.5 py-0.2 rounded-full font-bold ${filtroStatusAba === 'ativos' ? 'bg-emerald-800 text-white' : 'bg-slate-100 text-slate-700'}`}>
+            {activeCount}
+          </span>
+        </button>
+
+        <button
+          type="button"
+          onClick={() => { setFiltroStatusAba('inativos'); setCurrentPage(1); }}
+          className={`px-3.5 py-2 rounded-lg text-xs font-bold flex items-center gap-1.5 transition-all cursor-pointer shrink-0 ${
+            filtroStatusAba === 'inativos'
+              ? 'bg-slate-600 text-white shadow-xs'
+              : 'bg-white border border-slate-200 text-slate-600 hover:bg-slate-50'
+          }`}
+        >
+          <span>Inativos</span>
+          <span className={`text-[10px] px-1.5 py-0.2 rounded-full font-bold ${filtroStatusAba === 'inativos' ? 'bg-slate-700 text-white' : 'bg-slate-100 text-slate-700'}`}>
+            {inactiveCount}
+          </span>
+        </button>
+
+        {rejectedCount > 0 && (
+          <button
+            type="button"
+            onClick={() => { setFiltroStatusAba('recusados'); setCurrentPage(1); }}
+            className={`px-3.5 py-2 rounded-lg text-xs font-bold flex items-center gap-1.5 transition-all cursor-pointer shrink-0 ${
+              filtroStatusAba === 'recusados'
+                ? 'bg-rose-700 text-white shadow-xs'
+                : 'bg-white border border-slate-200 text-slate-600 hover:bg-slate-50'
+            }`}
+          >
+            <XCircle className="w-3.5 h-3.5 text-rose-500" />
+            <span>Recusados</span>
+            <span className={`text-[10px] px-1.5 py-0.2 rounded-full font-bold ${filtroStatusAba === 'recusados' ? 'bg-rose-800 text-white' : 'bg-slate-100 text-slate-700'}`}>
+              {rejectedCount}
+            </span>
+          </button>
+        )}
+      </div>
+
       {/* =========================================================================
           SEÇÃO 3: GRID DE RESULTADOS (ZEBRADA) + PAGINAÇÃO
          ========================================================================= */}
@@ -1338,18 +1570,36 @@ export const UsuariosView: React.FC<UsuariosViewProps> = ({
                 <th className="py-2.5 px-3 text-center">Perfil</th>
                 <th className="py-2.5 px-3 text-center">Áreas</th>
                 <th className="py-2.5 px-3">Centro de Custo</th>
-                <th className="py-2.5 px-3 text-center">Ativo</th>
+                <th className="py-2.5 px-3 text-center">Status / Acesso</th>
                 <th className="py-2.5 px-3 text-right">Ações</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-200">
               {paginatedUsers.length > 0 ? (
                 paginatedUsers.map((u) => (
-                  <tr key={u.id} className="odd:bg-white even:bg-slate-50/70 hover:bg-teal-50/40 transition-colors">
+                  <tr 
+                    key={u.id} 
+                    className={
+                      u.status_autorizacao === 'pendente'
+                        ? 'bg-amber-50/70 hover:bg-amber-100/60 border-l-4 border-l-amber-500 transition-colors'
+                        : u.status_autorizacao === 'rejeitado'
+                          ? 'bg-rose-50/40 hover:bg-rose-100/40 transition-colors opacity-75'
+                          : 'odd:bg-white even:bg-slate-50/70 hover:bg-teal-50/40 transition-colors'
+                    }
+                  >
                     <td className="py-2 px-3 font-mono font-semibold text-slate-700">
                       {u.codigo || `USR-${String(u.id).padStart(4, '0')}`}
                     </td>
-                    <td className="py-2 px-3 font-medium text-slate-800">{u.nome}</td>
+                    <td className="py-2 px-3 font-medium text-slate-800">
+                      <div className="flex items-center gap-1.5">
+                        <span>{u.nome}</span>
+                        {u.status_autorizacao === 'pendente' && (
+                          <span className="bg-amber-200 text-amber-900 text-[9px] font-extrabold px-1.5 py-0.2 rounded uppercase">
+                            Novo
+                          </span>
+                        )}
+                      </div>
+                    </td>
                     <td className="py-2 px-3 font-mono text-slate-600">{u.login}</td>
                     <td className="py-2 px-3 text-slate-600">{u.cpf || '-'}</td>
                     <td className="py-2 px-3 text-slate-600">{u.email || '-'}</td>
@@ -1373,7 +1623,17 @@ export const UsuariosView: React.FC<UsuariosViewProps> = ({
                     </td>
                     <td className="py-2 px-3 text-slate-600">{u.centro_custo_nome || 'Geral / Almoxarifado'}</td>
                     <td className="py-2 px-3 text-center">
-                      {u.ativo ? (
+                      {u.status_autorizacao === 'pendente' ? (
+                        <span className="inline-flex items-center gap-1 text-amber-900 font-bold bg-amber-100 px-2 py-0.5 rounded text-[10px] border border-amber-300 shadow-2xs" title="Cadastro na Lista de Espera aguardando liberação do Administrador">
+                          <Clock className="w-3 h-3 text-amber-600 animate-pulse" />
+                          <span>AGUARDANDO AUTORIZAÇÃO</span>
+                        </span>
+                      ) : u.status_autorizacao === 'rejeitado' ? (
+                        <span className="inline-flex items-center gap-1 text-rose-800 font-bold bg-rose-50 px-2 py-0.5 rounded text-[10px] border border-rose-200" title="Cadastro recusado pelo Administrador">
+                          <XCircle className="w-3 h-3 text-rose-600" />
+                          <span>RECUSADO</span>
+                        </span>
+                      ) : u.ativo ? (
                         <span className="inline-flex items-center gap-1 text-emerald-700 font-bold bg-emerald-50 px-2 py-0.5 rounded text-[10px] border border-emerald-200">
                           <CheckCircle2 className="w-3 h-3" />
                           <span>SIM</span>
@@ -1386,36 +1646,71 @@ export const UsuariosView: React.FC<UsuariosViewProps> = ({
                       )}
                     </td>
                     <td className="py-2 px-3 text-right">
-                      <div className="flex items-center justify-end gap-1">
-                        <button
-                          type="button"
-                          onClick={() => handleVisualizar(u)}
-                          className="p-1.5 rounded hover:bg-slate-200 text-slate-500 hover:text-slate-800 transition-colors"
-                          title="Visualizar usuário"
-                        >
-                          <Eye className="w-4 h-4" />
-                        </button>
-                        {isAdmin && (
-                          <>
-                            <button
-                              type="button"
-                              onClick={() => handleEditar(u)}
-                              className="p-1.5 rounded hover:bg-teal-100 text-teal-700 transition-colors cursor-pointer"
-                              title="Editar usuário"
-                            >
-                              <Edit2 className="w-4 h-4" />
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => setDeletingUser(u)}
-                              className="p-1.5 rounded hover:bg-rose-100 text-rose-600 transition-colors cursor-pointer"
-                              title="Excluir usuário"
-                            >
-                              <Trash2 className="w-4 h-4" />
-                            </button>
-                          </>
-                        )}
-                      </div>
+                      {u.status_autorizacao === 'pendente' ? (
+                        <div className="flex items-center justify-end gap-1.5">
+                          {isAdmin && (
+                            <>
+                              <button
+                                type="button"
+                                onClick={() => handleAbrirModalAutorizar(u)}
+                                className="px-2.5 py-1 rounded-md bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800 text-white font-bold text-[11px] flex items-center gap-1 shadow-xs transition-colors cursor-pointer"
+                                title="Autorizar e Liberar Acesso"
+                              >
+                                <CheckCircle2 className="w-3.5 h-3.5" />
+                                <span>AUTORIZAR</span>
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => handleAbrirModalRecusar(u)}
+                                className="px-2 py-1 rounded-md bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 font-semibold text-[11px] flex items-center gap-1 transition-colors cursor-pointer"
+                                title="Recusar Solicitação de Cadastro"
+                              >
+                                <XCircle className="w-3.5 h-3.5" />
+                                <span>RECUSAR</span>
+                              </button>
+                            </>
+                          )}
+                          <button
+                            type="button"
+                            onClick={() => handleVisualizar(u)}
+                            className="p-1.5 rounded hover:bg-slate-200 text-slate-500 hover:text-slate-800 transition-colors cursor-pointer"
+                            title="Visualizar usuário"
+                          >
+                            <Eye className="w-4 h-4" />
+                          </button>
+                        </div>
+                      ) : (
+                        <div className="flex items-center justify-end gap-1">
+                          <button
+                            type="button"
+                            onClick={() => handleVisualizar(u)}
+                            className="p-1.5 rounded hover:bg-slate-200 text-slate-500 hover:text-slate-800 transition-colors cursor-pointer"
+                            title="Visualizar usuário"
+                          >
+                            <Eye className="w-4 h-4" />
+                          </button>
+                          {isAdmin && (
+                            <>
+                              <button
+                                type="button"
+                                onClick={() => handleEditar(u)}
+                                className="p-1.5 rounded hover:bg-teal-100 text-teal-700 transition-colors cursor-pointer"
+                                title="Editar usuário"
+                              >
+                                <Edit2 className="w-4 h-4" />
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => setDeletingUser(u)}
+                                className="p-1.5 rounded hover:bg-rose-100 text-rose-600 transition-colors cursor-pointer"
+                                title="Excluir usuário"
+                              >
+                                <Trash2 className="w-4 h-4" />
+                              </button>
+                            </>
+                          )}
+                        </div>
+                      )}
                     </td>
                   </tr>
                 ))
@@ -1535,6 +1830,215 @@ export const UsuariosView: React.FC<UsuariosViewProps> = ({
               >
                 Sim, Aplicar Módulos Padrão
               </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Modal de Autorização de Usuário (Lista de Espera) */}
+      {authorizingUser && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 backdrop-blur-xs p-4 animate-fadeIn">
+          <div className="bg-white rounded-xl shadow-2xl border border-slate-200 max-w-lg w-full overflow-hidden">
+            {/* Header */}
+            <div className="bg-gradient-to-r from-emerald-700 to-teal-800 px-6 py-4 text-white flex items-center justify-between">
+              <div className="flex items-center gap-2.5">
+                <div className="p-2 bg-white/20 rounded-lg">
+                  <UserCheck className="w-5 h-5 text-white" />
+                </div>
+                <div>
+                  <h3 className="text-base font-bold text-white">Autorizar Acesso de Usuário</h3>
+                  <p className="text-xs text-emerald-100">Lista de Espera / Auto-Cadastro</p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setAuthorizingUser(null)}
+                className="text-white/80 hover:text-white p-1 rounded-lg hover:bg-white/10 transition-colors cursor-pointer text-sm"
+              >
+                ✕
+              </button>
+            </div>
+
+            {/* Body */}
+            <div className="p-6 space-y-4">
+              {/* Resumo do Solicitante */}
+              <div className="p-3.5 bg-slate-50 border border-slate-200 rounded-lg space-y-2 text-xs">
+                <div className="flex justify-between items-center border-b border-slate-200 pb-2">
+                  <span className="font-bold text-slate-800 text-sm">{authorizingUser.nome}</span>
+                  <span className="font-mono bg-amber-100 text-amber-900 px-2 py-0.5 rounded font-bold text-[10px]">
+                    ⏳ Aguardando Autorização
+                  </span>
+                </div>
+                <div className="grid grid-cols-2 gap-2 text-slate-600">
+                  <div><strong className="text-slate-700">Login:</strong> <span className="font-mono">{authorizingUser.login}</span></div>
+                  <div><strong className="text-slate-700">CPF:</strong> {authorizingUser.cpf || '-'}</div>
+                  <div><strong className="text-slate-700">E-mail:</strong> {authorizingUser.email || '-'}</div>
+                  <div><strong className="text-slate-700">Data do Pedido:</strong> {authorizingUser.criado_em ? new Date(authorizingUser.criado_em).toLocaleDateString('pt-BR') : '-'}</div>
+                </div>
+              </div>
+
+              {/* Centro de Custo confirmation/selection */}
+              <div>
+                <label className="block text-[11px] font-bold text-slate-600 uppercase tracking-wider mb-1">
+                  Centro de Custo Solicitante *
+                </label>
+                <SearchableSelect
+                  options={centroCustoOptions}
+                  value={authCcId}
+                  onChange={(val) => setAuthCcId(val ? Number(val) : '')}
+                  placeholder="Selecione o centro de custo..."
+                />
+              </div>
+
+              {/* Áreas Liberadas */}
+              <div>
+                <label className="block text-[11px] font-bold text-slate-600 uppercase tracking-wider mb-1.5">
+                  Áreas de Atuação Liberadas
+                </label>
+                <div className="grid grid-cols-2 gap-2">
+                  <label className={`flex items-center gap-2 p-2.5 rounded-lg border cursor-pointer text-xs transition-all ${
+                    authAreaIds.includes(1) ? 'bg-teal-50 border-teal-300 text-teal-900 font-bold' : 'bg-slate-50 border-slate-200 text-slate-600'
+                  }`}>
+                    <input
+                      type="checkbox"
+                      checked={authAreaIds.includes(1)}
+                      onChange={(e) => {
+                        if (e.target.checked) setAuthAreaIds([...authAreaIds, 1]);
+                        else setAuthAreaIds(authAreaIds.filter((id) => id !== 1));
+                      }}
+                      className="w-4 h-4 text-teal-600 rounded"
+                    />
+                    <span>ALM (Almoxarifado)</span>
+                  </label>
+
+                  <label className={`flex items-center gap-2 p-2.5 rounded-lg border cursor-pointer text-xs transition-all ${
+                    authAreaIds.includes(2) ? 'bg-amber-50 border-amber-300 text-amber-900 font-bold' : 'bg-slate-50 border-slate-200 text-slate-600'
+                  }`}>
+                    <input
+                      type="checkbox"
+                      checked={authAreaIds.includes(2)}
+                      onChange={(e) => {
+                        if (e.target.checked) setAuthAreaIds([...authAreaIds, 2]);
+                        else setAuthAreaIds(authAreaIds.filter((id) => id !== 2));
+                      }}
+                      className="w-4 h-4 text-teal-600 rounded"
+                    />
+                    <span>CAF (Farmácia)</span>
+                  </label>
+                </div>
+                <p className="text-[11px] text-slate-400 mt-1">O solicitante poderá abrir requisições nas áreas marcadas.</p>
+              </div>
+
+              {/* Perfil */}
+              <div>
+                <label className="block text-[11px] font-bold text-slate-600 uppercase tracking-wider mb-1">
+                  Perfil de Acesso
+                </label>
+                <SearchableSelect
+                  options={perfilOptions}
+                  value={authPerfil}
+                  onChange={(val) => setAuthPerfil(val as PerfilUsuario)}
+                  placeholder="Selecione o perfil..."
+                />
+              </div>
+            </div>
+
+            {/* Footer */}
+            <div className="bg-slate-50 px-6 py-3.5 border-t border-slate-200 flex items-center justify-end gap-2.5">
+              <button
+                type="button"
+                onClick={() => setAuthorizingUser(null)}
+                disabled={isProcessing}
+                className="px-4 py-2 rounded-lg border border-slate-300 text-slate-700 hover:bg-slate-100 text-xs font-semibold uppercase tracking-wider cursor-pointer"
+              >
+                Cancelar
+              </button>
+              <button
+                type="button"
+                onClick={handleConfirmarAutorizacao}
+                disabled={isProcessing || authAreaIds.length === 0}
+                className="px-5 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800 text-white text-xs font-bold uppercase tracking-wider flex items-center gap-1.5 shadow-sm transition-all cursor-pointer disabled:opacity-50"
+              >
+                <CheckCircle2 className="w-4 h-4" />
+                <span>{isProcessing ? 'Autorizando...' : 'Confirmar e Liberar Acesso'}</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Modal de Recusa de Cadastro */}
+      {rejectingUser && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 backdrop-blur-xs p-4 animate-fadeIn">
+          <div className="bg-white rounded-xl shadow-2xl border border-slate-200 max-w-md w-full overflow-hidden">
+            <div className="bg-rose-700 px-6 py-4 text-white flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <AlertTriangle className="w-5 h-5 text-white" />
+                <h3 className="text-base font-bold text-white">Recusar Solicitação de Cadastro</h3>
+              </div>
+              <button
+                type="button"
+                onClick={() => setRejectingUser(null)}
+                className="text-white/80 hover:text-white p-1 rounded hover:bg-white/10 cursor-pointer"
+              >
+                ✕
+              </button>
+            </div>
+
+            <div className="p-6 space-y-4 text-xs">
+              <p className="text-slate-700 leading-relaxed">
+                Você está prestes a recusar a solicitação de acesso de <strong>{rejectingUser.nome}</strong> (login: <span className="font-mono text-slate-900">{rejectingUser.login}</span>).
+              </p>
+
+              <div>
+                <label className="block text-[11px] font-bold text-slate-600 uppercase tracking-wider mb-1">
+                  Motivo da Recusa (Opcional)
+                </label>
+                <input
+                  type="text"
+                  value={motivoRecusa}
+                  onChange={(e) => setMotivoRecusa(e.target.value)}
+                  placeholder="ex: Cadastro duplicado, setor não autorizado..."
+                  className="w-full px-3 py-2 bg-slate-50 border border-slate-300 rounded text-xs text-slate-800 focus:bg-white focus:border-rose-500 shadow-inner"
+                />
+              </div>
+
+              <div className="p-3 bg-amber-50 border border-amber-200 rounded text-amber-900 text-[11px] flex items-start gap-2">
+                <Clock className="w-4 h-4 shrink-0 text-amber-600 mt-0.5" />
+                <span>O solicitante será bloqueado de efetuar login no sistema. Você poderá reavaliar esta decisão ou excluir o registro permanentemente a qualquer momento.</span>
+              </div>
+            </div>
+
+            <div className="bg-slate-50 px-6 py-3.5 border-t border-slate-200 flex items-center justify-between">
+              <button
+                type="button"
+                onClick={() => {
+                  const usr = rejectingUser;
+                  setRejectingUser(null);
+                  setDeletingUser(usr);
+                }}
+                className="text-rose-600 hover:text-rose-800 font-semibold text-xs underline cursor-pointer"
+              >
+                Excluir Permanentemente
+              </button>
+
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => setRejectingUser(null)}
+                  className="px-3.5 py-1.5 rounded border border-slate-300 text-slate-700 hover:bg-slate-100 text-xs font-semibold cursor-pointer"
+                >
+                  Cancelar
+                </button>
+                <button
+                  type="button"
+                  onClick={handleConfirmarRecusa}
+                  disabled={isProcessing}
+                  className="px-4 py-1.5 rounded bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold cursor-pointer shadow-sm disabled:opacity-50"
+                >
+                  {isProcessing ? 'Recusando...' : 'Confirmar Recusa'}
+                </button>
+              </div>
             </div>
           </div>
         </div>

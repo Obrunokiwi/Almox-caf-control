@@ -45,6 +45,7 @@ CREATE TABLE IF NOT EXISTS usuarios (
     permissoes TEXT,
     centro_custo_id INTEGER REFERENCES centros_custo(id) ON DELETE SET NULL,
     ativo INTEGER NOT NULL DEFAULT 1,
+    status_autorizacao TEXT NOT NULL DEFAULT 'aprovado' CHECK (status_autorizacao IN ('pendente', 'aprovado', 'rejeitado')),
     criado_em DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     ultimo_acesso DATETIME
 );

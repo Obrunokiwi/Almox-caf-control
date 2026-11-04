@@ -21,6 +21,7 @@ import {
 import type { Consumo, ItemConsumo, Produto, LoteEstoque, CentroCusto, Usuario } from '../types/index.ts';
 import { SearchableSelect, type SearchableOption } from './SearchableSelect.tsx';
 import { getAuthHeaders } from '../utils/apiUtils.ts';
+import { formatDateTimeBrasilia } from '../utils/dateUtils.ts';
 
 interface ConsumoViewProps {
   currentUser: Usuario;
@@ -556,13 +557,7 @@ export const ConsumoView: React.FC<ConsumoViewProps> = ({
                     {c.numero_consumo}
                   </td>
                   <td className="px-4 py-3 text-slate-600">
-                    {new Date(c.data_consumo).toLocaleString('pt-BR', {
-                      day: '2-digit',
-                      month: '2-digit',
-                      year: 'numeric',
-                      hour: '2-digit',
-                      minute: '2-digit',
-                    })}
+                    {formatDateTimeBrasilia(c.data_consumo, { hideSeconds: true })}
                   </td>
                   <td className="px-4 py-3 font-semibold text-slate-900">
                     {c.centro_custo_nome || '—'}
@@ -837,7 +832,7 @@ export const ConsumoView: React.FC<ConsumoViewProps> = ({
                   {selectedConsumo.numero_consumo}
                 </h3>
                 <p className="text-xs text-slate-500">
-                  Data: {new Date(selectedConsumo.data_consumo).toLocaleString('pt-BR')}
+                  Data: {formatDateTimeBrasilia(selectedConsumo.data_consumo)}
                 </p>
               </div>
               <button
@@ -1027,7 +1022,7 @@ export const ConsumoView: React.FC<ConsumoViewProps> = ({
                     {selectedConsumo.numero_consumo}
                   </div>
                   <div className="text-[11px] text-slate-500">
-                    {new Date(selectedConsumo.data_consumo).toLocaleString('pt-BR')}
+                    {formatDateTimeBrasilia(selectedConsumo.data_consumo)}
                   </div>
                 </div>
               </div>

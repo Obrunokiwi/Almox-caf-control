@@ -13,7 +13,8 @@ import {
   KeyRound,
   ArrowLeft,
   Mail,
-  CreditCard
+  CreditCard,
+  Clock
 } from 'lucide-react';
 import type { EmpresaUnidade, Usuario } from '../types/index.ts';
 import { SearchableSelect, type SearchableOption } from './SearchableSelect.tsx';
@@ -376,11 +377,31 @@ export const LoginView: React.FC<LoginViewProps> = ({
             </div>
           )}
 
-          {/* Mensagens de Erro */}
+          {/* Mensagens de Erro / Alerta de Autorização */}
           {errorMsg && (
-            <div className="mb-6 p-3.5 rounded bg-rose-50 border border-rose-200 text-rose-700 text-xs flex items-start gap-2.5 animate-fadeIn">
-              <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
-              <span className="font-medium">{errorMsg}</span>
+            <div className={`mb-6 p-4 rounded-lg border text-xs flex items-start gap-3 animate-fadeIn ${
+              errorMsg.toLowerCase().includes('lista de espera') || errorMsg.toLowerCase().includes('autorização')
+                ? 'bg-amber-50 border-amber-300 text-amber-900 shadow-sm'
+                : 'bg-rose-50 border-rose-200 text-rose-700'
+            }`}>
+              {errorMsg.toLowerCase().includes('lista de espera') || errorMsg.toLowerCase().includes('autorização') ? (
+                <div className="p-1.5 bg-amber-200 text-amber-900 rounded-full shrink-0 mt-0.5">
+                  <Clock className="w-4 h-4 animate-pulse" />
+                </div>
+              ) : (
+                <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
+              )}
+              <div>
+                {(errorMsg.toLowerCase().includes('lista de espera') || errorMsg.toLowerCase().includes('autorização')) && (
+                  <div className="font-bold text-[13px] text-amber-950 mb-1 flex items-center gap-1.5">
+                    <span>Acesso em Análise</span>
+                    <span className="text-[10px] bg-amber-200 text-amber-900 font-bold px-2 py-0.5 rounded-full uppercase tracking-wider">
+                      Lista de Espera
+                    </span>
+                  </div>
+                )}
+                <span className="leading-relaxed font-medium">{errorMsg}</span>
+              </div>
             </div>
           )}
 

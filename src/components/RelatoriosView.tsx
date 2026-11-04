@@ -22,6 +22,7 @@ import autoTable from 'jspdf-autotable';
 import { ConsumoMensalChart } from './ConsumoMensalChart.tsx';
 import { IndicadoresPerformanceView } from './IndicadoresPerformanceView.tsx';
 import { finalizeJsPDF, type PdfGeneratedDocument, type PdfOutputMode } from '../utils/pdfGenerator.ts';
+import { formatDateTimeBrasilia } from '../utils/dateUtils.ts';
 import { PdfPrintModal } from './PdfPrintModal.tsx';
 import { HelpFloatingModal } from './HelpFloatingModal.tsx';
 import { CentroCustoAlertBanner } from './CentroCustoAlertBanner.tsx';
@@ -954,7 +955,7 @@ export const RelatoriosView: React.FC<RelatoriosViewProps> = ({
       };
 
       const movimentacoesRows = listaMovimentacoes.slice(0, 80).map((m) => [
-        m.data_movimentacao ? new Date(m.data_movimentacao).toLocaleString('pt-BR') : '-',
+        m.data_movimentacao ? formatDateTimeBrasilia(m.data_movimentacao) : '-',
         formatTipoMov(m.tipo, (m as any).motivo_movimentacao),
         m.produto_codigo || '-',
         m.produto_nome || '-',

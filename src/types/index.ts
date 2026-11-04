@@ -122,6 +122,7 @@ export interface Usuario {
   empresa_id?: number | null;
   empresa_nome?: string;
   ativo: number;
+  status_autorizacao?: 'aprovado' | 'pendente' | 'rejeitado';
   criado_em: string;
   ultimo_acesso?: string | null;
   permissoes?: string[];
@@ -319,7 +320,9 @@ export type AcaoHistoricoRequisicao =
   | 'rejeicao_total'
   | 'cancelamento'
   | 'alteracao_prioridade'
-  | 'devolucao_setor';
+  | 'devolucao_setor'
+  | 'reabertura'
+  | 'salvar_rascunho';
 
 export interface LoteDispensado {
   lote_id: number;
@@ -478,6 +481,9 @@ export interface ItemEmprestimoInstitucional {
   data_validade?: string | null;
   quantidade: number;
   quantidade_devolvida: number;
+  valor_unitario?: number;
+  custo_unitario?: number;
+  valor_total?: number;
 }
 
 export interface EmprestimoInstitucional {
@@ -499,6 +505,7 @@ export interface EmprestimoInstitucional {
   responsavel_almoxarifado_nome?: string;
   responsavel_entidade_nome?: string | null;
   observacao?: string | null;
+  valor_total?: number;
   itens?: ItemEmprestimoInstitucional[];
 }
 

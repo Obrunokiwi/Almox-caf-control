@@ -17,6 +17,7 @@ import {
   X,
   Package,
   Handshake,
+  Calendar,
 } from 'lucide-react';
 import type {
   Emprestimo,
@@ -31,6 +32,7 @@ import { useToast } from '../context/ToastContext.tsx';
 import { HelpFloatingModal } from './HelpFloatingModal.tsx';
 import { SearchableSelect, type SearchableOption } from './SearchableSelect.tsx';
 import { getAuthHeaders } from '../utils/apiUtils.ts';
+import { formatDateTimeBrasilia } from '../utils/dateUtils.ts';
 
 interface EmprestimosViewProps {
   emprestimos?: Emprestimo[];
@@ -55,6 +57,8 @@ interface DraftItemEmprestimo {
   numero_lote: string;
   data_validade: string;
   quantidade: number;
+  valor_unitario: number;
+  valor_total: number;
 }
 
 export const EmprestimosView: React.FC<EmprestimosViewProps> = ({
@@ -87,6 +91,7 @@ export const EmprestimosView: React.FC<EmprestimosViewProps> = ({
   // Formulário de Novo Empréstimo Institucional (Cenário A ou Cenário B)
   const [isFormOpen, setIsFormOpen] = useState<boolean>(isCreateModalOpen);
   const [formTipo, setFormTipo] = useState<'recebido' | 'concedido'>('recebido');
+  const [formDataOperacao, setFormDataOperacao] = useState<string>(() => new Date().toISOString().slice(0, 10));
   const [formEntidadeId, setFormEntidadeId] = useState<number>(0);
   const [formResponsavelParceiro, setFormResponsavelParceiro] = useState<string>('');
   const [formObservacao, setFormObservacao] = useState<string>('Empréstimo emergencial autorizado pela diretoria');
@@ -98,6 +103,10 @@ export const EmprestimosView: React.FC<EmprestimosViewProps> = ({
   const [itemNumeroLote, setItemNumeroLote] = useState<string>('LT-2026');
   const [itemDataValidade, setItemDataValidade] = useState<string>('2027-12-31');
   const [itemQuantidade, setItemQuantidade] = useState<number>(10);
+  const [itemCustoUnitario, setItemCustoUnitario] = useState<number>(() => {
+    const p = produtos[0];
+    return Number(p?.valor_unitario ?? p?.custo_unitario ?? 0);
+  });
 
   const [formError, setFormError] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState<boolean>(false);
@@ -198,6 +207,8 @@ export const EmprestimosView: React.FC<EmprestimosViewProps> = ({
 
   const handleAbrirNovoEmprestimo = (tipo: 'recebido' | 'concedido') => {
     setFormTipo(tipo);
+    // Data da operação definida pelo usuário (padrão hoje)
+    setFormDataOperacao(new Date().toISOString().slice(0, 10));
     // Prioriza selecionar uma entidade parceira se houver
     const parceira = entidadesAtivas.find((e) => e.tipo_entidade === 'entidade_parceira') || entidadesAtivas[0];
     setFormEntidadeId(parceira?.id || 0);
@@ -211,6 +222,7 @@ export const EmprestimosView: React.FC<EmprestimosViewProps> = ({
 
     const defaultProd = produtos[0];
     setItemProdId(defaultProd?.id || 0);
+    setItemCustoUnitario(Number(defaultProd?.valor_unitario ?? defaultProd?.custo_unitario ?? 0));
     const loteValido = (defaultProd?.lotes || []).find((l) => l.quantidade_atual > 0 && l.status_validade !== 'vencido');
     setItemLoteId(loteValido?.id || 0);
     setItemNumeroLote(tipo === 'recebido' ? `LT-${Math.floor(1000 + Math.random() * 9000)}` : loteValido?.numero_lote || '');
@@ -263,6 +275,8 @@ export const EmprestimosView: React.FC<EmprestimosViewProps> = ({
     }
 
     const loteObj = lotesValidosItem.find((l) => l.id === Number(itemLoteId));
+    const custoUn = Number(itemCustoUnitario) || Number(prod.valor_unitario ?? prod.custo_unitario ?? 0);
+    const subtotal = custoUn * Number(itemQuantidade);
 
     setDraftItens((prev) => [
       ...prev,
@@ -279,6 +293,8 @@ export const EmprestimosView: React.FC<EmprestimosViewProps> = ({
             ? loteObj?.data_validade || itemDataValidade
             : itemDataValidade,
         quantidade: Number(itemQuantidade),
+        valor_unitario: custoUn,
+        valor_total: subtotal,
       },
     ]);
   };
@@ -299,7 +315,9 @@ export const EmprestimosView: React.FC<EmprestimosViewProps> = ({
     // Se o usuário não clicou em "+ Incluir Item na Ficha", mas preencheu o produto atual, inclui automaticamente
     let itensFinais = [...draftItens];
     if (itensFinais.length === 0 && itemProdId && itemQuantidade > 0) {
+      const prod = produtos.find((p) => p.id === Number(itemProdId));
       const loteObj = lotesValidosItem.find((l) => l.id === Number(itemLoteId));
+      const custoUn = Number(itemCustoUnitario) || Number(prod?.valor_unitario ?? prod?.custo_unitario ?? 0);
       itensFinais = [
         {
           tempId: 'auto-1',
@@ -314,6 +332,8 @@ export const EmprestimosView: React.FC<EmprestimosViewProps> = ({
               ? loteObj?.data_validade || itemDataValidade
               : itemDataValidade,
           quantidade: Number(itemQuantidade),
+          valor_unitario: custoUn,
+          valor_total: custoUn * Number(itemQuantidade),
         },
       ];
     }
@@ -335,6 +355,7 @@ export const EmprestimosView: React.FC<EmprestimosViewProps> = ({
         body: JSON.stringify({
           tipo: formTipo,
           entidade_id: formEntidadeId,
+          data_operacao: formDataOperacao,
           responsavel_entidade_parceira: formResponsavelParceiro.trim() || null,
           observacao: formObservacao.trim() || null,
           itens: itensFinais,
@@ -635,8 +656,8 @@ export const EmprestimosView: React.FC<EmprestimosViewProps> = ({
           )}
 
           <form onSubmit={handleSalvarEmprestimo} className="p-6 space-y-6">
-            {/* Seleção de Cenário e Entidade Parceira */}
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+            {/* Seleção de Cenário, Entidade Parceira e Data do Empréstimo */}
+            <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
               <div>
                 <label className="block text-[11px] font-bold text-slate-600 uppercase tracking-wider mb-1">
                   Modalidade da Operação *
@@ -649,13 +670,13 @@ export const EmprestimosView: React.FC<EmprestimosViewProps> = ({
                       setDraftItens([]);
                       setFormError(null);
                     }}
-                    className={`py-2 px-2.5 rounded text-xs font-bold uppercase tracking-wide border transition-all cursor-pointer ${
+                    className={`py-2 px-2 rounded text-xs font-bold uppercase tracking-wide border transition-all cursor-pointer ${
                       formTipo === 'recebido'
                         ? 'bg-emerald-600 text-white border-emerald-700 shadow'
                         : 'bg-slate-100 text-slate-600 border-slate-300 hover:bg-slate-200'
                     }`}
                   >
-                    Pegamos Emprestado (+)
+                    Pegamos (+)
                   </button>
                   <button
                     type="button"
@@ -664,7 +685,7 @@ export const EmprestimosView: React.FC<EmprestimosViewProps> = ({
                       setDraftItens([]);
                       setFormError(null);
                     }}
-                    className={`py-2 px-2.5 rounded text-xs font-bold uppercase tracking-wide border transition-all cursor-pointer ${
+                    className={`py-2 px-2 rounded text-xs font-bold uppercase tracking-wide border transition-all cursor-pointer ${
                       formTipo === 'concedido'
                         ? 'bg-indigo-600 text-white border-indigo-700 shadow'
                         : 'bg-slate-100 text-slate-600 border-slate-300 hover:bg-slate-200'
@@ -677,7 +698,7 @@ export const EmprestimosView: React.FC<EmprestimosViewProps> = ({
 
               <div>
                 <label className="block text-[11px] font-bold text-slate-600 uppercase tracking-wider mb-1">
-                  Hospital / Entidade Parceira (ou Fornecedor) *
+                  Hospital / Entidade Parceira *
                 </label>
                 <SearchableSelect
                   options={entidadeOptions}
@@ -695,14 +716,28 @@ export const EmprestimosView: React.FC<EmprestimosViewProps> = ({
               </div>
 
               <div>
+                <label className="block text-[11px] font-bold text-slate-600 uppercase tracking-wider mb-1 flex items-center gap-1">
+                  <Calendar className="w-3.5 h-3.5 text-teal-700" />
+                  <span>Data do Empréstimo *</span>
+                </label>
+                <input
+                  type="date"
+                  value={formDataOperacao}
+                  onChange={(e) => setFormDataOperacao(e.target.value)}
+                  required
+                  className="w-full px-3 py-2 bg-[#f1f3f5] border border-slate-300 rounded text-xs text-slate-800 focus:bg-white focus:border-teal-500 shadow-inner font-mono font-medium"
+                />
+              </div>
+
+              <div>
                 <label className="block text-[11px] font-bold text-slate-600 uppercase tracking-wider mb-1">
-                  Responsável da Entidade Parceira (Portador / Recebedor)
+                  Responsável da Entidade Parceira
                 </label>
                 <input
                   type="text"
                   value={formResponsavelParceiro}
                   onChange={(e) => setFormResponsavelParceiro(e.target.value)}
-                  placeholder="Nome de quem entregou ou retirou pela entidade parceira..."
+                  placeholder="Portador ou recebedor..."
                   className="w-full px-3 py-2 bg-[#f1f3f5] border border-slate-300 rounded text-xs text-slate-800 focus:bg-white focus:border-teal-500 shadow-inner"
                 />
               </div>
@@ -718,7 +753,7 @@ export const EmprestimosView: React.FC<EmprestimosViewProps> = ({
               </div>
 
               <div className="grid grid-cols-1 md:grid-cols-12 gap-3 items-end">
-                <div className="md:col-span-4">
+                <div className={formTipo === 'concedido' ? 'md:col-span-3' : 'md:col-span-3'}>
                   <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-1">
                     Produto (Código Único) *
                   </label>
@@ -729,6 +764,8 @@ export const EmprestimosView: React.FC<EmprestimosViewProps> = ({
                       const nextId = Number(val);
                       setItemProdId(nextId);
                       const pObj = produtos.find((p) => p.id === nextId);
+                      const custo = Number(pObj?.valor_unitario ?? pObj?.custo_unitario ?? 0);
+                      setItemCustoUnitario(custo);
                       const validos = (pObj?.lotes || []).filter(
                         (l) => l.quantidade_atual > 0 && l.status_validade !== 'vencido'
                       );
@@ -743,9 +780,9 @@ export const EmprestimosView: React.FC<EmprestimosViewProps> = ({
                 </div>
 
                 {formTipo === 'concedido' ? (
-                  <div className="md:col-span-4">
+                  <div className="md:col-span-3">
                     <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-1">
-                      Lote em Estoque (Bloqueio Automático de Vencidos) *
+                      Lote em Estoque (Bloqueio de Vencidos) *
                     </label>
                     <SearchableSelect
                       options={loteOptions}
@@ -782,7 +819,27 @@ export const EmprestimosView: React.FC<EmprestimosViewProps> = ({
                   </>
                 )}
 
+                {/* Custo do Medicamento / Nosso Custo (Puxado Automaticamente) */}
                 <div className="md:col-span-2">
+                  <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-1">
+                    Nosso Custo Unit. (R$) *
+                  </label>
+                  <div className="relative">
+                    <span className="absolute left-2.5 top-2 text-xs font-bold text-slate-400">R$</span>
+                    <input
+                      type="number"
+                      step="0.01"
+                      min="0"
+                      value={itemCustoUnitario}
+                      onChange={(e) => setItemCustoUnitario(Math.max(0, parseFloat(e.target.value) || 0))}
+                      title="Custo unitário puxado automaticamente do cadastro oficial"
+                      className="w-full pl-8 pr-2 py-2 bg-emerald-50/60 border border-emerald-300 rounded text-xs text-emerald-950 font-mono font-bold"
+                    />
+                  </div>
+                  <span className="text-[9px] text-emerald-700 font-semibold block mt-0.5">Automático do cadastro</span>
+                </div>
+
+                <div className={formTipo === 'concedido' ? 'md:col-span-2' : 'md:col-span-2'}>
                   <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-1">
                     Quantidade ({prodSelecionadoItem?.unidade_medida || 'UN'}) *
                   </label>
@@ -791,8 +848,13 @@ export const EmprestimosView: React.FC<EmprestimosViewProps> = ({
                     min="1"
                     value={itemQuantidade}
                     onChange={(e) => setItemQuantidade(Math.max(1, Number(e.target.value)))}
-                    className="w-full px-3 py-2 bg-white border border-slate-300 rounded text-xs text-slate-800 font-mono"
+                    className="w-full px-3 py-2 bg-white border border-slate-300 rounded text-xs text-slate-800 font-mono font-bold"
                   />
+                  {itemCustoUnitario > 0 && itemQuantidade > 0 && (
+                    <span className="text-[9px] text-slate-500 font-mono block mt-0.5">
+                      Subtotal: R$ {(itemCustoUnitario * itemQuantidade).toFixed(2)}
+                    </span>
+                  )}
                 </div>
 
                 <div className="md:col-span-2">
@@ -808,7 +870,7 @@ export const EmprestimosView: React.FC<EmprestimosViewProps> = ({
               </div>
 
               {draftItens.length > 0 && (
-                <div className="border border-slate-200 rounded-lg overflow-hidden bg-white">
+                <div className="border border-slate-200 rounded-lg overflow-hidden bg-white shadow-2xs">
                   <table className="w-full text-left text-xs">
                     <thead className="bg-slate-100 text-slate-700 font-bold uppercase">
                       <tr>
@@ -818,12 +880,16 @@ export const EmprestimosView: React.FC<EmprestimosViewProps> = ({
                         <th className="py-2 px-3 text-center">Validade</th>
                         <th className="py-2 px-3 text-right">Quantidade</th>
                         <th className="py-2 px-3 text-center">UN</th>
+                        <th className="py-2 px-3 text-right">Custo Unit. (R$)</th>
+                        <th className="py-2 px-3 text-right">Subtotal (R$)</th>
                         <th className="py-2 px-3 text-right">Remover</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-200">
                       {draftItens.map((di) => {
                         const p = produtos.find((pr) => pr.id === di.produto_id);
+                        const custoUnit = di.valor_unitario ?? Number(p?.valor_unitario ?? p?.custo_unitario ?? 0);
+                        const subtotal = di.valor_total ?? (custoUnit * di.quantidade);
                         return (
                           <tr key={di.tempId}>
                             <td className="py-2 px-3 font-mono font-bold text-teal-800">{p?.codigo}</td>
@@ -834,6 +900,12 @@ export const EmprestimosView: React.FC<EmprestimosViewProps> = ({
                             </td>
                             <td className="py-2 px-3 text-right font-mono font-bold">{di.quantidade}</td>
                             <td className="py-2 px-3 text-center font-bold text-slate-600">{p?.unidade_medida}</td>
+                            <td className="py-2 px-3 text-right font-mono text-emerald-800 font-medium">
+                              R$ {custoUnit.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                            </td>
+                            <td className="py-2 px-3 text-right font-mono font-bold text-slate-900">
+                              R$ {subtotal.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                            </td>
                             <td className="py-2 px-3 text-right">
                               <button
                                 type="button"
@@ -847,6 +919,17 @@ export const EmprestimosView: React.FC<EmprestimosViewProps> = ({
                         );
                       })}
                     </tbody>
+                    <tfoot className="bg-slate-50 border-t border-slate-200 font-bold text-xs">
+                      <tr>
+                        <td colSpan={6} className="py-2 px-3 text-right text-slate-600 uppercase">
+                          Valor Total do Empréstimo:
+                        </td>
+                        <td colSpan={2} className="py-2 px-3 text-right font-mono text-emerald-800 text-sm font-black">
+                          R$ {draftItens.reduce((acc, di) => acc + (di.valor_total ?? ((di.valor_unitario ?? 0) * di.quantidade)), 0).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                        </td>
+                        <td></td>
+                      </tr>
+                    </tfoot>
                   </table>
                 </div>
               )}
@@ -1066,10 +1149,7 @@ export const EmprestimosView: React.FC<EmprestimosViewProps> = ({
                         {loan.numero_documento}
                       </td>
                       <td className="py-3 px-4 text-slate-600 whitespace-nowrap">
-                        {new Date(loan.data_operacao).toLocaleString('pt-BR', {
-                          dateStyle: 'short',
-                          timeStyle: 'short',
-                        })}
+                        {formatDateTimeBrasilia(loan.data_operacao, { hideSeconds: true })}
                       </td>
                       <td className="py-3 px-4">
                         {isRecebido ? (
@@ -1376,11 +1456,11 @@ export const EmprestimosView: React.FC<EmprestimosViewProps> = ({
                   </div>
                   <div className="text-[11px] text-slate-600 font-mono">
                     Data/Hora:{' '}
-                    {new Date(
+                    {formatDateTimeBrasilia(
                       fichaImpressao.modoFicha === 'devolucao' && fichaImpressao.loan.data_quitacao
                         ? fichaImpressao.loan.data_quitacao
                         : fichaImpressao.loan.data_operacao
-                    ).toLocaleString('pt-BR')}
+                    )}
                   </div>
                 </div>
               </div>
@@ -1440,34 +1520,60 @@ export const EmprestimosView: React.FC<EmprestimosViewProps> = ({
                       <th className="p-2.5 border border-slate-300 text-center">Lote</th>
                       <th className="p-2.5 border border-slate-300 text-right">Quantidade</th>
                       <th className="p-2.5 border border-slate-300 text-center">Unidade</th>
+                      <th className="p-2.5 border border-slate-300 text-right">Custo Unit.</th>
+                      <th className="p-2.5 border border-slate-300 text-right">Subtotal</th>
                     </tr>
                   </thead>
                   <tbody>
-                    {(fichaImpressao.loan.itens || []).map((item) => (
-                      <tr key={item.id}>
-                        <td className="p-2.5 border border-slate-300 font-mono font-bold">
-                          {item.produto_codigo}
-                        </td>
-                        <td className="p-2.5 border border-slate-300 font-semibold">
-                          {item.produto_nome}
-                        </td>
-                        <td className="p-2.5 border border-slate-300 text-center font-mono">
-                          {item.numero_lote || 'S/L'}
-                          {item.data_validade
-                            ? ` (Val: ${item.data_validade.split('-').reverse().join('/')})`
-                            : ''}
-                        </td>
-                        <td className="p-2.5 border border-slate-300 text-right font-mono font-bold text-sm">
-                          {fichaImpressao.modoFicha === 'devolucao' && Number(item.quantidade_devolvida) > 0
-                            ? item.quantidade_devolvida
-                            : item.quantidade}
-                        </td>
-                        <td className="p-2.5 border border-slate-300 text-center font-bold">
-                          {item.unidade_medida}
-                        </td>
-                      </tr>
-                    ))}
+                    {(fichaImpressao.loan.itens || []).map((item) => {
+                      const qtdItem = fichaImpressao.modoFicha === 'devolucao' && Number(item.quantidade_devolvida) > 0
+                        ? item.quantidade_devolvida
+                        : item.quantidade;
+                      const custoUnit = Number(item.valor_unitario ?? item.custo_unitario ?? 0);
+                      const subtotal = custoUnit * Number(qtdItem);
+                      return (
+                        <tr key={item.id}>
+                          <td className="p-2.5 border border-slate-300 font-mono font-bold">
+                            {item.produto_codigo}
+                          </td>
+                          <td className="p-2.5 border border-slate-300 font-semibold">
+                            {item.produto_nome}
+                          </td>
+                          <td className="p-2.5 border border-slate-300 text-center font-mono">
+                            {item.numero_lote || 'S/L'}
+                            {item.data_validade
+                              ? ` (Val: ${item.data_validade.split('-').reverse().join('/')})`
+                              : ''}
+                          </td>
+                          <td className="p-2.5 border border-slate-300 text-right font-mono font-bold text-sm">
+                            {qtdItem}
+                          </td>
+                          <td className="p-2.5 border border-slate-300 text-center font-bold">
+                            {item.unidade_medida}
+                          </td>
+                          <td className="p-2.5 border border-slate-300 text-right font-mono">
+                            R$ {custoUnit.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                          </td>
+                          <td className="p-2.5 border border-slate-300 text-right font-mono font-bold">
+                            R$ {subtotal.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                          </td>
+                        </tr>
+                      );
+                    })}
                   </tbody>
+                  <tfoot className="bg-slate-50 font-bold border-t-2 border-slate-400">
+                    <tr>
+                      <td colSpan={6} className="p-2.5 border border-slate-300 text-right uppercase">
+                        Valor Total da Operação:
+                      </td>
+                      <td className="p-2.5 border border-slate-300 text-right font-mono text-sm font-black text-slate-900">
+                        R$ {(fichaImpressao.loan.itens || []).reduce((acc, it) => {
+                          const q = fichaImpressao.modoFicha === 'devolucao' && Number(it.quantidade_devolvida) > 0 ? it.quantidade_devolvida : it.quantidade;
+                          return acc + ((Number(it.valor_unitario ?? it.custo_unitario ?? 0)) * Number(q));
+                        }, 0).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                      </td>
+                    </tr>
+                  </tfoot>
                 </table>
               </div>
 

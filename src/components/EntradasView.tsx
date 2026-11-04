@@ -168,6 +168,7 @@ export const EntradasView: React.FC<EntradasViewProps> = ({
       numero_lote: string;
       data_validade: string;
       quantidade: number;
+      valor_total: number;
       valor_unitario: number;
       marca: string;
       nomenclatura_fornecedor: string;
@@ -299,15 +300,20 @@ export const EntradasView: React.FC<EntradasViewProps> = ({
     setNewNotaCentroCustoId(defaultCcId);
     setNewNotaObservacao('Recebimento e conferência física');
 
+    const defaultProd = produtos[0];
+    const defaultUnitVal = defaultProd?.valor_unitario || defaultProd?.custo_unitario || 10.0;
+    const defaultQtd = 50;
+
     // Inicializa com 1 item padrão
     setNewNotaItens([
       {
         tempId: String(Date.now()),
         produto_id: defaultProdId,
-        numero_lote: `LT-${Math.floor(1000 + Math.random() * 9000)}`,
-        data_validade: '2027-12-31',
-        quantidade: 50,
-        valor_unitario: 10.0,
+        numero_lote: '',
+        data_validade: '',
+        quantidade: defaultQtd,
+        valor_total: Number((defaultQtd * defaultUnitVal).toFixed(2)),
+        valor_unitario: defaultUnitVal,
         marca: '',
         nomenclatura_fornecedor: '',
       },
@@ -318,16 +324,20 @@ export const EntradasView: React.FC<EntradasViewProps> = ({
   };
 
   const handleAddNewItemToNewNota = () => {
-    const defaultProdId = produtos[0]?.id || 0;
+    const defaultProd = produtos[0];
+    const defaultProdId = defaultProd?.id || 0;
+    const defaultUnitVal = defaultProd?.valor_unitario || defaultProd?.custo_unitario || 0;
+    const defaultQtd = 10;
     setNewNotaItens((prev) => [
       ...prev,
       {
         tempId: String(Date.now() + Math.random()),
         produto_id: defaultProdId,
-        numero_lote: `LT-${Math.floor(1000 + Math.random() * 9000)}`,
-        data_validade: '2027-12-31',
-        quantidade: 10,
-        valor_unitario: 0,
+        numero_lote: '',
+        data_validade: '',
+        quantidade: defaultQtd,
+        valor_total: Number((defaultQtd * defaultUnitVal).toFixed(2)),
+        valor_unitario: defaultUnitVal,
         marca: '',
         nomenclatura_fornecedor: '',
       },
@@ -363,12 +373,6 @@ export const EntradasView: React.FC<EntradasViewProps> = ({
         toast.error('Item Inválido', 'Todos os itens devem ter produto selecionado e quantidade maior que zero.');
         return;
       }
-      const prod = produtos.find((p) => p.id === it.produto_id);
-      const exigeValidade = prod?.controla_validade === undefined ? prod?.tipo === 'consumivel' : prod?.controla_validade === 1;
-      if (exigeValidade && (!it.numero_lote.trim() || !it.data_validade.trim())) {
-        toast.error('Lote Obrigatório', `O item "${prod?.codigo} - ${prod?.nome}" exige número de lote e validade.`);
-        return;
-      }
     }
 
     setIsProcessingAction(true);
@@ -381,15 +385,21 @@ export const EntradasView: React.FC<EntradasViewProps> = ({
           fornecedor_id: newNotaFornecedorId,
           centro_custo_id: newNotaCentroCustoId || null,
           observacao: newNotaObservacao.trim() || null,
-          itens: newNotaItens.map((it) => ({
-            produto_id: it.produto_id,
-            quantidade: Number(it.quantidade),
-            numero_lote: it.numero_lote.trim().toUpperCase(),
-            data_validade: it.data_validade.trim(),
-            valor_unitario: Number(it.valor_unitario) || 0,
-            marca: it.marca ? it.marca.trim() : null,
-            nomenclatura_fornecedor: it.nomenclatura_fornecedor ? it.nomenclatura_fornecedor.trim() : null,
-          })),
+          itens: newNotaItens.map((it) => {
+            const qtd = Number(it.quantidade) || 1;
+            const valTotal = Number(it.valor_total) || 0;
+            const valUnit = valTotal > 0 ? valTotal / qtd : (Number(it.valor_unitario) || 0);
+            return {
+              produto_id: it.produto_id,
+              quantidade: qtd,
+              numero_lote: it.numero_lote.trim() ? it.numero_lote.trim().toUpperCase() : 'SEM LOTE',
+              data_validade: it.data_validade.trim() ? it.data_validade.trim() : null,
+              valor_total: valTotal,
+              valor_unitario: valUnit,
+              marca: it.marca ? it.marca.trim() : null,
+              nomenclatura_fornecedor: it.nomenclatura_fornecedor ? it.nomenclatura_fornecedor.trim() : null,
+            };
+          }),
         }),
       });
 
@@ -1659,112 +1669,146 @@ export const EntradasView: React.FC<EntradasViewProps> = ({
                           )}
                         </div>
 
-                        <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-6 gap-2.5">
-                          <div className="md:col-span-3">
-                            <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-0.5">
-                              Produto (Código Único de Estoque) *
-                            </label>
-                            <SearchableSelect
-                              options={produtosOptions}
-                              value={item.produto_id}
-                              onChange={(val) => {
-                                const next = [...newNotaItens];
-                                next[index].produto_id = Number(val);
-                                setNewNotaItens(next);
-                              }}
-                              placeholder="Digite código ou nome..."
-                            />
-                          </div>
+                        {(() => {
+                          const prod = produtos.find((p) => p.id === item.produto_id);
+                          const exigeLote = prod?.controla_validade === 1;
+                          const unitarioCalc = item.quantidade > 0 && item.valor_total ? item.valor_total / item.quantidade : item.valor_unitario;
 
-                          <div>
-                            <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-0.5">
-                              Lote *
-                            </label>
-                            <input
-                              type="text"
-                              required
-                              value={item.numero_lote}
-                              onChange={(e) => {
-                                const next = [...newNotaItens];
-                                next[index].numero_lote = e.target.value.toUpperCase();
-                                setNewNotaItens(next);
-                              }}
-                              className="w-full px-2 py-1.5 border border-slate-300 rounded font-mono text-xs uppercase"
-                              placeholder="LOTE"
-                            />
-                          </div>
+                          return (
+                            <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-6 gap-2.5">
+                              <div className="md:col-span-3">
+                                <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-0.5">
+                                  Produto (Código Único de Estoque) *
+                                </label>
+                                <SearchableSelect
+                                  options={produtosOptions}
+                                  value={item.produto_id}
+                                  onChange={(val) => {
+                                    const next = [...newNotaItens];
+                                    const pId = Number(val);
+                                    next[index].produto_id = pId;
+                                    const pObj = produtos.find((p) => p.id === pId);
+                                    const pUnit = pObj?.valor_unitario || pObj?.custo_unitario || 0;
+                                    const qtd = next[index].quantidade || 1;
+                                    next[index].valor_unitario = pUnit;
+                                    next[index].valor_total = Number((qtd * pUnit).toFixed(2));
+                                    setNewNotaItens(next);
+                                  }}
+                                  placeholder="Digite código ou nome..."
+                                />
+                              </div>
 
-                          <div>
-                            <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-0.5">
-                              Validade *
-                            </label>
-                            <input
-                              type="date"
-                              required
-                              value={item.data_validade}
-                              onChange={(e) => {
-                                const next = [...newNotaItens];
-                                next[index].data_validade = e.target.value;
-                                setNewNotaItens(next);
-                              }}
-                              className="w-full px-2 py-1.5 border border-slate-300 rounded text-xs"
-                            />
-                          </div>
+                              <div>
+                                <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-0.5">
+                                  Lote {exigeLote ? '*' : '(Opcional)'}
+                                </label>
+                                <input
+                                  type="text"
+                                  value={item.numero_lote}
+                                  onChange={(e) => {
+                                    const next = [...newNotaItens];
+                                    next[index].numero_lote = e.target.value.toUpperCase();
+                                    setNewNotaItens(next);
+                                  }}
+                                  className="w-full px-2 py-1.5 border border-slate-300 rounded font-mono text-xs uppercase"
+                                  placeholder={exigeLote ? "LOTE" : "SEM LOTE"}
+                                />
+                              </div>
 
-                          <div>
-                            <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-0.5">
-                              Quantidade ({prod?.unidade_medida || 'UN'}) *
-                            </label>
-                            <input
-                              type="number"
-                              required
-                              min="0.01"
-                              step="any"
-                              value={item.quantidade}
-                              onChange={(e) => {
-                                const next = [...newNotaItens];
-                                next[index].quantidade = Number(e.target.value);
-                                setNewNotaItens(next);
-                              }}
-                              className="w-full px-2 py-1.5 border border-slate-300 rounded font-mono font-bold text-right text-xs"
-                            />
-                          </div>
+                              <div>
+                                <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-0.5">
+                                  Validade {exigeLote ? '*' : '(Opcional)'}
+                                </label>
+                                <input
+                                  type="date"
+                                  value={item.data_validade}
+                                  onChange={(e) => {
+                                    const next = [...newNotaItens];
+                                    next[index].data_validade = e.target.value;
+                                    setNewNotaItens(next);
+                                  }}
+                                  className="w-full px-2 py-1.5 border border-slate-300 rounded text-xs"
+                                />
+                              </div>
 
-                          <div className="md:col-span-3">
-                            <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-0.5">
-                              Marca / Nomenclatura na NF (Opcional)
-                            </label>
-                            <input
-                              type="text"
-                              value={item.marca}
-                              onChange={(e) => {
-                                const next = [...newNotaItens];
-                                next[index].marca = e.target.value;
-                                setNewNotaItens(next);
-                              }}
-                              placeholder="ex: Cremer, Descarpack..."
-                              className="w-full px-2 py-1.5 border border-slate-300 rounded text-xs"
-                            />
-                          </div>
+                              <div>
+                                <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-0.5">
+                                  Quantidade ({prod?.unidade_medida || 'UN'}) *
+                                </label>
+                                <input
+                                  type="number"
+                                  required
+                                  min="0.001"
+                                  step="any"
+                                  value={item.quantidade}
+                                  onChange={(e) => {
+                                    const next = [...newNotaItens];
+                                    const q = Number(e.target.value);
+                                    next[index].quantidade = q;
+                                    if (next[index].valor_total && q > 0) {
+                                      next[index].valor_unitario = next[index].valor_total / q;
+                                    }
+                                    setNewNotaItens(next);
+                                  }}
+                                  className="w-full px-2 py-1.5 border border-slate-300 rounded font-mono font-bold text-right text-xs"
+                                />
+                              </div>
 
-                          <div className="md:col-span-3">
-                            <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-0.5">
-                              Custo Unitário (R$)
-                            </label>
-                            <input
-                              type="number"
-                              step="0.01"
-                              min="0"
-                              value={item.valor_unitario}
-                              onChange={(e) => {
-                                const next = [...newNotaItens];
-                                next[index].valor_unitario = Number(e.target.value);
-                                setNewNotaItens(next);
-                              }}
-                              className="w-full px-2 py-1.5 border border-slate-300 rounded font-mono text-right text-xs"
-                            />
-                          </div>
-                        </div>
+                              <div className="md:col-span-3">
+                                <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-0.5">
+                                  Marca / Nomenclatura na NF (Opcional)
+                                </label>
+                                <input
+                                  type="text"
+                                  value={item.marca}
+                                  onChange={(e) => {
+                                    const next = [...newNotaItens];
+                                    next[index].marca = e.target.value;
+                                    setNewNotaItens(next);
+                                  }}
+                                  placeholder="ex: Cremer, Descarpack..."
+                                  className="w-full px-2 py-1.5 border border-slate-300 rounded text-xs"
+                                />
+                              </div>
+
+                              <div className="md:col-span-3">
+                                <div className="flex items-center justify-between mb-0.5">
+                                  <label className="block text-[10px] font-bold text-slate-700 uppercase tracking-wider">
+                                    Custo Total da NF (R$) *
+                                  </label>
+                                  {item.quantidade > 0 && (
+                                    <span className="text-[10px] font-mono text-[#00237D] font-bold bg-blue-50 px-1.5 py-0.5 rounded border border-blue-200">
+                                      Unit.: {unitarioCalc.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL', minimumFractionDigits: 2, maximumFractionDigits: 4 })} / {prod?.unidade_medida || 'UN'}
+                                    </span>
+                                  )}
+                                </div>
+                                <input
+                                  type="number"
+                                  step="0.01"
+                                  min="0"
+                                  required
+                                  value={item.valor_total ?? (item.valor_unitario * item.quantidade || '')}
+                                  onChange={(e) => {
+                                    const next = [...newNotaItens];
+                                    const tot = Number(e.target.value);
+                                    next[index].valor_total = tot;
+                                    const q = Number(next[index].quantidade) || 1;
+                                    next[index].valor_unitario = q > 0 ? tot / q : 0;
+                                    setNewNotaItens(next);
+                                  }}
+                                  placeholder="0,00"
+                                  className="w-full px-2 py-1.5 border border-slate-300 rounded font-mono font-bold text-right text-xs text-slate-900 focus:border-[#00237D] focus:ring-1 focus:ring-[#00237D]"
+                                />
+                                <div className="mt-1 flex items-center justify-between text-[10px] text-slate-500">
+                                  <span>Calculado automaticamente: Custo Total ÷ Quantidade</span>
+                                  <span className="font-mono text-slate-700 font-semibold">
+                                    Unitário: R$ {unitarioCalc.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 4 })}
+                                  </span>
+                                </div>
+                              </div>
+                            </div>
+                          );
+                        })()}
                       </div>
                     );
                   })}

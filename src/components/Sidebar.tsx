@@ -36,6 +36,7 @@ interface SidebarProps {
   pendingRequisitionsCount: number;
   overdueLoansCount: number;
   lowStockCount: number;
+  pendingUsersCount?: number;
 }
 
 export const Sidebar: React.FC<SidebarProps> = ({
@@ -49,6 +50,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
   pendingRequisitionsCount,
   overdueLoansCount,
   lowStockCount,
+  pendingUsersCount = 0,
 }) => {
   const navItems = [
     {
@@ -147,6 +149,8 @@ export const Sidebar: React.FC<SidebarProps> = ({
       id: 'usuarios',
       label: 'Usuário',
       icon: Users,
+      badge: (currentUser?.perfil === 'admin' && pendingUsersCount > 0) ? `${pendingUsersCount} pend.` : undefined,
+      badgeType: 'amber',
       roles: ['admin', 'almoxarife'],
     },
     {

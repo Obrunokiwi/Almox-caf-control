@@ -31,7 +31,9 @@ import {
   Download,
   Layers,
   Tag,
-  Star
+  Star,
+  Save,
+  Unlock
 } from 'lucide-react';
 import type {
   Requisicao,
@@ -48,6 +50,7 @@ import {
   formatDataValidade,
   type PdfGeneratedDocument,
 } from '../utils/pdfGenerator.ts';
+import { formatDateTimeBrasilia } from '../utils/dateUtils.ts';
 import { PdfPrintModal } from './PdfPrintModal.tsx';
 import { HelpFloatingModal } from './HelpFloatingModal.tsx';
 import { CentroCustoAlertBanner } from './CentroCustoAlertBanner.tsx';
@@ -162,6 +165,8 @@ export const RequisicoesView: React.FC<RequisicoesViewProps> = ({
   const [actionError, setActionError] = useState<string | null>(null);
   const [pdfPreviewDoc, setPdfPreviewDoc] = useState<PdfGeneratedDocument | null>(null);
   const [deletingRequisicao, setDeletingRequisicao] = useState<Requisicao | null>(null);
+  const [isReopenModalOpen, setIsReopenModalOpen] = useState(false);
+  const [motivoReabertura, setMotivoReabertura] = useState('');
 
   const { toast } = useToast();
 
@@ -667,13 +672,142 @@ export const RequisicoesView: React.FC<RequisicoesViewProps> = ({
         toast.success('Requisição Atendida com Sucesso', data.message);
       }
 
-      setSelectedReq(null);
-      setReqDetails(null);
+      // Atualiza o objeto selecionado mantendo a tela aberta para conferência, impressão e fechamento posterior
+      const novoStatus = (data.data?.status || 'aprovada_atendida') as any;
+      const updatedReq = {
+        ...selectedReq,
+        status: novoStatus,
+        data_atendimento: new Date().toISOString(),
+        almoxarife_nome: currentUser?.nome || selectedReq.almoxarife_nome,
+      };
+      setSelectedReq(updatedReq);
+      await handleAbrirAnalise(updatedReq, 'conferencia');
       onRefresh();
     } catch (err: any) {
       const msg = err.message || 'Falha ao aprovar.';
       setActionError(msg);
       toast.error('Erro na Análise da Requisição', msg);
+    } finally {
+      setIsProcessing(false);
+    }
+  };
+
+  // Ação Almoxarife: Salvar Rascunho da Conferência sem baixar estoque
+  const handleSalvarRascunho = async () => {
+    if (!selectedReq || !reqDetails) return;
+
+    const decisoesPayload = reqDetails.itens.map((it) => {
+      const dec = itemDecisoes[it.id] || {
+        decisao: 'aprovado' as const,
+        quantidade_atendida: it.quantidade_solicitada,
+        motivo_decisao: '',
+        lotes_distribuicao: {},
+      };
+
+      const lotesDispensadosPayload: Array<{
+        lote_id: number;
+        numero_lote: string;
+        data_validade?: string | null;
+        quantidade: number;
+      }> = [];
+
+      if (dec.lotes_distribuicao) {
+        for (const [lIdStr, qtd] of Object.entries(dec.lotes_distribuicao)) {
+          const q = Number(qtd);
+          if (q > 0) {
+            const lotObj = it.lotes_disponiveis?.find((l) => l.id === Number(lIdStr));
+            lotesDispensadosPayload.push({
+              lote_id: Number(lIdStr),
+              numero_lote: lotObj?.numero_lote || '',
+              data_validade: lotObj?.data_validade || null,
+              quantidade: q,
+            });
+          }
+        }
+      }
+
+      return {
+        item_id: it.id,
+        produto_nome: it.produto_nome,
+        decisao: dec.decisao,
+        quantidade_atendida: dec.quantidade_atendida,
+        motivo_decisao: dec.motivo_decisao.trim(),
+        lotes_dispensados: lotesDispensadosPayload.length > 0 ? lotesDispensadosPayload : undefined,
+      };
+    });
+
+    setIsProcessing(true);
+    setActionError(null);
+
+    try {
+      const res = await fetch(`/api/requisicoes/${selectedReq.id}/salvar-rascunho`, {
+        method: 'POST',
+        headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
+        body: JSON.stringify({
+          decisoes_itens: decisoesPayload,
+        }),
+      });
+
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || 'Erro ao salvar rascunho da conferência.');
+      }
+
+      toast.success(
+        'Rascunho Salvo com Sucesso',
+        'As decisões e separações de lotes foram salvas sem baixar estoque. Você pode continuar ou fechar para retomar depois.'
+      );
+      onRefresh();
+    } catch (err: any) {
+      const msg = err.message || 'Falha ao salvar rascunho.';
+      setActionError(msg);
+      toast.error('Erro ao Salvar Rascunho', msg);
+    } finally {
+      setIsProcessing(false);
+    }
+  };
+
+  // Ação Almoxarife: Reabrir Requisição Atendida/Rejeitada para Edição
+  const handleReabrirRequisicao = async () => {
+    if (!selectedReq) return;
+
+    setIsProcessing(true);
+    setActionError(null);
+
+    try {
+      const res = await fetch(`/api/requisicoes/${selectedReq.id}/reabrir`, {
+        method: 'POST',
+        headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
+        body: JSON.stringify({
+          motivo_reabertura: motivoReabertura.trim() || 'Reabertura para nova conferência e ajuste de dispensação',
+        }),
+      });
+
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || 'Erro ao reabrir requisição.');
+      }
+
+      toast.success(
+        'Requisição Reaberta com Sucesso',
+        data.message || `A requisição ${selectedReq.numero_requisicao} foi reaberta. O estoque foi estornado e a requisição está livre para nova conferência.`
+      );
+
+      setIsReopenModalOpen(false);
+      setMotivoReabertura('');
+
+      const updatedReq = {
+        ...selectedReq,
+        status: 'pendente' as const,
+        data_atendimento: null,
+      };
+      setSelectedReq(updatedReq);
+      await handleAbrirAnalise(updatedReq, 'conferencia');
+      onRefresh();
+    } catch (err: any) {
+      const msg = err.message || 'Falha ao reabrir requisição.';
+      setActionError(msg);
+      toast.error('Erro ao Reabrir Requisição', msg);
     } finally {
       setIsProcessing(false);
     }
@@ -1370,7 +1504,7 @@ export const RequisicoesView: React.FC<RequisicoesViewProps> = ({
                   <tr key={r.id} className="odd:bg-white even:bg-slate-50/70 hover:bg-teal-50/40 transition-colors">
                     <td className="py-2.5 px-3 font-mono font-bold text-slate-800">{r.numero_requisicao}</td>
                     <td className="py-2.5 px-3 text-slate-600">
-                      {new Date(r.data_solicitacao).toLocaleString('pt-BR', { dateStyle: 'short', timeStyle: 'short' })}
+                      {formatDateTimeBrasilia(r.data_solicitacao, { hideSeconds: true })}
                     </td>
                     <td className="py-2.5 px-3 font-medium text-slate-800">{r.centro_custo_nome}</td>
                     <td className="py-2.5 px-3 text-slate-600">{r.solicitante_nome}</td>
@@ -1636,7 +1770,7 @@ export const RequisicoesView: React.FC<RequisicoesViewProps> = ({
                   <span className="text-slate-500 font-semibold uppercase text-[10px] block">Solicitante</span>
                   <span className="font-bold text-slate-800">{selectedReq.solicitante_nome}</span>
                   <span className="text-[10px] text-slate-500 block">
-                    {new Date(selectedReq.data_solicitacao).toLocaleString('pt-BR')}
+                    {formatDateTimeBrasilia(selectedReq.data_solicitacao)}
                   </span>
                 </div>
                 <div>
@@ -1656,9 +1790,9 @@ export const RequisicoesView: React.FC<RequisicoesViewProps> = ({
                   </span>
                   {(reqDetails?.requisicao?.data_atendimento || selectedReq.data_atendimento) && (
                     <span className="text-[10px] text-slate-500 block">
-                      {new Date(
-                        (reqDetails?.requisicao?.data_atendimento || selectedReq.data_atendimento) as string
-                      ).toLocaleString('pt-BR')}
+                      {formatDateTimeBrasilia(
+                        reqDetails?.requisicao?.data_atendimento || selectedReq.data_atendimento
+                      )}
                     </span>
                   )}
                 </div>
@@ -2121,7 +2255,7 @@ export const RequisicoesView: React.FC<RequisicoesViewProps> = ({
                                       )}
                                       {!isRequisitante && it.data_analise && (
                                         <div className="text-[10px] text-slate-500">
-                                          Em {new Date(it.data_analise).toLocaleString('pt-BR')}
+                                          Em {formatDateTimeBrasilia(it.data_analise)}
                                         </div>
                                       )}
                                       {it.motivo_decisao && (
@@ -2365,7 +2499,7 @@ export const RequisicoesView: React.FC<RequisicoesViewProps> = ({
                                   )}
                                 </td>
                                 <td className="py-2 px-3 font-mono text-[11px] text-slate-600">
-                                  {it.data_analise ? new Date(it.data_analise).toLocaleString('pt-BR') : '-'}
+                                  {it.data_analise ? formatDateTimeBrasilia(it.data_analise) : '-'}
                                 </td>
                                 <td className="py-2 px-3 text-slate-600">
                                   {it.motivo_decisao || '-'}
@@ -2447,6 +2581,8 @@ export const RequisicoesView: React.FC<RequisicoesViewProps> = ({
                           const isApprove = ev.acao === 'aprovacao_item' || ev.acao === 'aprovacao_total';
                           const isDeny = ev.acao === 'negacao_item' || ev.acao === 'rejeicao_total' || ev.acao === 'cancelamento';
                           const isPartial = ev.acao === 'aprovacao_parcial';
+                          const isReopen = ev.acao === 'reabertura';
+                          const isDraft = ev.acao === 'salvar_rascunho';
 
                           const badgeLabel: Record<string, string> = {
                             criacao_requisicao: 'ABERTURA DE REQUISIÇÃO',
@@ -2457,6 +2593,8 @@ export const RequisicoesView: React.FC<RequisicoesViewProps> = ({
                             aprovacao_parcial: 'ATENDIMENTO PARCIAL',
                             rejeicao_total: 'REJEIÇÃO DA REQUISIÇÃO',
                             cancelamento: 'CANCELAMENTO',
+                            reabertura: 'REABERTURA PARA EDIÇÃO',
+                            salvar_rascunho: 'RASCUNHO DE CONFERÊNCIA',
                           };
 
                           return (
@@ -2469,6 +2607,10 @@ export const RequisicoesView: React.FC<RequisicoesViewProps> = ({
                                   ? 'bg-rose-50/40 border-rose-200'
                                   : isPartial
                                   ? 'bg-amber-50/40 border-amber-200'
+                                  : isReopen
+                                  ? 'bg-amber-50/60 border-amber-300'
+                                  : isDraft
+                                  ? 'bg-sky-50/60 border-sky-300'
                                   : 'bg-white border-slate-200'
                               }`}
                             >
@@ -2482,6 +2624,10 @@ export const RequisicoesView: React.FC<RequisicoesViewProps> = ({
                                         ? 'bg-rose-100 text-rose-800 border-rose-300'
                                         : isPartial
                                         ? 'bg-amber-100 text-amber-800 border-amber-300'
+                                        : isReopen
+                                        ? 'bg-amber-200 text-amber-900 border-amber-400 font-black'
+                                        : isDraft
+                                        ? 'bg-sky-100 text-sky-800 border-sky-300'
                                         : 'bg-slate-100 text-slate-700 border-slate-300'
                                     }`}
                                   >
@@ -2521,7 +2667,7 @@ export const RequisicoesView: React.FC<RequisicoesViewProps> = ({
                                   </span>
                                 </div>
                                 <div className="text-[11px] font-mono text-slate-500 mt-0.5">
-                                  {new Date(ev.data_registro).toLocaleString('pt-BR')}
+                                  {formatDateTimeBrasilia(ev.data_registro)}
                                 </div>
                               </div>
                             </div>
@@ -2577,9 +2723,20 @@ export const RequisicoesView: React.FC<RequisicoesViewProps> = ({
                 </button>
               </div>
 
-              <div className="flex items-center gap-3">
+              <div className="flex flex-wrap items-center gap-2.5">
                 {isAlmoxarifeOrAdmin && selectedReq.status === 'pendente' && (
                   <>
+                    <button
+                      type="button"
+                      onClick={handleSalvarRascunho}
+                      disabled={isProcessing}
+                      className="bg-slate-700 hover:bg-slate-800 active:bg-slate-900 text-white font-medium px-4 py-2 rounded text-xs flex items-center gap-1.5 transition-all shadow uppercase tracking-wide cursor-pointer disabled:opacity-50"
+                      title="Salvar decisões e conferência parcial sem baixar estoque ainda"
+                    >
+                      <Save className="w-4 h-4 text-slate-300" />
+                      <span>SALVAR CONFERÊNCIA</span>
+                    </button>
+
                     <button
                       type="button"
                       onClick={() => setIsRejectModalOpen(true)}
@@ -2599,33 +2756,106 @@ export const RequisicoesView: React.FC<RequisicoesViewProps> = ({
                       <CheckCircle2 className="w-4 h-4" />
                       <span>
                         {isProcessing
-                          ? 'REGISTRANDO AUDITORIA...'
+                          ? 'PROCESSANDO BAIXA...'
                           : (() => {
                               const vals = Object.values(itemDecisoes);
                               const aprov = vals.filter((v) => v.decisao === 'aprovado').length;
                               const neg = vals.filter((v) => v.decisao === 'negado').length;
                               if (vals.length > 0 && neg > 0 && aprov > 0) {
-                                return `CONCLUIR (${aprov} APROV. / ${neg} NEG.)`;
+                                return `ATENDER (${aprov} APROV. / ${neg} NEG.)`;
                               }
                               if (vals.length > 0 && aprov === 0 && neg > 0) {
                                 return `CONFIRMAR NEGAÇÃO DOS ITENS (${neg})`;
                               }
-                              return 'APROVAR E ATENDER (BAIXA)';
+                              return 'ATENDER E BAIXAR ESTOQUE';
                             })()}
                       </span>
                     </button>
                   </>
                 )}
 
+                {isAlmoxarifeOrAdmin && selectedReq.status !== 'pendente' && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setMotivoReabertura('');
+                      setIsReopenModalOpen(true);
+                    }}
+                    disabled={isProcessing}
+                    className="bg-amber-600 hover:bg-amber-700 active:bg-amber-800 text-white font-semibold px-4 py-2 rounded text-xs flex items-center gap-1.5 transition-all shadow uppercase tracking-wide cursor-pointer disabled:opacity-50"
+                    title="Reabrir requisição para permitir nova conferência, ajuste de lotes e correção de decisões"
+                  >
+                    <RotateCcw className="w-4 h-4" />
+                    <span>REABRIR PARA EDIÇÃO</span>
+                  </button>
+                )}
+
                 <button
                   type="button"
-                  onClick={() => setSelectedReq(null)}
+                  onClick={() => {
+                    setSelectedReq(null);
+                    setReqDetails(null);
+                  }}
                   className="bg-teal-600 hover:bg-teal-700 text-white font-medium px-4 py-2 rounded text-xs flex items-center gap-1.5 transition-all shadow uppercase tracking-wide cursor-pointer"
                 >
                   <ArrowLeft className="w-4 h-4" />
                   <span>FECHAR</span>
                 </button>
               </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Modal de Confirmação de Reabertura de Requisição */}
+      {isReopenModalOpen && selectedReq && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm p-4 animate-fadeIn">
+          <div className="bg-white rounded-xl shadow-2xl border border-slate-300 w-full max-w-lg overflow-hidden p-6 space-y-4">
+            <div className="flex items-center gap-2 text-amber-700 font-bold text-base">
+              <RotateCcw className="w-5 h-5 text-amber-600" />
+              <span>Reabrir Requisição {selectedReq.numero_requisicao}</span>
+            </div>
+
+            <div className="p-3 bg-amber-50 border border-amber-200 rounded text-xs text-amber-900 space-y-1">
+              <p className="font-semibold">Atenção para o estorno de segurança:</p>
+              <p>
+                Ao reabrir esta requisição, o status retornará para <strong>Pendente</strong> e as baixas de estoque efetuadas serão <strong>integralmente estornadas</strong> no almoxarifado. Você poderá refazer a conferência, ajustar lotes, aprovar ou negar itens novamente com total flexibilidade.
+              </p>
+            </div>
+
+            <div className="space-y-3">
+              <div>
+                <label className="block text-[11px] font-bold text-slate-700 uppercase tracking-wider mb-1">
+                  Justificativa da Reabertura (Opcional)
+                </label>
+                <textarea
+                  value={motivoReabertura}
+                  onChange={(e) => setMotivoReabertura(e.target.value)}
+                  placeholder="Ex: Correção na separação de lote; alteração de quantidade atendida a pedido do setor..."
+                  rows={3}
+                  className="w-full px-3 py-2 border border-slate-300 rounded text-xs text-slate-800 focus:border-amber-500 shadow-xs"
+                />
+              </div>
+            </div>
+
+            <div className="flex items-center justify-end gap-2 pt-2 border-t border-slate-200">
+              <button
+                type="button"
+                onClick={() => setIsReopenModalOpen(false)}
+                disabled={isProcessing}
+                className="px-4 py-2 border border-slate-300 hover:bg-slate-100 text-slate-700 rounded text-xs font-semibold uppercase tracking-wide cursor-pointer"
+              >
+                Cancelar
+              </button>
+              <button
+                type="button"
+                onClick={handleReabrirRequisicao}
+                disabled={isProcessing}
+                className="px-4 py-2 bg-amber-600 hover:bg-amber-700 active:bg-amber-800 text-white rounded text-xs font-bold uppercase tracking-wide shadow cursor-pointer disabled:opacity-50 flex items-center gap-1.5"
+              >
+                <RotateCcw className="w-4 h-4" />
+                <span>{isProcessing ? 'REABRINDO...' : 'CONFIRMAR REABERTURA'}</span>
+              </button>
             </div>
           </div>
         </div>
