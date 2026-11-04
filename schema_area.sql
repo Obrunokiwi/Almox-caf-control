@@ -326,7 +326,7 @@ CREATE TABLE IF NOT EXISTS emprestimos_institucionais (
     data_operacao DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     data_prevista_devolucao DATE,
     data_quitacao DATETIME,
-    status TEXT NOT NULL DEFAULT 'pendente_devolucao' CHECK (status IN ('pendente_devolucao', 'quitado')),
+    status TEXT NOT NULL DEFAULT 'rascunho' CHECK (status IN ('rascunho', 'pendente_devolucao', 'quitado', 'cancelado')),
     responsavel_almoxarifado_id INTEGER NOT NULL REFERENCES usuarios(id),
     responsavel_almoxarifado_nome TEXT,
     responsavel_entidade_parceira TEXT,

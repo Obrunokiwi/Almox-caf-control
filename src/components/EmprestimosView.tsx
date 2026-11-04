@@ -77,7 +77,7 @@ export const EmprestimosView: React.FC<EmprestimosViewProps> = ({
   const [isLoading, setIsLoading] = useState<boolean>(false);
 
   // Filtros
-  const [abaFiltro, setAbaFiltro] = useState<'todos' | 'pendentes' | 'recebidos' | 'concedidos' | 'quitados'>('todos');
+  const [abaFiltro, setAbaFiltro] = useState<'todos' | 'rascunhos' | 'pendentes' | 'recebidos' | 'concedidos' | 'quitados'>('todos');
   const [busca, setBusca] = useState<string>('');
   const [isFilterOpen, setIsFilterOpen] = useState<boolean>(false);
 
@@ -110,6 +110,11 @@ export const EmprestimosView: React.FC<EmprestimosViewProps> = ({
 
   const [formError, setFormError] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState<boolean>(false);
+
+  // Modal de Desfazer Lançamento (Estorno com Justificativa)
+  const [desfazerLoan, setDesfazerLoan] = useState<EmprestimoInstitucional | null>(null);
+  const [justificativaDesfazer, setJustificativaDesfazer] = useState<string>('');
+  const [desfazerError, setDesfazerError] = useState<string | null>(null);
 
   // Modal de Devolução / Quitação
   const [devolucaoLoan, setDevolucaoLoan] = useState<EmprestimoInstitucional | null>(null);
@@ -303,7 +308,7 @@ export const EmprestimosView: React.FC<EmprestimosViewProps> = ({
     setDraftItens((prev) => prev.filter((i) => i.tempId !== tempId));
   };
 
-  const handleSalvarEmprestimo = async (e: React.FormEvent, gerarFicha: boolean = true) => {
+  const handleSalvarEmprestimo = async (e: React.FormEvent, statusInicial: 'rascunho' | 'pendente_devolucao' = 'pendente_devolucao') => {
     if (e && e.preventDefault) e.preventDefault();
     if (!formEntidadeId) {
       const msg = 'Selecione o Hospital / Entidade Parceira (ou Fornecedor) para registrar a operação.';
@@ -359,6 +364,7 @@ export const EmprestimosView: React.FC<EmprestimosViewProps> = ({
           responsavel_entidade_parceira: formResponsavelParceiro.trim() || null,
           observacao: formObservacao.trim() || null,
           itens: itensFinais,
+          status_inicial: statusInicial,
         }),
       });
 
@@ -368,9 +374,11 @@ export const EmprestimosView: React.FC<EmprestimosViewProps> = ({
       }
 
       toast.success(
-        formTipo === 'recebido'
-          ? 'Entrada por Empréstimo Recebido Registrada'
-          : 'Saída por Empréstimo Concedido Registrada',
+        statusInicial === 'rascunho'
+          ? 'Empréstimo Salvo na Fila (Rascunho)'
+          : formTipo === 'recebido'
+          ? 'Entrada por Empréstimo Recebido Lançada com Sucesso'
+          : 'Saída por Empréstimo Concedido Lançada com Sucesso',
         data.message
       );
 
@@ -378,7 +386,7 @@ export const EmprestimosView: React.FC<EmprestimosViewProps> = ({
       await fetchInstitucionalData();
       onRefresh();
 
-      if (gerarFicha && data.data) {
+      if (statusInicial === 'pendente_devolucao' && data.data) {
         setFichaImpressao({
           loan: data.data,
           modoFicha: 'emprestimo',
@@ -388,6 +396,101 @@ export const EmprestimosView: React.FC<EmprestimosViewProps> = ({
       const msg = err.message || 'Falha ao salvar empréstimo institucional.';
       setFormError(msg);
       toast.error('Erro na Operação', msg);
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  // Handler para lançar empréstimo que estava em rascunho
+  const handleLancarDraft = async (loan: EmprestimoInstitucional) => {
+    setIsLoading(true);
+    try {
+      const res = await fetch(`/api/emprestimos-institucionais/${loan.id}/lancar`, {
+        method: 'POST',
+        headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || 'Erro ao lançar empréstimo.');
+      }
+      toast.success('Empréstimo Lançado com Sucesso', data.message);
+      await fetchInstitucionalData();
+      onRefresh();
+      if (data.data) {
+        setFichaImpressao({
+          loan: data.data,
+          modoFicha: 'emprestimo',
+        });
+      }
+    } catch (err: any) {
+      toast.error('Erro ao Lançar', err.message || 'Falha ao efetivar empréstimo.');
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  // Handler para excluir um rascunho
+  const handleExcluirRascunho = async (loanId: number) => {
+    if (!confirm('Deseja realmente excluir este rascunho de empréstimo?')) return;
+    setIsLoading(true);
+    try {
+      const res = await fetch(`/api/emprestimos-institucionais/${loanId}`, {
+        method: 'DELETE',
+        headers: getAuthHeaders(),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || 'Erro ao excluir rascunho.');
+      }
+      toast.success('Rascunho Excluído', data.message);
+      await fetchInstitucionalData();
+      onRefresh();
+    } catch (err: any) {
+      toast.error('Erro ao Excluir', err.message || 'Falha ao remover rascunho.');
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  // Modal para Desfazer Lançamento (Estorno Obrigatório com Justificativa)
+  const handleAbrirModalDesfazer = (loan: EmprestimoInstitucional) => {
+    setDesfazerLoan(loan);
+    setJustificativaDesfazer('');
+    setDesfazerError(null);
+  };
+
+  const handleConfirmarDesfazer = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!desfazerLoan) return;
+
+    if (!justificativaDesfazer.trim()) {
+      setDesfazerError('Informe a justificativa obrigatória para desfazer o lançamento deste empréstimo.');
+      return;
+    }
+
+    setIsSubmitting(true);
+    setDesfazerError(null);
+
+    try {
+      const res = await fetch(`/api/emprestimos-institucionais/${desfazerLoan.id}/desfazer`, {
+        method: 'POST',
+        headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
+        body: JSON.stringify({ justificativa: justificativaDesfazer.trim() }),
+      });
+
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || 'Erro ao desfazer lançamento do empréstimo.');
+      }
+
+      toast.success('Lançamento Desfeito', data.message);
+      setDesfazerLoan(null);
+      await fetchInstitucionalData();
+      onRefresh();
+    } catch (err: any) {
+      const msg = err.message || 'Erro ao desfazer lançamento.';
+      setDesfazerError(msg);
+      toast.error('Erro no Estorno', msg);
     } finally {
       setIsSubmitting(false);
     }
@@ -472,6 +575,7 @@ export const EmprestimosView: React.FC<EmprestimosViewProps> = ({
   // Filtragem
   const filteredLoans = useMemo(() => {
     return loans.filter((l) => {
+      if (abaFiltro === 'rascunhos' && l.status !== 'rascunho') return false;
       if (abaFiltro === 'pendentes' && l.status !== 'pendente_devolucao') return false;
       if (abaFiltro === 'recebidos' && l.tipo !== 'recebido') return false;
       if (abaFiltro === 'concedidos' && l.tipo !== 'concedido') return false;
@@ -497,10 +601,11 @@ export const EmprestimosView: React.FC<EmprestimosViewProps> = ({
 
   // Indicadores de Empréstimo Institucional
   const kpis = useMemo(() => {
+    const rascunhos = loans.filter((l) => l.status === 'rascunho').length;
     const dividasRecebidos = loans.filter((l) => l.tipo === 'recebido' && l.status === 'pendente_devolucao').length;
     const creditosConcedidos = loans.filter((l) => l.tipo === 'concedido' && l.status === 'pendente_devolucao').length;
     const totalQuitados = loans.filter((l) => l.status === 'quitado').length;
-    return { dividasRecebidos, creditosConcedidos, totalQuitados };
+    return { rascunhos, dividasRecebidos, creditosConcedidos, totalQuitados };
   }, [loans]);
 
   const nomeNossaUnidade =
@@ -567,48 +672,75 @@ export const EmprestimosView: React.FC<EmprestimosViewProps> = ({
         </div>
       </div>
 
-      {/* Cards de Cenário A e Cenário B */}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-        <div className="bg-white p-4 rounded-xl border border-amber-200 shadow-xs flex items-center justify-between">
+      {/* Cards de Indicadores de Empréstimo */}
+      <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+        <div
+          onClick={() => setAbaFiltro('rascunhos')}
+          className="bg-white p-4 rounded-xl border border-slate-300 shadow-xs flex items-center justify-between cursor-pointer hover:border-slate-400 transition-all"
+        >
+          <div>
+            <span className="text-[10px] font-bold uppercase tracking-wider text-slate-700 bg-slate-100 px-2 py-0.5 rounded border border-slate-200">
+              Em Fila (Rascunhos)
+            </span>
+            <h3 className="text-sm font-bold text-slate-800 mt-1.5">
+              Salvos Não Lançados
+            </h3>
+            <p className="text-[11px] text-slate-500">
+              Aguardando lançamento oficial
+            </p>
+          </div>
+          <div className="text-3xl font-black text-slate-700 font-mono">{kpis.rascunhos}</div>
+        </div>
+
+        <div
+          onClick={() => setAbaFiltro('recebidos')}
+          className="bg-white p-4 rounded-xl border border-amber-200 shadow-xs flex items-center justify-between cursor-pointer hover:border-amber-300 transition-all"
+        >
           <div>
             <span className="text-[10px] font-bold uppercase tracking-wider text-amber-800 bg-amber-50 px-2 py-0.5 rounded border border-amber-200">
               Cenário A • Pegamos Emprestado
             </span>
             <h3 className="text-sm font-bold text-slate-800 mt-1.5">
-              Dívidas de Estoque com Outras Entidades
+              Dívidas de Estoque
             </h3>
             <p className="text-[11px] text-slate-500">
-              Entrada por Empréstimo Recebido pendente de devolução
+              Entrada por Empréstimo pendente
             </p>
           </div>
           <div className="text-3xl font-black text-amber-700 font-mono">{kpis.dividasRecebidos}</div>
         </div>
 
-        <div className="bg-white p-4 rounded-xl border border-indigo-200 shadow-xs flex items-center justify-between">
+        <div
+          onClick={() => setAbaFiltro('concedidos')}
+          className="bg-white p-4 rounded-xl border border-indigo-200 shadow-xs flex items-center justify-between cursor-pointer hover:border-indigo-300 transition-all"
+        >
           <div>
             <span className="text-[10px] font-bold uppercase tracking-wider text-indigo-800 bg-indigo-50 px-2 py-0.5 rounded border border-indigo-200">
-              Cenário B • Emprestamos a Terceiros
+              Cenário B • Emprestamos
             </span>
             <h3 className="text-sm font-bold text-slate-800 mt-1.5">
-              Saldos a Receber de Entidades Parceiras
+              Saldos a Receber
             </h3>
             <p className="text-[11px] text-slate-500">
-              Empréstimo Concedido aguardando retorno da parceira
+              Empréstimo Concedido pendente
             </p>
           </div>
           <div className="text-3xl font-black text-indigo-700 font-mono">{kpis.creditosConcedidos}</div>
         </div>
 
-        <div className="bg-white p-4 rounded-xl border border-emerald-200 shadow-xs flex items-center justify-between">
+        <div
+          onClick={() => setAbaFiltro('quitados')}
+          className="bg-white p-4 rounded-xl border border-emerald-200 shadow-xs flex items-center justify-between cursor-pointer hover:border-emerald-300 transition-all"
+        >
           <div>
             <span className="text-[10px] font-bold uppercase tracking-wider text-emerald-800 bg-emerald-50 px-2 py-0.5 rounded border border-emerald-200">
               Ciclo Concluído
             </span>
             <h3 className="text-sm font-bold text-slate-800 mt-1.5">
-              Empréstimos Quitados / Devolvidos
+              Quitados / Devolvidos
             </h3>
             <p className="text-[11px] text-slate-500">
-              Operações com devolução integral auditada
+              Devolução integral auditada
             </p>
           </div>
           <div className="text-3xl font-black text-emerald-700 font-mono">{kpis.totalQuitados}</div>
@@ -961,30 +1093,32 @@ export const EmprestimosView: React.FC<EmprestimosViewProps> = ({
               <button
                 type="button"
                 disabled={isSubmitting}
-                onClick={(e) => handleSalvarEmprestimo(e, false)}
+                onClick={(e) => handleSalvarEmprestimo(e, 'rascunho')}
                 className="px-4 py-2 bg-slate-800 hover:bg-slate-900 active:bg-black text-white font-bold rounded-lg text-xs shadow flex items-center gap-1.5 uppercase tracking-wider cursor-pointer disabled:opacity-50 transition-colors"
+                title="Salva na fila sem movimentar estoque até que seja lançado"
               >
                 <Save className="w-4 h-4 text-emerald-400" />
-                <span>{isSubmitting ? 'Salvando...' : 'Salvar Empréstimo'}</span>
+                <span>{isSubmitting ? 'Salvando...' : 'Salvar Empréstimo (Apenas Fila)'}</span>
               </button>
 
               <button
-                type="submit"
+                type="button"
                 disabled={isSubmitting}
-                onClick={(e) => handleSalvarEmprestimo(e, true)}
+                onClick={(e) => handleSalvarEmprestimo(e, 'pendente_devolucao')}
                 className={`px-5 py-2 rounded-lg text-xs font-bold uppercase tracking-wider text-white flex items-center gap-1.5 shadow cursor-pointer disabled:opacity-50 transition-colors ${
                   formTipo === 'recebido'
                     ? 'bg-emerald-600 hover:bg-emerald-700'
                     : 'bg-indigo-600 hover:bg-indigo-700'
                 }`}
+                title="Lança imediatamente movimentando o estoque e gera a ficha para impressão"
               >
                 <CheckCircle2 className="w-4 h-4" />
                 <span>
                   {isSubmitting
-                    ? 'Confirmando...'
+                    ? 'Lançando...'
                     : formTipo === 'recebido'
-                    ? 'Confirmar Entrada e Gerar Ficha'
-                    : 'Confirmar Concessão e Gerar Ficha'}
+                    ? 'Lançar Entrada e Gerar Ficha'
+                    : 'Lançar Concessão e Gerar Ficha'}
                 </span>
               </button>
             </div>
@@ -1062,6 +1196,7 @@ export const EmprestimosView: React.FC<EmprestimosViewProps> = ({
             <div className="flex flex-wrap items-center gap-1 p-1 bg-slate-100 rounded-lg">
               {[
                 { id: 'todos', label: 'Todas as Operações' },
+                { id: 'rascunhos', label: 'Em Fila (Rascunhos)' },
                 { id: 'pendentes', label: 'Pendentes de Devolução' },
                 { id: 'recebidos', label: 'Cenário A: Pegamos Emprestado' },
                 { id: 'concedidos', label: 'Cenário B: Emprestamos a Terceiros' },
@@ -1135,7 +1270,7 @@ export const EmprestimosView: React.FC<EmprestimosViewProps> = ({
                 <th className="py-3 px-4">Hospital / Entidade Parceira</th>
                 <th className="py-3 px-4">Itens (Código Único, Lote e Quantidade)</th>
                 <th className="py-3 px-4 text-center">Status</th>
-                <th className="py-3 px-4 text-right">Ficha Impressa & Devolução</th>
+                <th className="py-3 px-4 text-right">Ações & Ficha</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-200">
@@ -1154,7 +1289,9 @@ export const EmprestimosView: React.FC<EmprestimosViewProps> = ({
               ) : (
                 filteredLoans.map((loan) => {
                   const isRecebido = loan.tipo === 'recebido';
+                  const isDraft = loan.status === 'rascunho';
                   const isPendente = loan.status === 'pendente_devolucao';
+                  const isQuitado = loan.status === 'quitado';
 
                   return (
                     <tr key={loan.id} className="odd:bg-white even:bg-slate-50/70 hover:bg-teal-50/30 transition-colors">
@@ -1204,20 +1341,52 @@ export const EmprestimosView: React.FC<EmprestimosViewProps> = ({
                         )}
                       </td>
                       <td className="py-3 px-4 text-center">
-                        {isPendente ? (
+                        {isDraft ? (
+                          <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-slate-200 text-slate-800 font-bold text-[10px] uppercase border border-slate-300">
+                            <Save className="w-3 h-3 text-slate-600" />
+                            <span>Em Fila (Rascunho)</span>
+                          </span>
+                        ) : isPendente ? (
                           <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-amber-100 text-amber-900 font-bold text-[10px] uppercase">
                             <AlertTriangle className="w-3 h-3 text-amber-700" />
                             <span>Pendente Devolução</span>
                           </span>
-                        ) : (
+                        ) : isQuitado ? (
                           <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-emerald-100 text-emerald-900 font-bold text-[10px] uppercase">
                             <CheckCircle2 className="w-3 h-3 text-emerald-700" />
                             <span>Quitado / Devolvido</span>
+                          </span>
+                        ) : (
+                          <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-rose-100 text-rose-900 font-bold text-[10px] uppercase">
+                            <span>Cancelado</span>
                           </span>
                         )}
                       </td>
                       <td className="py-3 px-4 text-right whitespace-nowrap">
                         <div className="inline-flex items-center justify-end gap-1.5">
+                          {isDraft && canManage && (
+                            <>
+                              <button
+                                type="button"
+                                onClick={() => handleLancarDraft(loan)}
+                                className="px-2.5 py-1.5 rounded bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-[11px] inline-flex items-center gap-1 shadow-xs cursor-pointer"
+                                title="Efetivar e lançar a movimentação de estoque"
+                              >
+                                <CheckCircle2 className="w-3.5 h-3.5" />
+                                <span>Lançar Empréstimo</span>
+                              </button>
+
+                              <button
+                                type="button"
+                                onClick={() => handleExcluirRascunho(loan.id)}
+                                className="p-1.5 rounded bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 cursor-pointer"
+                                title="Excluir rascunho em fila"
+                              >
+                                <Trash2 className="w-3.5 h-3.5" />
+                              </button>
+                            </>
+                          )}
+
                           <button
                             type="button"
                             onClick={() =>
@@ -1230,29 +1399,41 @@ export const EmprestimosView: React.FC<EmprestimosViewProps> = ({
                             title="Visualizar e Imprimir Ficha com Assinaturas"
                           >
                             <Printer className="w-3.5 h-3.5 text-[#00237D]" />
-                            <span>Ficha c/ Assinaturas</span>
+                            <span>Ficha</span>
                           </button>
 
                           {canManage && isPendente && (
-                            <button
-                              type="button"
-                              onClick={() => handleAbrirModalDevolucao(loan)}
-                              className={`px-2.5 py-1.5 rounded font-bold text-[11px] text-white inline-flex items-center gap-1 shadow-xs cursor-pointer ${
-                                isRecebido
-                                  ? 'bg-rose-600 hover:bg-rose-700'
-                                  : 'bg-emerald-600 hover:bg-emerald-700'
-                              }`}
-                              title={
-                                isRecebido
-                                  ? 'Devolver material que pegamos emprestado (Gera Saída Diversa: Devolução de Empréstimo a Terceiros)'
-                                  : 'Receber de volta material que emprestamos (Gera Entrada Diversa: Recebimento de Devolução de Empréstimo)'
-                              }
-                            >
-                              <RotateCcw className="w-3.5 h-3.5" />
-                              <span>
-                                {isRecebido ? 'Devolver à Entidade' : 'Receber Devolução'}
-                              </span>
-                            </button>
+                            <>
+                              <button
+                                type="button"
+                                onClick={() => handleAbrirModalDevolucao(loan)}
+                                className={`px-2.5 py-1.5 rounded font-bold text-[11px] text-white inline-flex items-center gap-1 shadow-xs cursor-pointer ${
+                                  isRecebido
+                                    ? 'bg-rose-600 hover:bg-rose-700'
+                                    : 'bg-emerald-600 hover:bg-emerald-700'
+                                }`}
+                                title={
+                                  isRecebido
+                                    ? 'Devolver material que pegamos emprestado (Gera Saída Diversa: Devolução de Empréstimo a Terceiros)'
+                                    : 'Receber de volta material que emprestamos (Gera Entrada Diversa: Recebimento de Devolução de Empréstimo)'
+                                }
+                              >
+                                <RotateCcw className="w-3.5 h-3.5" />
+                                <span>
+                                  {isRecebido ? 'Devolver' : 'Receber Devolução'}
+                                </span>
+                              </button>
+
+                              <button
+                                type="button"
+                                onClick={() => handleAbrirModalDesfazer(loan)}
+                                className="px-2.5 py-1.5 rounded bg-amber-50 hover:bg-amber-100 text-amber-900 border border-amber-300 font-bold text-[11px] inline-flex items-center gap-1 cursor-pointer"
+                                title="Desfazer lançamento, estornando movimentação de estoque com justificativa"
+                              >
+                                <RotateCcw className="w-3.5 h-3.5 text-amber-700" />
+                                <span>Desfazer Lançamento</span>
+                              </button>
+                            </>
                           )}
                         </div>
                       </td>
@@ -1264,6 +1445,78 @@ export const EmprestimosView: React.FC<EmprestimosViewProps> = ({
           </table>
         </div>
       </div>
+
+      {/* Modal de Desfazer Lançamento (Estorno Obrigatório com Justificativa) */}
+      {desfazerLoan && (
+        <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="bg-white rounded-xl shadow-2xl max-w-lg w-full border border-slate-200 overflow-hidden">
+            <div className="px-6 py-4 bg-amber-600 text-white flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <RotateCcw className="w-5 h-5" />
+                <h3 className="text-base font-bold">Desfazer Lançamento do Empréstimo</h3>
+              </div>
+              <button
+                type="button"
+                onClick={() => setDesfazerLoan(null)}
+                className="text-amber-100 hover:text-white cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <form onSubmit={handleConfirmarDesfazer} className="p-6 space-y-4 text-xs">
+              <div className="p-3.5 bg-amber-50 border border-amber-200 rounded-lg text-amber-900 space-y-1.5">
+                <div className="font-bold flex items-center gap-1.5">
+                  <AlertTriangle className="w-4 h-4 text-amber-700 shrink-0" />
+                  <span>Atenção: Estorno de Lançamento de Estoque</span>
+                </div>
+                <p className="text-[11px]">
+                  Ao desfazer este lançamento (<strong>{desfazerLoan.numero_documento}</strong>), as movimentações de estoque geradas serão integralmente estornadas e o empréstimo retornará ao status de <strong>Rascunho (Em Fila)</strong>.
+                </p>
+              </div>
+
+              {desfazerError && (
+                <div className="p-3 rounded bg-rose-50 border border-rose-200 text-rose-800 flex items-start gap-2">
+                  <AlertTriangle className="w-4 h-4 text-rose-600 shrink-0 mt-0.5" />
+                  <div>{desfazerError}</div>
+                </div>
+              )}
+
+              <div>
+                <label className="block text-[11px] font-bold text-slate-700 uppercase tracking-wider mb-1">
+                  Justificativa Obrigatória do Desfazimento *
+                </label>
+                <textarea
+                  rows={3}
+                  required
+                  value={justificativaDesfazer}
+                  onChange={(e) => setJustificativaDesfazer(e.target.value)}
+                  placeholder="Ex: Lançamento efetuado com quantidade errada; solicitação de correção pelo almoxarife..."
+                  className="w-full px-3 py-2 bg-[#f1f3f5] border border-slate-300 rounded text-xs text-slate-800 focus:bg-white focus:border-amber-500 shadow-inner"
+                />
+              </div>
+
+              <div className="pt-3 border-t border-slate-200 flex items-center justify-end gap-3">
+                <button
+                  type="button"
+                  onClick={() => setDesfazerLoan(null)}
+                  className="px-4 py-2 rounded text-xs font-semibold text-slate-600 hover:bg-slate-100 cursor-pointer"
+                >
+                  Cancelar
+                </button>
+                <button
+                  type="submit"
+                  disabled={isSubmitting || !justificativaDesfazer.trim()}
+                  className="px-5 py-2 rounded text-xs font-bold uppercase tracking-wider bg-amber-600 hover:bg-amber-700 text-white shadow cursor-pointer disabled:opacity-50 flex items-center gap-1.5"
+                >
+                  <RotateCcw className="w-4 h-4" />
+                  <span>{isSubmitting ? 'Estornando...' : 'Confirmar Estorno / Desfazer'}</span>
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
 
       {/* Modal de Devolução / Quitação de Empréstimo Institucional */}
       {devolucaoLoan && (

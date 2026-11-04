@@ -1211,6 +1211,40 @@ function migrateAreaDb(areaDb: DatabaseSync, areaSigla: string, dbFilePath: stri
       appliedMigrations++;
     }
 
+    // Migration do CHECK constraint do status para aceitar 'rascunho' e 'cancelado'
+    try {
+      const empTableSql = (areaDb.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='emprestimos_institucionais'").get() as any)?.sql || '';
+      if (empTableSql.includes("CHECK (status IN ('pendente_devolucao', 'quitado'))") || empTableSql.includes("CHECK(status IN ('pendente_devolucao', 'quitado'))")) {
+        areaDb.exec(`
+          CREATE TABLE IF NOT EXISTS emprestimos_institucionais_new (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              numero_documento TEXT UNIQUE NOT NULL,
+              tipo TEXT NOT NULL CHECK (tipo IN ('recebido', 'concedido')),
+              entidade_id INTEGER NOT NULL REFERENCES fornecedores(id),
+              entidade_nome TEXT,
+              data_operacao DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+              data_prevista_devolucao DATE,
+              data_quitacao DATETIME,
+              status TEXT NOT NULL DEFAULT 'rascunho' CHECK (status IN ('rascunho', 'pendente_devolucao', 'quitado', 'cancelado')),
+              responsavel_almoxarifado_id INTEGER NOT NULL REFERENCES usuarios(id),
+              responsavel_almoxarifado_nome TEXT,
+              responsavel_entidade_parceira TEXT,
+              responsavel_entidade_nome TEXT,
+              observacao TEXT
+          );
+          INSERT INTO emprestimos_institucionais_new SELECT * FROM emprestimos_institucionais;
+          DROP TABLE emprestimos_institucionais;
+          ALTER TABLE emprestimos_institucionais_new RENAME TO emprestimos_institucionais;
+          CREATE INDEX IF NOT EXISTS idx_emp_inst_entidade ON emprestimos_institucionais (entidade_id);
+          CREATE INDEX IF NOT EXISTS idx_emp_inst_status ON emprestimos_institucionais (status);
+          CREATE INDEX IF NOT EXISTS idx_emp_inst_tipo ON emprestimos_institucionais (tipo);
+        `);
+        appliedMigrations++;
+      }
+    } catch (e: any) {
+      console.warn(`[DB Área ${areaSigla}] Aviso ao migrar status de emprestimos_institucionais:`, e.message);
+    }
+
     // 10.2 Verificação e adição idempotente de colunas na tabela 'itens_emprestimo_institucional'
     const itemEmpCols = new Set((areaDb.prepare("PRAGMA table_info('itens_emprestimo_institucional')").all() as Array<{ name: string }>).map((c) => c.name));
     if (!itemEmpCols.has('valor_unitario')) {

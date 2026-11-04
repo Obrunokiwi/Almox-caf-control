@@ -50,7 +50,7 @@ export type StatusEmprestimo = 'emprestado' | 'devolvido' | 'atrasado';
 export type TipoMovimentacao = 'entrada' | 'saida' | 'estorno_entrada' | 'estorno_saida';
 export type TipoEntidadeFornecedor = 'fornecedor_comercial' | 'entidade_parceira';
 export type TipoEmprestimoInstitucional = 'recebido' | 'concedido';
-export type StatusEmprestimoInstitucional = 'pendente_devolucao' | 'quitado';
+export type StatusEmprestimoInstitucional = 'rascunho' | 'pendente_devolucao' | 'quitado' | 'cancelado';
 
 export type MotivoSaidaDiversa =
   | 'Quebra'
