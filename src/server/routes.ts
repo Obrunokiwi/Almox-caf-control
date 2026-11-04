@@ -6103,17 +6103,20 @@ apiRouter.post('/emprestimos-institucionais', (req, res) => {
         throw new Error('Entidade parceira / fornecedor selecionado não foi encontrado no banco de dados');
       }
 
+      const respParceiraVal = responsavel_entidade_parceira ? String(responsavel_entidade_parceira).trim() : null;
+
       const empInfo = db.prepare(`
         INSERT INTO emprestimos_institucionais (
           numero_documento, tipo, entidade_id, responsavel_almoxarifado_id,
-          responsavel_entidade_parceira, status, observacao, data_operacao
-        ) VALUES (?, ?, ?, ?, ?, 'pendente_devolucao', ?, ?)
+          responsavel_entidade_parceira, responsavel_entidade_nome, status, observacao, data_operacao
+        ) VALUES (?, ?, ?, ?, ?, ?, 'pendente_devolucao', ?, ?)
       `).run(
         numero_documento,
         tipo,
         entidade.id,
         user.id,
-        responsavel_entidade_parceira ? String(responsavel_entidade_parceira).trim() : null,
+        respParceiraVal,
+        respParceiraVal,
         observacao ? String(observacao).trim() : null,
         dataOperacaoFinal
       );

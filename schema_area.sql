@@ -329,6 +329,7 @@ CREATE TABLE IF NOT EXISTS emprestimos_institucionais (
     status TEXT NOT NULL DEFAULT 'pendente_devolucao' CHECK (status IN ('pendente_devolucao', 'quitado')),
     responsavel_almoxarifado_id INTEGER NOT NULL REFERENCES usuarios(id),
     responsavel_almoxarifado_nome TEXT,
+    responsavel_entidade_parceira TEXT,
     responsavel_entidade_nome TEXT,
     observacao TEXT
 );

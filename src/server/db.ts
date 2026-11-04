@@ -1200,7 +1200,18 @@ function migrateAreaDb(areaDb: DatabaseSync, areaSigla: string, dbFilePath: stri
       appliedMigrations++;
     }
 
-    // 10.1 Verificação e adição idempotente de colunas na tabela 'itens_emprestimo_institucional'
+    // 10.1 Verificação e adição idempotente de colunas na tabela 'emprestimos_institucionais'
+    const empInstCols = new Set((areaDb.prepare("PRAGMA table_info('emprestimos_institucionais')").all() as Array<{ name: string }>).map((c) => c.name));
+    if (!empInstCols.has('responsavel_entidade_parceira')) {
+      areaDb.exec('ALTER TABLE emprestimos_institucionais ADD COLUMN responsavel_entidade_parceira TEXT;');
+      appliedMigrations++;
+    }
+    if (!empInstCols.has('responsavel_entidade_nome')) {
+      areaDb.exec('ALTER TABLE emprestimos_institucionais ADD COLUMN responsavel_entidade_nome TEXT;');
+      appliedMigrations++;
+    }
+
+    // 10.2 Verificação e adição idempotente de colunas na tabela 'itens_emprestimo_institucional'
     const itemEmpCols = new Set((areaDb.prepare("PRAGMA table_info('itens_emprestimo_institucional')").all() as Array<{ name: string }>).map((c) => c.name));
     if (!itemEmpCols.has('valor_unitario')) {
       areaDb.exec('ALTER TABLE itens_emprestimo_institucional ADD COLUMN valor_unitario REAL NOT NULL DEFAULT 0;');
