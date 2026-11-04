@@ -159,10 +159,10 @@ export const EntradasView: React.FC<EntradasViewProps> = ({
 
   // Estado do Formulário de Criação de Nova Nota Fiscal
   const [isNewNotaOpen, setIsNewNotaOpen] = useState(isCreateModalOpen);
-  const [newNotaDoc, setNewNotaDoc] = useState(`NF-${Math.floor(10000 + Math.random() * 90000)}`);
-  const [newNotaFornecedorId, setNewNotaFornecedorId] = useState<number>(fornecedores[0]?.id || 0);
-  const [newNotaCentroCustoId, setNewNotaCentroCustoId] = useState<number>(centrosCusto[0]?.id || 0);
-  const [newNotaObservacao, setNewNotaObservacao] = useState('Recebimento e conferência física');
+  const [newNotaDoc, setNewNotaDoc] = useState('');
+  const [newNotaFornecedorId, setNewNotaFornecedorId] = useState<number>(0);
+  const [newNotaCentroCustoId, setNewNotaCentroCustoId] = useState<number>(0);
+  const [newNotaObservacao, setNewNotaObservacao] = useState('');
   const [newNotaItens, setNewNotaItens] = useState<
     Array<{
       tempId: string;
@@ -196,52 +196,6 @@ export const EntradasView: React.FC<EntradasViewProps> = ({
       handleAbrirNovaNota();
     }
   }, [isCreateModalOpen]);
-
-  // Helper para identificar o Centro de Custo do Almoxarife/Usuário logado
-  const getAlmoxarifeCentroCustoId = useCallback(() => {
-    if (!centrosCusto || centrosCusto.length === 0) return 0;
-
-    // 1. Tentar diretamente pelo centro_custo_id do usuário logado
-    if (currentUser?.centro_custo_id) {
-      const match = centrosCusto.find((c) => c.id === currentUser.centro_custo_id);
-      if (match) return match.id;
-    }
-
-    // 2. Tentar pelo código do centro de custo do usuário
-    if (currentUser?.centro_custo_codigo) {
-      const match = centrosCusto.find((c) => c.codigo === currentUser.centro_custo_codigo);
-      if (match) return match.id;
-    }
-
-    // 3. Tentar pelo nome do centro de custo do usuário
-    if (currentUser?.centro_custo_nome) {
-      const match = centrosCusto.find(
-        (c) => c.nome.toLowerCase() === currentUser.centro_custo_nome?.toLowerCase()
-      );
-      if (match) return match.id;
-    }
-
-    // 4. Fallback por sigla da área ativa (ALM x CAF)
-    const areaSigla = currentUser?.area_sigla?.toUpperCase() || 'ALM';
-    const areaMatch = centrosCusto.find(
-      (c) =>
-        (areaSigla === 'CAF' && (c.nome.toUpperCase().includes('CAF') || c.nome.toUpperCase().includes('FARMÁCIA') || c.nome.toUpperCase().includes('FARMACIA'))) ||
-        (areaSigla === 'ALM' && (c.nome.toUpperCase().includes('ALMOXARIFADO') || c.codigo.toUpperCase().includes('ALM')))
-    );
-    if (areaMatch) return areaMatch.id;
-
-    return centrosCusto[0]?.id || 0;
-  }, [currentUser, centrosCusto]);
-
-  // Garante que o centro de custo da nova nota esteja apontando para o almoxarife/usuário logado
-  useEffect(() => {
-    if (centrosCusto.length > 0 && (!newNotaCentroCustoId || newNotaCentroCustoId === 0)) {
-      const ccId = getAlmoxarifeCentroCustoId();
-      if (ccId) {
-        setNewNotaCentroCustoId(ccId);
-      }
-    }
-  }, [centrosCusto, currentUser, getAlmoxarifeCentroCustoId, newNotaCentroCustoId]);
 
   // Carrega lista de Notas Fiscais da API
   const carregarNotas = useCallback(async () => {
@@ -310,20 +264,14 @@ export const EntradasView: React.FC<EntradasViewProps> = ({
   }, [fornecedores]);
 
   const centrosCustoOptions: SearchableOption[] = useMemo(() => {
-    const almoxCcId = getAlmoxarifeCentroCustoId();
     return centrosCusto
       .filter((c) => c.ativo !== 0)
-      .map((c) => {
-        const isUserCc = c.id === almoxCcId;
-        return {
-          value: c.id,
-          label: `${c.codigo} - ${c.nome}${isUserCc ? ' (Seu Centro de Custo)' : ''}`,
-          secondaryLabel: c.departamento ? `(${c.departamento})` : undefined,
-          badge: isUserCc ? 'Almoxarife' : undefined,
-          badgeVariant: isUserCc ? 'info' : undefined,
-        };
-      });
-  }, [centrosCusto, getAlmoxarifeCentroCustoId]);
+      .map((c) => ({
+        value: c.id,
+        label: `${c.codigo} - ${c.nome}`,
+        secondaryLabel: c.departamento ? `(${c.departamento})` : undefined,
+      }));
+  }, [centrosCusto]);
 
   const produtosOptions: SearchableOption[] = useMemo(() => {
     return produtos
@@ -351,32 +299,24 @@ export const EntradasView: React.FC<EntradasViewProps> = ({
     return notasList.slice(start, start + pageSize);
   }, [notasList, currentPage, pageSize]);
 
-  // Abertura do formulário de criação de nova nota fiscal
+  // Abertura do formulário de criação de nova nota fiscal em branco
   const handleAbrirNovaNota = () => {
-    const defaultFornId = fornecedores[0]?.id || 0;
-    const defaultCcId = getAlmoxarifeCentroCustoId();
-    const defaultProdId = produtos[0]?.id || 0;
-
-    setNewNotaDoc(`NF-${Math.floor(10000 + Math.random() * 90000)}`);
-    setNewNotaFornecedorId(defaultFornId);
-    setNewNotaCentroCustoId(defaultCcId);
-    setNewNotaObservacao('Recebimento e conferência física');
-
-    const defaultProd = produtos[0];
-    const defaultUnitVal = defaultProd?.valor_unitario || defaultProd?.custo_unitario || 10.0;
-    const defaultQtd = 50;
+    setNewNotaDoc('');
+    setNewNotaFornecedorId(0);
+    setNewNotaCentroCustoId(0);
+    setNewNotaObservacao('');
 
     const initialTempId = String(Date.now());
-    // Inicializa com 1 item padrão
+    // Inicializa com 1 item totalmente em branco
     setNewNotaItens([
       {
         tempId: initialTempId,
-        produto_id: defaultProdId,
+        produto_id: 0,
         numero_lote: '',
         data_validade: '',
-        quantidade: defaultQtd,
-        valor_total: Number((defaultQtd * defaultUnitVal).toFixed(2)),
-        valor_unitario: defaultUnitVal,
+        quantidade: '' as any,
+        valor_total: '' as any,
+        valor_unitario: 0,
         marca: '',
         nomenclatura_fornecedor: '',
       },
@@ -388,22 +328,18 @@ export const EntradasView: React.FC<EntradasViewProps> = ({
   };
 
   const handleAddNewItemToNewNota = () => {
-    const defaultProd = produtos[0];
-    const defaultProdId = defaultProd?.id || 0;
-    const defaultUnitVal = defaultProd?.valor_unitario || defaultProd?.custo_unitario || 0;
-    const defaultQtd = 10;
     const newTempId = String(Date.now() + Math.random());
 
     setNewNotaItens((prev) => [
       ...prev,
       {
         tempId: newTempId,
-        produto_id: defaultProdId,
+        produto_id: 0,
         numero_lote: '',
         data_validade: '',
-        quantidade: defaultQtd,
-        valor_total: Number((defaultQtd * defaultUnitVal).toFixed(2)),
-        valor_unitario: defaultUnitVal,
+        quantidade: '' as any,
+        valor_total: '' as any,
+        valor_unitario: 0,
         marca: '',
         nomenclatura_fornecedor: '',
       },
@@ -431,15 +367,27 @@ export const EntradasView: React.FC<EntradasViewProps> = ({
       toast.error('Campo Obrigatório', 'Selecione o Fornecedor da Nota Fiscal.');
       return;
     }
+    if (!newNotaCentroCustoId) {
+      toast.error('Campo Obrigatório', 'Selecione o Centro de Custo (Local de Estocagem).');
+      return;
+    }
     if (newNotaItens.length === 0) {
       toast.error('Itens Obrigatórios', 'Adicione ao menos um item à Nota Fiscal.');
       return;
     }
 
     // Valida cada item
-    for (const it of newNotaItens) {
-      if (!it.produto_id || Number(it.quantidade) <= 0) {
-        toast.error('Item Inválido', 'Todos os itens devem ter produto selecionado e quantidade maior que zero.');
+    for (const [idx, it] of newNotaItens.entries()) {
+      if (!it.produto_id) {
+        toast.error('Item Inválido', `Selecione o produto no Item #${idx + 1}.`);
+        return;
+      }
+      if (!it.quantidade || Number(it.quantidade) <= 0) {
+        toast.error('Item Inválido', `Informe uma quantidade válida para o Item #${idx + 1}.`);
+        return;
+      }
+      if (!it.valor_total || Number(it.valor_total) <= 0) {
+        toast.error('Item Inválido', `Informe o custo total da NF para o Item #${idx + 1}.`);
         return;
       }
     }
@@ -1885,16 +1833,18 @@ export const EntradasView: React.FC<EntradasViewProps> = ({
                               required
                               min="0.001"
                               step="any"
-                              value={item.quantidade}
+                              value={item.quantidade || ''}
                               onChange={(e) => {
                                 const next = [...newNotaItens];
-                                const q = Number(e.target.value);
+                                const val = e.target.value;
+                                const q = val === '' ? ('' as any) : Number(val);
                                 next[index].quantidade = q;
-                                if (next[index].valor_total && q > 0) {
-                                  next[index].valor_unitario = next[index].valor_total / q;
+                                if (next[index].valor_total && Number(q) > 0) {
+                                  next[index].valor_unitario = Number(next[index].valor_total) / Number(q);
                                 }
                                 setNewNotaItens(next);
                               }}
+                              placeholder="0"
                               className="w-full px-2 py-1.5 border border-slate-300 rounded font-mono font-bold text-right text-xs"
                             />
                           </div>
@@ -1921,7 +1871,7 @@ export const EntradasView: React.FC<EntradasViewProps> = ({
                               <label className="block text-[10px] font-bold text-slate-700 uppercase tracking-wider">
                                 Custo Total da NF (R$) *
                               </label>
-                              {item.quantidade > 0 && (
+                              {item.quantidade > 0 && item.valor_total > 0 && (
                                 <span className="text-[10px] font-mono text-[#00237D] font-bold bg-blue-50 px-1.5 py-0.5 rounded border border-blue-200">
                                   Unit.: {unitarioCalc.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL', minimumFractionDigits: 2, maximumFractionDigits: 4 })} / {prod?.unidade_medida || 'UN'}
                                 </span>
@@ -1932,13 +1882,14 @@ export const EntradasView: React.FC<EntradasViewProps> = ({
                               step="0.01"
                               min="0"
                               required
-                              value={item.valor_total ?? (item.valor_unitario * item.quantidade || '')}
+                              value={item.valor_total || ''}
                               onChange={(e) => {
                                 const next = [...newNotaItens];
-                                const tot = Number(e.target.value);
+                                const val = e.target.value;
+                                const tot = val === '' ? ('' as any) : Number(val);
                                 next[index].valor_total = tot;
-                                const q = Number(next[index].quantidade) || 1;
-                                next[index].valor_unitario = q > 0 ? tot / q : 0;
+                                const q = Number(next[index].quantidade) || 0;
+                                next[index].valor_unitario = q > 0 && tot ? Number(tot) / q : 0;
                                 setNewNotaItens(next);
                               }}
                               placeholder="0,00"
