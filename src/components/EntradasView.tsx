@@ -11,6 +11,8 @@ import {
   ChevronLeft,
   ChevronRight,
   ChevronsRight,
+  ChevronDown,
+  ChevronUp,
   Save,
   Building2,
   Calendar,
@@ -174,6 +176,14 @@ export const EntradasView: React.FC<EntradasViewProps> = ({
       nomenclatura_fornecedor: string;
     }>
   >([]);
+  const [expandedItemIds, setExpandedItemIds] = useState<Record<string, boolean>>({});
+
+  const toggleExpandItem = (tempId: string) => {
+    setExpandedItemIds((prev) => ({
+      ...prev,
+      [tempId]: !prev[tempId],
+    }));
+  };
 
   // Preview de PDF
   const [pdfPreviewDoc, setPdfPreviewDoc] = useState<PdfGeneratedDocument | null>(null);
@@ -186,6 +196,52 @@ export const EntradasView: React.FC<EntradasViewProps> = ({
       handleAbrirNovaNota();
     }
   }, [isCreateModalOpen]);
+
+  // Helper para identificar o Centro de Custo do Almoxarife/Usuário logado
+  const getAlmoxarifeCentroCustoId = useCallback(() => {
+    if (!centrosCusto || centrosCusto.length === 0) return 0;
+
+    // 1. Tentar diretamente pelo centro_custo_id do usuário logado
+    if (currentUser?.centro_custo_id) {
+      const match = centrosCusto.find((c) => c.id === currentUser.centro_custo_id);
+      if (match) return match.id;
+    }
+
+    // 2. Tentar pelo código do centro de custo do usuário
+    if (currentUser?.centro_custo_codigo) {
+      const match = centrosCusto.find((c) => c.codigo === currentUser.centro_custo_codigo);
+      if (match) return match.id;
+    }
+
+    // 3. Tentar pelo nome do centro de custo do usuário
+    if (currentUser?.centro_custo_nome) {
+      const match = centrosCusto.find(
+        (c) => c.nome.toLowerCase() === currentUser.centro_custo_nome?.toLowerCase()
+      );
+      if (match) return match.id;
+    }
+
+    // 4. Fallback por sigla da área ativa (ALM x CAF)
+    const areaSigla = currentUser?.area_sigla?.toUpperCase() || 'ALM';
+    const areaMatch = centrosCusto.find(
+      (c) =>
+        (areaSigla === 'CAF' && (c.nome.toUpperCase().includes('CAF') || c.nome.toUpperCase().includes('FARMÁCIA') || c.nome.toUpperCase().includes('FARMACIA'))) ||
+        (areaSigla === 'ALM' && (c.nome.toUpperCase().includes('ALMOXARIFADO') || c.codigo.toUpperCase().includes('ALM')))
+    );
+    if (areaMatch) return areaMatch.id;
+
+    return centrosCusto[0]?.id || 0;
+  }, [currentUser, centrosCusto]);
+
+  // Garante que o centro de custo da nova nota esteja apontando para o almoxarife/usuário logado
+  useEffect(() => {
+    if (centrosCusto.length > 0 && (!newNotaCentroCustoId || newNotaCentroCustoId === 0)) {
+      const ccId = getAlmoxarifeCentroCustoId();
+      if (ccId) {
+        setNewNotaCentroCustoId(ccId);
+      }
+    }
+  }, [centrosCusto, currentUser, getAlmoxarifeCentroCustoId, newNotaCentroCustoId]);
 
   // Carrega lista de Notas Fiscais da API
   const carregarNotas = useCallback(async () => {
@@ -254,14 +310,20 @@ export const EntradasView: React.FC<EntradasViewProps> = ({
   }, [fornecedores]);
 
   const centrosCustoOptions: SearchableOption[] = useMemo(() => {
+    const almoxCcId = getAlmoxarifeCentroCustoId();
     return centrosCusto
       .filter((c) => c.ativo !== 0)
-      .map((c) => ({
-        value: c.id,
-        label: `${c.codigo} - ${c.nome}`,
-        secondaryLabel: c.departamento ? `(${c.departamento})` : undefined,
-      }));
-  }, [centrosCusto]);
+      .map((c) => {
+        const isUserCc = c.id === almoxCcId;
+        return {
+          value: c.id,
+          label: `${c.codigo} - ${c.nome}${isUserCc ? ' (Seu Centro de Custo)' : ''}`,
+          secondaryLabel: c.departamento ? `(${c.departamento})` : undefined,
+          badge: isUserCc ? 'Almoxarife' : undefined,
+          badgeVariant: isUserCc ? 'info' : undefined,
+        };
+      });
+  }, [centrosCusto, getAlmoxarifeCentroCustoId]);
 
   const produtosOptions: SearchableOption[] = useMemo(() => {
     return produtos
@@ -292,7 +354,7 @@ export const EntradasView: React.FC<EntradasViewProps> = ({
   // Abertura do formulário de criação de nova nota fiscal
   const handleAbrirNovaNota = () => {
     const defaultFornId = fornecedores[0]?.id || 0;
-    const defaultCcId = centrosCusto[0]?.id || 0;
+    const defaultCcId = getAlmoxarifeCentroCustoId();
     const defaultProdId = produtos[0]?.id || 0;
 
     setNewNotaDoc(`NF-${Math.floor(10000 + Math.random() * 90000)}`);
@@ -304,10 +366,11 @@ export const EntradasView: React.FC<EntradasViewProps> = ({
     const defaultUnitVal = defaultProd?.valor_unitario || defaultProd?.custo_unitario || 10.0;
     const defaultQtd = 50;
 
+    const initialTempId = String(Date.now());
     // Inicializa com 1 item padrão
     setNewNotaItens([
       {
-        tempId: String(Date.now()),
+        tempId: initialTempId,
         produto_id: defaultProdId,
         numero_lote: '',
         data_validade: '',
@@ -318,6 +381,7 @@ export const EntradasView: React.FC<EntradasViewProps> = ({
         nomenclatura_fornecedor: '',
       },
     ]);
+    setExpandedItemIds({ [initialTempId]: true });
 
     setIsNewNotaOpen(true);
     if (setIsCreateModalOpen) setIsCreateModalOpen(true);
@@ -328,10 +392,12 @@ export const EntradasView: React.FC<EntradasViewProps> = ({
     const defaultProdId = defaultProd?.id || 0;
     const defaultUnitVal = defaultProd?.valor_unitario || defaultProd?.custo_unitario || 0;
     const defaultQtd = 10;
+    const newTempId = String(Date.now() + Math.random());
+
     setNewNotaItens((prev) => [
       ...prev,
       {
-        tempId: String(Date.now() + Math.random()),
+        tempId: newTempId,
         produto_id: defaultProdId,
         numero_lote: '',
         data_validade: '',
@@ -342,6 +408,9 @@ export const EntradasView: React.FC<EntradasViewProps> = ({
         nomenclatura_fornecedor: '',
       },
     ]);
+
+    // Minimiza os itens anteriores e abre o novo item adicionado
+    setExpandedItemIds({ [newTempId]: true });
   };
 
   const handleRemoveItemFromNewNota = (tempId: string) => {
@@ -1632,186 +1701,272 @@ export const EntradasView: React.FC<EntradasViewProps> = ({
               {/* Itens da Nota Fiscal */}
               <div className="space-y-3">
                 <div className="flex items-center justify-between">
-                  <span className="text-[11px] font-bold uppercase tracking-wider text-slate-700">
-                    Itens da Nota Fiscal ({newNotaItens.length})
+                  <span className="text-[11px] font-bold uppercase tracking-wider text-slate-700 flex items-center gap-2">
+                    <span>Itens da Nota Fiscal ({newNotaItens.length})</span>
+                    <span className="text-[10px] text-slate-500 font-normal normal-case">
+                      (clique no item para expandir ou minimizar)
+                    </span>
                   </span>
-                  <button
-                    type="button"
-                    onClick={handleAddNewItemToNewNota}
-                    className="px-2.5 py-1 text-xs font-semibold text-teal-800 bg-teal-50 hover:bg-teal-100 rounded border border-teal-200 inline-flex items-center gap-1 cursor-pointer"
-                  >
-                    <Plus className="w-3.5 h-3.5" />
-                    <span>Adicionar Item</span>
-                  </button>
                 </div>
 
-                <div className="space-y-3">
+                <div className="space-y-2.5">
                   {newNotaItens.map((item, index) => {
                     const prod = produtos.find((p) => p.id === item.produto_id);
+                    const exigeLote = prod?.controla_validade === 1;
+                    const unitarioCalc =
+                      item.quantidade > 0 && item.valor_total
+                        ? item.valor_total / item.quantidade
+                        : item.valor_unitario;
+
+                    const isExpanded = expandedItemIds[item.tempId] ?? (index === newNotaItens.length - 1);
+
+                    if (!isExpanded) {
+                      // Visualização Minimizada (1 Linha)
+                      return (
+                        <div
+                          key={item.tempId}
+                          onClick={() => toggleExpandItem(item.tempId)}
+                          className="p-2.5 bg-slate-50/90 hover:bg-slate-100 border border-slate-200 hover:border-slate-300 rounded-xl transition-all cursor-pointer flex flex-wrap items-center justify-between gap-2 text-xs shadow-2xs"
+                        >
+                          <div className="flex items-center gap-2.5 min-w-0 flex-1">
+                            <span className="px-2 py-0.5 bg-teal-100 text-teal-900 font-bold font-mono text-[10px] rounded shrink-0">
+                              #{index + 1}
+                            </span>
+                            <div className="truncate min-w-0 flex items-center gap-1.5">
+                              <span className="font-bold text-slate-800 truncate">
+                                {prod ? `${prod.codigo} - ${prod.nome}` : 'Selecione um produto...'}
+                              </span>
+                              {item.marca && (
+                                <span className="text-[11px] text-slate-500 font-normal truncate hidden sm:inline">
+                                  ({item.marca})
+                                </span>
+                              )}
+                            </div>
+                          </div>
+
+                          <div className="flex items-center gap-2 shrink-0 text-[11px] font-mono">
+                            <span className="hidden sm:inline-block bg-white px-2 py-0.5 rounded border border-slate-200 text-slate-600">
+                              Lote: <strong className="text-slate-800">{item.numero_lote || 'SEM LOTE'}</strong>
+                            </span>
+                            <span className="hidden md:inline-block bg-white px-2 py-0.5 rounded border border-slate-200 text-slate-600">
+                              Val: <strong className="text-slate-800">{item.data_validade ? formatDataValidade(item.data_validade) : '—'}</strong>
+                            </span>
+                            <span className="bg-white px-2 py-0.5 rounded border border-slate-200 text-slate-700">
+                              Qtd: <strong className="text-teal-900">{item.quantidade} {prod?.unidade_medida || 'UN'}</strong>
+                            </span>
+                            <span className="bg-blue-50 text-[#00237D] px-2 py-0.5 rounded border border-blue-200 font-bold">
+                              R$ {item.valor_total ? item.valor_total.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '0,00'}
+                            </span>
+
+                            <div className="flex items-center gap-1 pl-1 border-l border-slate-200">
+                              {newNotaItens.length > 1 && (
+                                <button
+                                  type="button"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    handleRemoveItemFromNewNota(item.tempId);
+                                  }}
+                                  className="p-1 text-rose-500 hover:text-rose-700 hover:bg-rose-50 rounded cursor-pointer"
+                                  title="Remover item"
+                                >
+                                  <Trash2 className="w-3.5 h-3.5" />
+                                </button>
+                              )}
+                              <span className="p-1 text-slate-400 group-hover:text-slate-600">
+                                <ChevronDown className="w-4 h-4 text-slate-500" />
+                              </span>
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    }
+
+                    // Visualização Expandida Completa
                     return (
                       <div
                         key={item.tempId}
-                        className="p-3 bg-white border border-slate-200 rounded-xl shadow-2xs space-y-2 relative"
+                        className="p-3.5 bg-white border-2 border-teal-200/80 rounded-xl shadow-2xs space-y-3 relative"
                       >
-                        <div className="flex items-center justify-between">
-                          <span className="text-[10px] font-bold text-teal-800 uppercase tracking-wider">
-                            Item #{index + 1}
-                          </span>
-                          {newNotaItens.length > 1 && (
+                        <div className="flex items-center justify-between pb-2 border-b border-slate-100">
+                          <div className="flex items-center gap-2">
+                            <span className="px-2 py-0.5 bg-teal-100 text-teal-900 font-bold font-mono text-[10px] rounded uppercase">
+                              ITEM #{index + 1}
+                            </span>
+                            <span className="text-xs font-bold text-slate-800">
+                              {prod ? `${prod.codigo} - ${prod.nome}` : 'Ajustando item'}
+                            </span>
+                          </div>
+
+                          <div className="flex items-center gap-2">
                             <button
                               type="button"
-                              onClick={() => handleRemoveItemFromNewNota(item.tempId)}
-                              className="text-rose-500 hover:text-rose-700 text-xs flex items-center gap-1 cursor-pointer"
+                              onClick={() => toggleExpandItem(item.tempId)}
+                              className="px-2.5 py-1 text-xs font-semibold text-slate-600 hover:text-slate-900 bg-slate-100 hover:bg-slate-200 rounded-lg flex items-center gap-1 cursor-pointer transition-colors"
                             >
-                              <Trash2 className="w-3.5 h-3.5" />
-                              <span>Remover</span>
+                              <ChevronUp className="w-3.5 h-3.5" />
+                              <span>Minimizar</span>
                             </button>
-                          )}
+
+                            {newNotaItens.length > 1 && (
+                              <button
+                                type="button"
+                                onClick={() => handleRemoveItemFromNewNota(item.tempId)}
+                                className="text-rose-500 hover:text-rose-700 text-xs font-semibold flex items-center gap-1 cursor-pointer pl-2 border-l border-slate-200"
+                              >
+                                <Trash2 className="w-3.5 h-3.5" />
+                                <span>Remover</span>
+                              </button>
+                            )}
+                          </div>
                         </div>
 
-                        {(() => {
-                          const prod = produtos.find((p) => p.id === item.produto_id);
-                          const exigeLote = prod?.controla_validade === 1;
-                          const unitarioCalc = item.quantidade > 0 && item.valor_total ? item.valor_total / item.quantidade : item.valor_unitario;
+                        <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-6 gap-2.5">
+                          <div className="md:col-span-3">
+                            <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-0.5">
+                              Produto (Código Único de Estoque) *
+                            </label>
+                            <SearchableSelect
+                              options={produtosOptions}
+                              value={item.produto_id}
+                              onChange={(val) => {
+                                const next = [...newNotaItens];
+                                const pId = Number(val);
+                                next[index].produto_id = pId;
+                                const pObj = produtos.find((p) => p.id === pId);
+                                const pUnit = pObj?.valor_unitario || pObj?.custo_unitario || 0;
+                                const qtd = next[index].quantidade || 1;
+                                next[index].valor_unitario = pUnit;
+                                next[index].valor_total = Number((qtd * pUnit).toFixed(2));
+                                setNewNotaItens(next);
+                              }}
+                              placeholder="Digite código ou nome..."
+                            />
+                          </div>
 
-                          return (
-                            <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-6 gap-2.5">
-                              <div className="md:col-span-3">
-                                <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-0.5">
-                                  Produto (Código Único de Estoque) *
-                                </label>
-                                <SearchableSelect
-                                  options={produtosOptions}
-                                  value={item.produto_id}
-                                  onChange={(val) => {
-                                    const next = [...newNotaItens];
-                                    const pId = Number(val);
-                                    next[index].produto_id = pId;
-                                    const pObj = produtos.find((p) => p.id === pId);
-                                    const pUnit = pObj?.valor_unitario || pObj?.custo_unitario || 0;
-                                    const qtd = next[index].quantidade || 1;
-                                    next[index].valor_unitario = pUnit;
-                                    next[index].valor_total = Number((qtd * pUnit).toFixed(2));
-                                    setNewNotaItens(next);
-                                  }}
-                                  placeholder="Digite código ou nome..."
-                                />
-                              </div>
+                          <div>
+                            <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-0.5">
+                              Lote {exigeLote ? '*' : '(Opcional)'}
+                            </label>
+                            <input
+                              type="text"
+                              value={item.numero_lote}
+                              onChange={(e) => {
+                                const next = [...newNotaItens];
+                                next[index].numero_lote = e.target.value.toUpperCase();
+                                setNewNotaItens(next);
+                              }}
+                              className="w-full px-2 py-1.5 border border-slate-300 rounded font-mono text-xs uppercase"
+                              placeholder={exigeLote ? 'LOTE' : 'SEM LOTE'}
+                            />
+                          </div>
 
-                              <div>
-                                <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-0.5">
-                                  Lote {exigeLote ? '*' : '(Opcional)'}
-                                </label>
-                                <input
-                                  type="text"
-                                  value={item.numero_lote}
-                                  onChange={(e) => {
-                                    const next = [...newNotaItens];
-                                    next[index].numero_lote = e.target.value.toUpperCase();
-                                    setNewNotaItens(next);
-                                  }}
-                                  className="w-full px-2 py-1.5 border border-slate-300 rounded font-mono text-xs uppercase"
-                                  placeholder={exigeLote ? "LOTE" : "SEM LOTE"}
-                                />
-                              </div>
+                          <div>
+                            <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-0.5">
+                              Validade {exigeLote ? '*' : '(Opcional)'}
+                            </label>
+                            <input
+                              type="date"
+                              value={item.data_validade}
+                              onChange={(e) => {
+                                const next = [...newNotaItens];
+                                next[index].data_validade = e.target.value;
+                                setNewNotaItens(next);
+                              }}
+                              className="w-full px-2 py-1.5 border border-slate-300 rounded text-xs"
+                            />
+                          </div>
 
-                              <div>
-                                <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-0.5">
-                                  Validade {exigeLote ? '*' : '(Opcional)'}
-                                </label>
-                                <input
-                                  type="date"
-                                  value={item.data_validade}
-                                  onChange={(e) => {
-                                    const next = [...newNotaItens];
-                                    next[index].data_validade = e.target.value;
-                                    setNewNotaItens(next);
-                                  }}
-                                  className="w-full px-2 py-1.5 border border-slate-300 rounded text-xs"
-                                />
-                              </div>
+                          <div>
+                            <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-0.5">
+                              Quantidade ({prod?.unidade_medida || 'UN'}) *
+                            </label>
+                            <input
+                              type="number"
+                              required
+                              min="0.001"
+                              step="any"
+                              value={item.quantidade}
+                              onChange={(e) => {
+                                const next = [...newNotaItens];
+                                const q = Number(e.target.value);
+                                next[index].quantidade = q;
+                                if (next[index].valor_total && q > 0) {
+                                  next[index].valor_unitario = next[index].valor_total / q;
+                                }
+                                setNewNotaItens(next);
+                              }}
+                              className="w-full px-2 py-1.5 border border-slate-300 rounded font-mono font-bold text-right text-xs"
+                            />
+                          </div>
 
-                              <div>
-                                <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-0.5">
-                                  Quantidade ({prod?.unidade_medida || 'UN'}) *
-                                </label>
-                                <input
-                                  type="number"
-                                  required
-                                  min="0.001"
-                                  step="any"
-                                  value={item.quantidade}
-                                  onChange={(e) => {
-                                    const next = [...newNotaItens];
-                                    const q = Number(e.target.value);
-                                    next[index].quantidade = q;
-                                    if (next[index].valor_total && q > 0) {
-                                      next[index].valor_unitario = next[index].valor_total / q;
-                                    }
-                                    setNewNotaItens(next);
-                                  }}
-                                  className="w-full px-2 py-1.5 border border-slate-300 rounded font-mono font-bold text-right text-xs"
-                                />
-                              </div>
+                          <div className="md:col-span-3">
+                            <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-0.5">
+                              Marca / Nomenclatura na NF (Opcional)
+                            </label>
+                            <input
+                              type="text"
+                              value={item.marca}
+                              onChange={(e) => {
+                                const next = [...newNotaItens];
+                                next[index].marca = e.target.value;
+                                setNewNotaItens(next);
+                              }}
+                              placeholder="ex: Cremer, Descarpack..."
+                              className="w-full px-2 py-1.5 border border-slate-300 rounded text-xs"
+                            />
+                          </div>
 
-                              <div className="md:col-span-3">
-                                <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-0.5">
-                                  Marca / Nomenclatura na NF (Opcional)
-                                </label>
-                                <input
-                                  type="text"
-                                  value={item.marca}
-                                  onChange={(e) => {
-                                    const next = [...newNotaItens];
-                                    next[index].marca = e.target.value;
-                                    setNewNotaItens(next);
-                                  }}
-                                  placeholder="ex: Cremer, Descarpack..."
-                                  className="w-full px-2 py-1.5 border border-slate-300 rounded text-xs"
-                                />
-                              </div>
-
-                              <div className="md:col-span-3">
-                                <div className="flex items-center justify-between mb-0.5">
-                                  <label className="block text-[10px] font-bold text-slate-700 uppercase tracking-wider">
-                                    Custo Total da NF (R$) *
-                                  </label>
-                                  {item.quantidade > 0 && (
-                                    <span className="text-[10px] font-mono text-[#00237D] font-bold bg-blue-50 px-1.5 py-0.5 rounded border border-blue-200">
-                                      Unit.: {unitarioCalc.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL', minimumFractionDigits: 2, maximumFractionDigits: 4 })} / {prod?.unidade_medida || 'UN'}
-                                    </span>
-                                  )}
-                                </div>
-                                <input
-                                  type="number"
-                                  step="0.01"
-                                  min="0"
-                                  required
-                                  value={item.valor_total ?? (item.valor_unitario * item.quantidade || '')}
-                                  onChange={(e) => {
-                                    const next = [...newNotaItens];
-                                    const tot = Number(e.target.value);
-                                    next[index].valor_total = tot;
-                                    const q = Number(next[index].quantidade) || 1;
-                                    next[index].valor_unitario = q > 0 ? tot / q : 0;
-                                    setNewNotaItens(next);
-                                  }}
-                                  placeholder="0,00"
-                                  className="w-full px-2 py-1.5 border border-slate-300 rounded font-mono font-bold text-right text-xs text-slate-900 focus:border-[#00237D] focus:ring-1 focus:ring-[#00237D]"
-                                />
-                                <div className="mt-1 flex items-center justify-between text-[10px] text-slate-500">
-                                  <span>Calculado automaticamente: Custo Total ÷ Quantidade</span>
-                                  <span className="font-mono text-slate-700 font-semibold">
-                                    Unitário: R$ {unitarioCalc.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 4 })}
-                                  </span>
-                                </div>
-                              </div>
+                          <div className="md:col-span-3">
+                            <div className="flex items-center justify-between mb-0.5">
+                              <label className="block text-[10px] font-bold text-slate-700 uppercase tracking-wider">
+                                Custo Total da NF (R$) *
+                              </label>
+                              {item.quantidade > 0 && (
+                                <span className="text-[10px] font-mono text-[#00237D] font-bold bg-blue-50 px-1.5 py-0.5 rounded border border-blue-200">
+                                  Unit.: {unitarioCalc.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL', minimumFractionDigits: 2, maximumFractionDigits: 4 })} / {prod?.unidade_medida || 'UN'}
+                                </span>
+                              )}
                             </div>
-                          );
-                        })()}
+                            <input
+                              type="number"
+                              step="0.01"
+                              min="0"
+                              required
+                              value={item.valor_total ?? (item.valor_unitario * item.quantidade || '')}
+                              onChange={(e) => {
+                                const next = [...newNotaItens];
+                                const tot = Number(e.target.value);
+                                next[index].valor_total = tot;
+                                const q = Number(next[index].quantidade) || 1;
+                                next[index].valor_unitario = q > 0 ? tot / q : 0;
+                                setNewNotaItens(next);
+                              }}
+                              placeholder="0,00"
+                              className="w-full px-2 py-1.5 border border-slate-300 rounded font-mono font-bold text-right text-xs text-slate-900 focus:border-[#00237D] focus:ring-1 focus:ring-[#00237D]"
+                            />
+                            <div className="mt-1 flex items-center justify-between text-[10px] text-slate-500">
+                              <span>Calculado automaticamente: Custo Total ÷ Quantidade</span>
+                              <span className="font-mono text-slate-700 font-semibold">
+                                Unitário: R$ {unitarioCalc.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 4 })}
+                              </span>
+                            </div>
+                          </div>
+                        </div>
                       </div>
                     );
                   })}
+                </div>
+
+                {/* Botão de Adicionar Novo Item movido para a parte inferior */}
+                <div className="pt-1">
+                  <button
+                    type="button"
+                    onClick={handleAddNewItemToNewNota}
+                    className="w-full py-2.5 px-4 text-xs font-bold text-[#00237D] bg-blue-50/80 hover:bg-blue-100/90 border-2 border-dashed border-blue-200 hover:border-blue-400 rounded-xl inline-flex items-center justify-center gap-2 transition-all cursor-pointer shadow-2xs active:scale-[0.99]"
+                  >
+                    <Plus className="w-4 h-4" />
+                    <span>+ ADICIONAR NOVO ITEM NA NOTA FISCAL</span>
+                  </button>
                 </div>
               </div>
 

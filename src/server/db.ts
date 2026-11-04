@@ -1024,6 +1024,41 @@ function migrateAreaDb(areaDb: DatabaseSync, areaSigla: string, dbFilePath: stri
       appliedMigrations++;
     }
 
+    // 6.2 Remoção do CHECK constraint na tabela 'historico_requisicoes' para permitir reabertura e salvar_rascunho
+    try {
+      const histTableSql = (areaDb.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='historico_requisicoes'").get() as any)?.sql || '';
+      if (histTableSql.includes('CHECK (acao IN') || histTableSql.includes('CHECK(acao IN')) {
+        areaDb.exec(`
+          CREATE TABLE IF NOT EXISTS historico_requisicoes_new (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              requisicao_id INTEGER NOT NULL REFERENCES requisicoes(id) ON DELETE CASCADE,
+              item_requisicao_id INTEGER REFERENCES itens_requisicao(id) ON DELETE SET NULL,
+              produto_id INTEGER REFERENCES produtos(id) ON DELETE SET NULL,
+              usuario_id INTEGER NOT NULL REFERENCES usuarios(id),
+              usuario_nome TEXT,
+              acao TEXT NOT NULL,
+              status_anterior TEXT,
+              status_novo TEXT,
+              quantidade_solicitada REAL,
+              quantidade_atendida REAL,
+              detalhes TEXT NOT NULL,
+              justificativa TEXT,
+              data_registro DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+          );
+          INSERT INTO historico_requisicoes_new SELECT * FROM historico_requisicoes;
+          DROP TABLE historico_requisicoes;
+          ALTER TABLE historico_requisicoes_new RENAME TO historico_requisicoes;
+          CREATE INDEX IF NOT EXISTS idx_hist_req_requisicao ON historico_requisicoes (requisicao_id);
+          CREATE INDEX IF NOT EXISTS idx_hist_req_item ON historico_requisicoes (item_requisicao_id);
+          CREATE INDEX IF NOT EXISTS idx_hist_req_usuario ON historico_requisicoes (usuario_id);
+          CREATE INDEX IF NOT EXISTS idx_hist_req_data ON historico_requisicoes (data_registro);
+        `);
+        appliedMigrations++;
+      }
+    } catch (e: any) {
+      console.warn(`[DB Área ${areaSigla}] Aviso ao migrar historico_requisicoes:`, e.message);
+    }
+
     // 7. Verificação e adição de colunas em produtos
     areaDb.exec(`
       CREATE TABLE IF NOT EXISTS subgrupos_produtos (
