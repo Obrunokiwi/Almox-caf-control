@@ -25,7 +25,8 @@ import {
   BookOpen,
   ShoppingBag,
   ChevronLeft,
-  ChevronRight
+  ChevronRight,
+  Ruler
 } from 'lucide-react';
 import type { Usuario, EmpresaUnidade, Produto, Requisicao } from '../types/index.ts';
 import { NotificationsDropdown } from './NotificationsDropdown.tsx';
@@ -186,6 +187,15 @@ export const ModuleGridView: React.FC<ModuleGridViewProps> = ({
       icon: Building2,
       badge: null,
       allowedRoles: ['admin', 'almoxarife'],
+    },
+    {
+      id: 'unidades-medida',
+      label: 'Navegação e Permissões',
+      descricao: 'Gestão de unidades de medida e padronização do catálogo',
+      icon: Ruler,
+      badge: 'Unidades',
+      badgeColor: 'bg-indigo-600 text-white',
+      allowedRoles: ['admin', 'ti_dpo', 'almoxarife'],
     },
     {
       id: 'usuarios',

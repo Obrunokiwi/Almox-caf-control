@@ -80,7 +80,24 @@ export const ProdutosView: React.FC<ProdutosViewProps> = ({
   // Grupos e Subgrupos de Produtos do Banco
   const [grupos, setGrupos] = useState<GrupoProduto[]>([]);
   const [subgrupos, setSubgrupos] = useState<SubgrupoProduto[]>([]);
+  const [unidadesCadastradas, setUnidadesCadastradas] = useState<Array<{ sigla: string; descricao?: string; nome?: string }>>([]);
   const [isGruposModalOpen, setIsGruposModalOpen] = useState(false);
+
+  useEffect(() => {
+    const fetchUnidades = async () => {
+      try {
+        const token = sessionStorage.getItem('multi_almox_token');
+        const res = await fetch('/api/unidades-medida', {
+          headers: { 'Authorization': `Bearer ${token}` }
+        });
+        if (res.ok) {
+          const data = await res.json();
+          setUnidadesCadastradas(data);
+        }
+      } catch {}
+    };
+    fetchUnidades();
+  }, []);
 
   // Filtros de busca
   const [filtroCodigo, setFiltroCodigo] = useState('');
@@ -202,10 +219,13 @@ export const ProdutosView: React.FC<ProdutosViewProps> = ({
     { value: 'nao_consumivel', label: 'Não Consumível (Equipamento / Empréstimo)' },
   ];
 
-  const unidadeMedidaOptions: SearchableOption[] = UNIDADES_MEDIDA_OFICIAIS.map((u) => ({
-    value: u.sigla,
-    label: u.nome,
-  }));
+  const unidadeMedidaOptions: SearchableOption[] = useMemo(() => {
+    const list = unidadesCadastradas.length > 0 ? unidadesCadastradas : UNIDADES_MEDIDA_OFICIAIS;
+    return list.map((u: any) => ({
+      value: u.sigla,
+      label: `${u.sigla} - ${u.descricao || u.nome || ''}`,
+    }));
+  }, [unidadesCadastradas]);
 
   const ativoOptions: SearchableOption[] = [
     { value: 1, label: 'SIM (Ativo)' },

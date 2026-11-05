@@ -1603,6 +1603,92 @@ apiRouter.get('/dashboard/stats', (_req, res) => {
 });
 
 // ============================================================================
+// 3.9 GESTÃO DE UNIDADES DE MEDIDA
+// ============================================================================
+
+apiRouter.get('/unidades-medida', (req, res) => {
+  try {
+    const central = getCentralDb();
+    const unidades = central.prepare('SELECT * FROM unidades_medida ORDER BY sigla ASC').all();
+    res.json(unidades);
+  } catch (err: any) {
+    res.status(500).json({ error: 'Erro ao listar unidades de medida: ' + err.message });
+  }
+});
+
+apiRouter.post('/unidades-medida', (req, res) => {
+  try {
+    const user = authenticateRequest(req);
+    if (!user || (user.perfil !== 'admin' && user.perfil !== 'ti_dpo' && user.perfil !== 'almoxarife')) {
+      return res.status(403).json({ error: 'Apenas administradores ou almoxarifes podem cadastrar unidades de medida' });
+    }
+    const { sigla, descricao } = req.body;
+    if (!sigla || !String(sigla).trim()) {
+      return res.status(400).json({ error: 'A sigla da unidade de medida é obrigatória' });
+    }
+    if (!descricao || !String(descricao).trim()) {
+      return res.status(400).json({ error: 'A descrição da unidade de medida é obrigatória' });
+    }
+    const siglaNorm = String(sigla).trim().toUpperCase();
+    const descTrim = String(descricao).trim();
+
+    const central = getCentralDb();
+    const existing = central.prepare('SELECT id FROM unidades_medida WHERE UPPER(TRIM(sigla)) = ?').get(siglaNorm);
+    if (existing) {
+      return res.status(400).json({ error: `Já existe uma unidade cadastrada com a sigla "${siglaNorm}"` });
+    }
+
+    const info = central.prepare(`
+      INSERT INTO unidades_medida (sigla, descricao, ativo)
+      VALUES (?, ?, 1)
+    `).run(siglaNorm, descTrim);
+
+    syncMirrorsToAllAreas();
+
+    const novaUnidade = central.prepare('SELECT * FROM unidades_medida WHERE id = ?').get(info.lastInsertRowid);
+    res.status(201).json(novaUnidade);
+  } catch (err: any) {
+    res.status(500).json({ error: 'Erro ao cadastrar unidade de medida: ' + err.message });
+  }
+});
+
+apiRouter.put('/unidades-medida/:id', (req, res) => {
+  try {
+    const user = authenticateRequest(req);
+    if (!user || (user.perfil !== 'admin' && user.perfil !== 'ti_dpo' && user.perfil !== 'almoxarife')) {
+      return res.status(403).json({ error: 'Apenas administradores ou almoxarifes podem editar unidades de medida' });
+    }
+    const { id } = req.params;
+    const { sigla, descricao, ativo } = req.body;
+    if (!sigla || !String(sigla).trim()) {
+      return res.status(400).json({ error: 'A sigla da unidade de medida é obrigatória' });
+    }
+    const siglaNorm = String(sigla).trim().toUpperCase();
+    const descTrim = String(descricao || '').trim();
+    const ativoVal = ativo !== undefined ? (ativo ? 1 : 0) : 1;
+
+    const central = getCentralDb();
+    const existing = central.prepare('SELECT id FROM unidades_medida WHERE UPPER(TRIM(sigla)) = ? AND id != ?').get(siglaNorm, Number(id));
+    if (existing) {
+      return res.status(400).json({ error: `Já existe outra unidade cadastrada com a sigla "${siglaNorm}"` });
+    }
+
+    central.prepare(`
+      UPDATE unidades_medida
+      SET sigla = ?, descricao = ?, ativo = ?
+      WHERE id = ?
+    `).run(siglaNorm, descTrim, ativoVal, Number(id));
+
+    syncMirrorsToAllAreas();
+
+    const atualizada = central.prepare('SELECT * FROM unidades_medida WHERE id = ?').get(Number(id));
+    res.json(atualizada);
+  } catch (err: any) {
+    res.status(500).json({ error: 'Erro ao atualizar unidade de medida: ' + err.message });
+  }
+});
+
+// ============================================================================
 // 4. GESTÃO DE CENTROS DE CUSTO
 // ============================================================================
 

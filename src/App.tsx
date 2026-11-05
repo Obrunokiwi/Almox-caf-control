@@ -24,6 +24,7 @@ import { ImportacaoCadastrosView } from './components/ImportacaoCadastrosView.ts
 import { KardexView } from './components/KardexView.tsx';
 import { ListaComprasView } from './components/ListaComprasView.tsx';
 import { ConsumoView } from './components/ConsumoView.tsx';
+import { UnidadesMedidaView } from './components/UnidadesMedidaView.tsx';
 import { useToast } from './context/ToastContext.tsx';
 import { Lock } from 'lucide-react';
 import type { 
@@ -731,7 +732,14 @@ export default function App() {
                 />
               )}
 
-              {currentTab === 'centros-custo' && (
+                             {currentTab === 'unidades-medida' && currentUser && (
+                 <UnidadesMedidaView
+                   currentUser={currentUser}
+                   activeAreaSigla={currentUser?.area_sigla || 'ALM'}
+                 />
+               )}
+
+{currentTab === 'centros-custo' && (
                 <CentrosCustoView
                   centrosCusto={centrosCusto}
                   unidades={unidades}

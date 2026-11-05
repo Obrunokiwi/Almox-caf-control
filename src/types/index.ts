@@ -159,6 +159,7 @@ export type ModuloChave =
   | 'centros-custo'
   | 'usuarios'
   | 'areas'
+  | 'unidades-medida'
   | 'relatorios'
   | 'relatorios-outras-areas'
   | 'perfil'
@@ -184,6 +185,7 @@ export const MODULOS_SISTEMA: ModuloInfo[] = [
   { chave: 'requisicoes', nome: 'Requisição', descricao: 'Solicitação de itens pelos centros de custo na área ativa', categoria: 'operacional' },
   { chave: 'aprovacao-requisicoes', nome: 'Aprovação de Requisições', descricao: 'Análise técnica, triagem e liberação de itens pela equipe da área', categoria: 'gestao' },
   { chave: 'centros-custo', nome: 'Centros de Custo', descricao: 'Estrutura compartilhada de setores, enfermarias e unidades assistenciais', categoria: 'gestao' },
+  { chave: 'unidades-medida', nome: 'Navegação e Permissões', descricao: 'Gestão de unidades de medida e padronização do catálogo', categoria: 'sistema' },
   { chave: 'usuarios', nome: 'Usuário', descricao: 'Controle central de acessos, senhas, áreas liberadas e permissões', categoria: 'sistema' },
   { chave: 'areas', nome: 'Áreas', descricao: 'Gestão de áreas independentes do sistema (Almoxarifado, CAF e novas áreas)', categoria: 'sistema' },
   { chave: 'relatorios', nome: 'Relatórios', descricao: 'Relatórios operacionais e consumo por centro de custo da área ativa', categoria: 'gestao' },
@@ -197,17 +199,17 @@ export const MODULOS_PADRAO_PERFIL: Record<PerfilUsuario, ModuloChave[]> = {
   admin: [
     'fornecedores', 'produtos', 'saldo-estoque', 'entradas', 'movimentacoes',
     'inventario', 'consumo', 'emprestimos', 'requisicoes', 'aprovacao-requisicoes',
-    'centros-custo', 'usuarios', 'areas', 'relatorios', 'relatorios-outras-areas', 'perfil', 'importacao-cadastros', 'backup'
+    'centros-custo', 'unidades-medida', 'usuarios', 'areas', 'relatorios', 'relatorios-outras-areas', 'perfil', 'importacao-cadastros', 'backup'
   ],
   ti_dpo: [
     'fornecedores', 'produtos', 'saldo-estoque', 'entradas', 'movimentacoes',
     'inventario', 'consumo', 'emprestimos', 'requisicoes', 'aprovacao-requisicoes',
-    'centros-custo', 'usuarios', 'areas', 'relatorios', 'relatorios-outras-areas', 'perfil', 'importacao-cadastros', 'backup'
+    'centros-custo', 'unidades-medida', 'usuarios', 'areas', 'relatorios', 'relatorios-outras-areas', 'perfil', 'importacao-cadastros', 'backup'
   ],
   almoxarife: [
     'fornecedores', 'produtos', 'saldo-estoque', 'entradas', 'movimentacoes',
     'inventario', 'consumo', 'emprestimos', 'requisicoes', 'aprovacao-requisicoes',
-    'relatorios', 'relatorios-outras-areas', 'perfil'
+    'unidades-medida', 'relatorios', 'relatorios-outras-areas', 'perfil'
   ],
   requisitante: [
     'requisicoes', 'perfil'

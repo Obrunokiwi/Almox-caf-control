@@ -21,7 +21,8 @@ import {
   PackageCheck,
   FileSpreadsheet,
   Layers,
-  ShoppingBag
+  ShoppingBag,
+  Ruler
 } from 'lucide-react';
 import type { Usuario, EmpresaUnidade } from '../types/index.ts';
 
@@ -144,6 +145,14 @@ export const Sidebar: React.FC<SidebarProps> = ({
       label: 'Centros de Custo',
       icon: Building2,
       roles: ['admin', 'almoxarife'],
+    },
+    {
+      id: 'unidades-medida',
+      label: 'Navegação e Permissões',
+      icon: Ruler,
+      badge: 'Unidades',
+      badgeType: 'indigo',
+      roles: ['admin', 'ti_dpo', 'almoxarife'],
     },
     {
       id: 'usuarios',

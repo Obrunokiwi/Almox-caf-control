@@ -540,6 +540,89 @@ function migrateCentralDb(db: DatabaseSync, dbFilePath: string) {
     console.warn('[DB Central] Aviso ao migrar fornecedores existentes:', err.message);
   }
 
+  // 7. Garante tabela central de unidades_medida
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS unidades_medida (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        sigla TEXT UNIQUE NOT NULL,
+        descricao TEXT NOT NULL,
+        ativo INTEGER NOT NULL DEFAULT 1,
+        criado_em DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+    CREATE INDEX IF NOT EXISTS idx_unidades_medida_sigla ON unidades_medida (sigla);
+    CREATE INDEX IF NOT EXISTS idx_unidades_medida_ativo ON unidades_medida (ativo);
+  `);
+
+  try {
+    const defaultUnits = [
+      { sigla: 'UN', descricao: 'Unidade' },
+      { sigla: 'UI', descricao: 'Unidade Internacional' },
+      { sigla: 'RO', descricao: 'Rolo' },
+      { sigla: 'PC', descricao: 'Peça' },
+      { sigla: 'BOBINA', descricao: 'Bobina' },
+      { sigla: 'MT', descricao: 'Metro' },
+      { sigla: 'CA', descricao: 'Caixa' },
+      { sigla: 'RESMA', descricao: 'Resma' },
+      { sigla: 'GL', descricao: 'Galão' },
+      { sigla: 'FR', descricao: 'Frasco' },
+      { sigla: 'LT', descricao: 'Litro' },
+      { sigla: 'PCT', descricao: 'Pacote' },
+      { sigla: 'KIT', descricao: 'Kit' },
+      { sigla: 'BIS', descricao: 'Bisnaga' },
+      { sigla: 'CT', descricao: 'Cartela' },
+      { sigla: 'CX', descricao: 'Caixa' },
+      { sigla: 'KG', descricao: 'Quilograma' },
+      { sigla: 'L', descricao: 'Litro' },
+      { sigla: 'AMP', descricao: 'Ampola' },
+      { sigla: 'ROLO', descricao: 'Rolo' },
+      { sigla: 'UNIDADE', descricao: 'Unidade' },
+      { sigla: 'COMPRIMIDO', descricao: 'Comprimido' },
+      { sigla: 'FRASCO', descricao: 'Frasco' },
+      { sigla: 'AMPOLA', descricao: 'Ampola' },
+      { sigla: 'CAIXA', descricao: 'Caixa' },
+      { sigla: 'METRO', descricao: 'Metro' },
+      { sigla: 'LITRO', descricao: 'Litro' },
+      { sigla: 'QUILO', descricao: 'Quilograma' },
+      { sigla: 'G', descricao: 'Grama' },
+      { sigla: 'ML', descricao: 'Mililitro' },
+      { sigla: 'DOSE', descricao: 'Dose' },
+      { sigla: 'BLISTER', descricao: 'Blister' },
+      { sigla: 'TUBO', descricao: 'Tubo' },
+      { sigla: 'SERINGA', descricao: 'Seringa' },
+      { sigla: 'POTE', descricao: 'Pote' },
+      { sigla: 'LATA', descricao: 'Lata' },
+      { sigla: 'SACHÊ', descricao: 'Sachê' },
+      { sigla: 'FARDO', descricao: 'Fardo' },
+      { sigla: 'GALÃO', descricao: 'Galão' },
+      { sigla: 'PAR', descricao: 'Par' },
+      { sigla: 'JOGO', descricao: 'Jogo' }
+    ];
+    const insU = db.prepare('INSERT OR IGNORE INTO unidades_medida (sigla, descricao, ativo) VALUES (?, ?, 1)');
+    for (const u of defaultUnits) {
+      insU.run(u.sigla.toUpperCase(), u.descricao);
+    }
+
+    const areaFiles = ['almoxarifado.db', 'caf.db'];
+    for (const af of areaFiles) {
+      const aPath = resolveDbPath(af);
+      if (fs.existsSync(aPath)) {
+        try {
+          const aConn = new DatabaseSync(aPath);
+          const pUnits = aConn.prepare("SELECT DISTINCT unidade_medida FROM produtos WHERE unidade_medida IS NOT NULL AND unidade_medida != ''").all() as Array<{ unidade_medida: string }>;
+          for (const pu of pUnits) {
+            const siglaClean = String(pu.unidade_medida).trim().toUpperCase();
+            if (siglaClean) {
+              insU.run(siglaClean, `Unidade importada (${siglaClean})`);
+            }
+          }
+          try { aConn.close(); } catch {}
+        } catch {}
+      }
+    }
+  } catch (e: any) {
+    console.warn('[DB Central] Aviso ao seedar unidades de medida:', e.message);
+  }
+
   // 7. Garante tabela central de grupos e subgrupos de produtos (unificada e compartilhada entre todas as áreas)
   db.exec(`
     CREATE TABLE IF NOT EXISTS grupos_produtos (
@@ -1070,6 +1153,19 @@ function migrateAreaDb(areaDb: DatabaseSync, areaSigla: string, dbFilePath: stri
       console.warn(`[DB Área ${areaSigla}] Aviso ao migrar historico_requisicoes:`, e.message);
     }
 
+    // 6.2.1 Unidades de Medida espelho local
+    areaDb.exec(`
+      CREATE TABLE IF NOT EXISTS unidades_medida (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          sigla TEXT UNIQUE NOT NULL,
+          descricao TEXT NOT NULL,
+          ativo INTEGER NOT NULL DEFAULT 1,
+          criado_em DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+      );
+      CREATE INDEX IF NOT EXISTS idx_unidades_medida_sigla ON unidades_medida (sigla);
+      CREATE INDEX IF NOT EXISTS idx_unidades_medida_ativo ON unidades_medida (ativo);
+    `);
+
     // 6.3 Atualização da tabela 'requisicoes' para suportar os 4 novos status:
     // 'aguardando_atendimento', 'em_separacao', 'atendida', 'nao_atendida'
     try {
@@ -1430,7 +1526,19 @@ export function syncMirrorsToArea(areaDb: DatabaseSync) {
       insSg.run(sg.id, sg.grupo_id, sg.codigo, sg.nome, sg.ativo ?? 1, sg.criado_em || new Date().toISOString());
     }
 
-
+    // 4.1 Unidades de Medida
+    const unidades = central.prepare('SELECT id, sigla, descricao, ativo, criado_em FROM unidades_medida').all() as any[];
+    const insUm = areaDb.prepare(`
+      INSERT OR REPLACE INTO unidades_medida (id, sigla, descricao, ativo, criado_em)
+      VALUES (?, ?, ?, ?, ?)
+    `);
+    for (const um of unidades) {
+      insUm.run(um.id, um.sigla, um.descricao, um.ativo ?? 1, um.criado_em || new Date().toISOString());
+    }
+    if (unidades.length > 0) {
+      const umPlaceholders = unidades.map(() => '?').join(',');
+      areaDb.prepare(`DELETE FROM unidades_medida WHERE id NOT IN (${umPlaceholders})`).run(...unidades.map((u) => u.id));
+    }
 
     if (grupos.length > 0) {
       const gPlaceholders = grupos.map(() => '?').join(',');

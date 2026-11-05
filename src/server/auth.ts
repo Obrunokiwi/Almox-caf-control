@@ -35,7 +35,7 @@ export interface UserSession {
 export const ALL_SYSTEM_MODULES = [
   'fornecedores', 'produtos', 'saldo-estoque', 'entradas', 'movimentacoes',
   'inventario', 'consumo', 'kardex', 'lista-compras', 'emprestimos', 'requisicoes', 'aprovacao-requisicoes',
-  'centros-custo', 'usuarios', 'areas', 'relatorios', 'relatorios-outras-areas',
+  'centros-custo', 'unidades-medida', 'usuarios', 'areas', 'relatorios', 'relatorios-outras-areas',
   'perfil', 'importacao-cadastros', 'backup'
 ];
 
@@ -45,7 +45,7 @@ export const MODULOS_PADRAO_SISTEMA: Record<string, string[]> = {
   almoxarife: [
     'fornecedores', 'produtos', 'saldo-estoque', 'entradas', 'movimentacoes',
     'inventario', 'consumo', 'kardex', 'lista-compras', 'emprestimos', 'requisicoes', 'aprovacao-requisicoes',
-    'relatorios', 'relatorios-outras-areas', 'perfil'
+    'unidades-medida', 'relatorios', 'relatorios-outras-areas', 'perfil'
   ],
   requisitante: [
     'requisicoes', 'perfil'
