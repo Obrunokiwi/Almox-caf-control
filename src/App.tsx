@@ -23,6 +23,7 @@ import { SaldoEstoqueView } from './components/SaldoEstoqueView.tsx';
 import { ImportacaoCadastrosView } from './components/ImportacaoCadastrosView.tsx';
 import { KardexView } from './components/KardexView.tsx';
 import { ListaComprasView } from './components/ListaComprasView.tsx';
+import { ConsumoView } from './components/ConsumoView.tsx';
 import { useToast } from './context/ToastContext.tsx';
 import { Lock } from 'lucide-react';
 import type { 
@@ -705,6 +706,16 @@ export default function App() {
                   activeUnidade={activeUnidade}
                   onRefresh={loadData}
                   onVoltar={handleReturnToGrid}
+                />
+              )}
+
+              {currentTab === 'consumo' && currentUser && (
+                <ConsumoView
+                  currentUser={currentUser}
+                  activeAreaSigla={currentUser?.area_sigla || 'ALM'}
+                  activeAreaNome={currentUser?.area_nome || 'Almoxarifado'}
+                  centrosCusto={centrosCusto}
+                  produtos={produtos}
                 />
               )}
 

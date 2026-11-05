@@ -145,6 +145,15 @@ export const ModuleGridView: React.FC<ModuleGridViewProps> = ({
       allowedRoles: ['admin', 'almoxarife'],
     },
     {
+      id: 'consumo',
+      label: 'Consumo Direto',
+      descricao: 'Entrega direta de materiais e medicamentos a setores sem requisição prévia',
+      icon: PackageCheck,
+      badge: 'Baixa Direta',
+      badgeColor: 'bg-indigo-600 text-white',
+      allowedRoles: ['admin', 'almoxarife'],
+    },
+    {
       id: 'emprestimos',
       label: 'Empréstimos entre Entidades',
       descricao: 'Empréstimo recebido/concedido entre hospitais e ficha com assinaturas',
