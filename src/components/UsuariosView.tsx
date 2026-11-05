@@ -38,43 +38,60 @@ import {
   HardDriveDownload,
   FileSpreadsheet,
   BookOpen,
-  ShoppingBag
+  ShoppingBag,
+  Ruler,
+  Layers,
+  Database
 } from 'lucide-react';
-import type { Usuario, CentroCusto, PerfilUsuario, EmpresaUnidade } from '../types/index.ts';
+import {
+  MODULOS_SISTEMA,
+  MODULOS_PADRAO_PERFIL,
+  type Usuario,
+  type CentroCusto,
+  type PerfilUsuario,
+  type EmpresaUnidade,
+  type ModuloChave
+} from '../types/index.ts';
 import { maskCpf } from '../utils/cpfUtils.ts';
 import { formatDateTimeBrasilia } from '../utils/dateUtils.ts';
 
-export const TODOS_MODULOS_SISTEMA = [
-  { id: 'fornecedores', label: 'Fornecedores / Entidades', desc: 'Cadastro de fornecedores comerciais e hospitais parceiros', icon: Truck },
-  { id: 'produtos', label: 'Produtos / Catálogo', desc: 'Catálogo de materiais, código único e lotes', icon: Package },
-  { id: 'saldo-estoque', label: 'Consulta de Saldo em Estoque', desc: 'Conferência de saldos físicos e lotes FEFO', icon: PackageCheck },
-  { id: 'kardex', label: 'Kardex do Produto', desc: 'Extrato analítico e movimentações em ordem cronológica', icon: BookOpen },
-  { id: 'lista-compras', label: 'Lista de Compras / Reposição', desc: 'Relatório de reposição baseado no consumo e saldo atual', icon: ShoppingBag },
-  { id: 'entradas', label: 'Entrada por Nota Fiscal', desc: 'Lançamento de notas fiscais e recebimento', icon: PackagePlus },
-  { id: 'movimentacoes', label: 'Movimentações Diversas', desc: 'Devoluções de setor, perdas e saídas por vencimento', icon: ArrowLeftRight },
-  { id: 'inventario', label: 'Inventário do Estoque', desc: 'Contagem física e ajustes de saldo', icon: Boxes },
-  { id: 'emprestimos', label: 'Empréstimos entre Entidades', desc: 'Empréstimos e devoluções entre hospitais', icon: RotateCcw },
-  { id: 'requisicoes', label: 'Requisição', desc: 'Abertura e acompanhamento de pedidos de insumos', icon: ClipboardList },
-  { id: 'aprovacao-requisicoes', label: 'Aprovação de Requisições', desc: 'Análise, ajuste de quantidades e baixa FEFO', icon: CheckSquare },
-  { id: 'centros-custo', label: 'Centros de Custo', desc: 'Departamentos e setores hospitalares', icon: Building2 },
-  { id: 'usuarios', label: 'Usuário', desc: 'Gestão de operadores e permissões por módulo', icon: Users },
-  { id: 'relatorios', label: 'Relatórios & Geral PDF', desc: 'Relatórios analíticos, gráficos e extratos', icon: FileBarChart },
-  { id: 'perfil', label: 'Perfil', desc: 'Dados do operador autenticado e sessões', icon: UserCheck },
-  { id: 'importacao-cadastros', label: 'Importação de Cadastros', desc: 'Importação em lote (.xlsx, .csv)', icon: FileSpreadsheet },
-  { id: 'backup', label: 'Backup / Exportar Dados', desc: 'Download do SQLite, dumps e logs', icon: HardDriveDownload },
-];
+const ICONE_POR_MODULO: Record<string, React.ComponentType<{ className?: string }>> = {
+  'fornecedores': Truck,
+  'produtos': Package,
+  'saldo-estoque': PackageCheck,
+  'kardex': BookOpen,
+  'lista-compras': ShoppingBag,
+  'entradas': PackagePlus,
+  'movimentacoes': ArrowLeftRight,
+  'inventario': Boxes,
+  'consumo': PackageCheck,
+  'emprestimos': RotateCcw,
+  'requisicoes': ClipboardList,
+  'aprovacao-requisicoes': CheckSquare,
+  'centros-custo': Building2,
+  'unidades-medida': Ruler,
+  'areas': Layers,
+  'usuarios': Users,
+  'relatorios': FileBarChart,
+  'relatorios-outras-areas': FileBarChart,
+  'perfil': UserCheck,
+  'importacao-cadastros': FileSpreadsheet,
+  'backup': HardDriveDownload,
+  'documentacao': Database,
+};
+
+export const TODOS_MODULOS_SISTEMA = MODULOS_SISTEMA.map((m) => ({
+  id: m.chave,
+  label: m.nome,
+  desc: m.descricao,
+  icon: ICONE_POR_MODULO[m.chave] || LayoutGrid,
+}));
 
 export const MODULOS_PADRAO_POR_PERFIL: Record<string, string[]> = {
-  admin: TODOS_MODULOS_SISTEMA.map((m) => m.id),
-  ti_dpo: TODOS_MODULOS_SISTEMA.map((m) => m.id),
-  almoxarife: [
-    'fornecedores', 'produtos', 'saldo-estoque', 'kardex', 'lista-compras', 'entradas', 'movimentacoes',
-    'inventario', 'emprestimos', 'requisicoes', 'aprovacao-requisicoes',
-    'relatorios', 'perfil'
-  ],
-  requisitante: [
-    'requisicoes', 'perfil'
-  ],
+  admin: [...MODULOS_PADRAO_PERFIL.admin],
+  ti_dpo: [...MODULOS_PADRAO_PERFIL.ti_dpo],
+  almoxarife: [...MODULOS_PADRAO_PERFIL.almoxarife],
+  requisitante: [...MODULOS_PADRAO_PERFIL.requisitante],
 };
 
 export function getModuloRestrictionReason(moduloId: string, perfil: PerfilUsuario, isMainAdmin: boolean): string | null {
@@ -83,14 +100,22 @@ export function getModuloRestrictionReason(moduloId: string, perfil: PerfilUsuar
     if (moduloId === 'saldo-estoque') return 'Restrito: Requisitantes não possuem acesso ao saldo de estoque';
     if (moduloId === 'kardex') return 'Restrito: Requisitantes não possuem acesso ao Kardex do Produto';
     if (moduloId === 'lista-compras') return 'Restrito: Requisitantes não possuem acesso à Lista de Compras';
-    if (moduloId === 'aprovacao-requisicoes') return 'Restrito: Exclusivo para Almoxarife e Administrador';
-    if (['backup', 'importacao-cadastros', 'usuarios'].includes(moduloId)) return 'Restrito: Exclusivo para perfil Administrador';
+    if (['aprovacao-requisicoes', 'consumo', 'unidades-medida', 'relatorios-outras-areas'].includes(moduloId)) {
+      return 'Restrito: Exclusivo para Almoxarife e Administrador';
+    }
+    if (['backup', 'importacao-cadastros', 'usuarios', 'areas'].includes(moduloId)) {
+      return 'Restrito: Exclusivo para perfil Administrador';
+    }
   }
-  if (perfil !== 'admin') {
-    if (['backup', 'importacao-cadastros', 'usuarios'].includes(moduloId)) return 'Restrito: Exclusivo para perfil Administrador';
+  if (perfil !== 'admin' && perfil !== 'ti_dpo') {
+    if (['backup', 'importacao-cadastros', 'usuarios', 'areas'].includes(moduloId)) {
+      return 'Restrito: Exclusivo para perfil Administrador';
+    }
   }
-  if (perfil !== 'admin' && perfil !== 'almoxarife') {
-    if (['aprovacao-requisicoes', 'kardex', 'lista-compras'].includes(moduloId)) return 'Restrito: Exclusivo para Almoxarife e Administrador';
+  if (perfil !== 'admin' && perfil !== 'ti_dpo' && perfil !== 'almoxarife') {
+    if (['aprovacao-requisicoes', 'consumo', 'kardex', 'lista-compras', 'unidades-medida', 'relatorios-outras-areas'].includes(moduloId)) {
+      return 'Restrito: Exclusivo para Almoxarife e Administrador';
+    }
   }
   return null;
 }
@@ -1068,10 +1093,13 @@ export const UsuariosView: React.FC<UsuariosViewProps> = ({
                 {/* Banner de Perfil e Botões de Ação Rápida */}
                 <div className="p-3.5 bg-slate-50 rounded-lg border border-slate-200 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
                   <div>
-                    <div className="flex items-center gap-2">
+                    <div className="flex flex-wrap items-center gap-2">
                       <span className="text-xs font-bold text-slate-800">Módulos Liberados</span>
                       <span className="px-2 py-0.5 text-[10px] font-extrabold uppercase rounded bg-teal-100 text-teal-800 border border-teal-200">
                         Perfil: {formPerfil}
+                      </span>
+                      <span className="px-2 py-0.5 text-[10px] font-bold rounded bg-slate-200/80 text-slate-700 border border-slate-300">
+                        {isTargetMainAdmin ? TODOS_MODULOS_SISTEMA.length : formModulos.length} de {TODOS_MODULOS_SISTEMA.length} liberados
                       </span>
                       {isTargetMainAdmin && (
                         <span className="px-2 py-0.5 text-[10px] font-extrabold uppercase rounded bg-amber-100 text-amber-800 border border-amber-200">
@@ -1080,7 +1108,7 @@ export const UsuariosView: React.FC<UsuariosViewProps> = ({
                       )}
                     </div>
                     <p className="text-[11px] text-slate-500 mt-0.5">
-                      Selecione quais telas e funcionalidades do sistema este operador poderá visualizar e operar.
+                      Selecione quais telas e funcionalidades do sistema este operador poderá visualizar e operar. A lista é sincronizada automaticamente com todos os módulos do sistema.
                     </p>
                   </div>
 
@@ -1114,7 +1142,7 @@ export const UsuariosView: React.FC<UsuariosViewProps> = ({
                   )}
                 </div>
 
-                {/* Grade de 15 Módulos */}
+                {/* Grade Dinâmica de Módulos do Sistema */}
                 <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
                   {TODOS_MODULOS_SISTEMA.map((modulo) => {
                     const IconComponent = modulo.icon;

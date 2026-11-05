@@ -212,7 +212,25 @@ export const ModuleGridView: React.FC<ModuleGridViewProps> = ({
       icon: FileBarChart,
       badge: 'Relatório Geral',
       badgeColor: 'bg-teal-500/80 text-white',
-      allowedRoles: ['admin', 'almoxarife', 'requisitante'],
+      allowedRoles: ['admin', 'ti_dpo', 'almoxarife', 'requisitante'],
+    },
+    {
+      id: 'relatorios-outras-areas',
+      label: 'Relatórios de Outras Áreas',
+      descricao: 'Consulta somente leitura de relatórios consolidados de outras áreas',
+      icon: FileBarChart,
+      badge: 'Multi-Área',
+      badgeColor: 'bg-blue-600 text-white',
+      allowedRoles: ['admin', 'ti_dpo', 'almoxarife'],
+    },
+    {
+      id: 'areas',
+      label: 'Áreas Operacionais',
+      descricao: 'Gestão de áreas operacionais independentes (ALM, CAF e novas áreas)',
+      icon: Layers,
+      badge: 'Admin',
+      badgeColor: 'bg-indigo-600 text-white',
+      allowedRoles: ['admin', 'ti_dpo'],
     },
     {
       id: 'perfil',
@@ -220,7 +238,7 @@ export const ModuleGridView: React.FC<ModuleGridViewProps> = ({
       descricao: 'Dados da conta, permissões e histórico de acessos',
       icon: UserCheck,
       badge: null,
-      allowedRoles: ['admin', 'almoxarife', 'requisitante'],
+      allowedRoles: ['admin', 'ti_dpo', 'almoxarife', 'requisitante'],
     },
     {
       id: 'importacao-cadastros',
@@ -229,7 +247,7 @@ export const ModuleGridView: React.FC<ModuleGridViewProps> = ({
       icon: FileSpreadsheet,
       badge: 'Admin',
       badgeColor: 'bg-indigo-600 text-white',
-      allowedRoles: ['admin'],
+      allowedRoles: ['admin', 'ti_dpo'],
     },
     {
       id: 'backup',
@@ -238,7 +256,16 @@ export const ModuleGridView: React.FC<ModuleGridViewProps> = ({
       icon: HardDriveDownload,
       badge: 'Admin',
       badgeColor: 'bg-emerald-600 text-white',
-      allowedRoles: ['admin'],
+      allowedRoles: ['admin', 'ti_dpo'],
+    },
+    {
+      id: 'documentacao',
+      label: 'Arquitetura & DDL',
+      descricao: 'Documentação técnica, modelagem de dados e estrutura multi-bancos',
+      icon: BookOpen,
+      badge: 'Técnico',
+      badgeColor: 'bg-slate-600 text-white',
+      allowedRoles: ['admin', 'ti_dpo', 'almoxarife'],
     },
   ];
 

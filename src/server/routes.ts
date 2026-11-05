@@ -1983,13 +1983,13 @@ apiRouter.get('/usuarios', (req, res) => {
       mods = [...ALL_SYSTEM_MODULES];
     }
     if (userRole === 'requisitante') {
-      mods = mods.filter((m) => !['saldo-estoque', 'aprovacao-requisicoes', 'backup', 'importacao-cadastros', 'usuarios'].includes(m));
+      mods = mods.filter((m) => !['saldo-estoque', 'aprovacao-requisicoes', 'backup', 'importacao-cadastros', 'usuarios', 'areas', 'consumo', 'kardex', 'lista-compras', 'unidades-medida', 'relatorios-outras-areas'].includes(m));
     }
     if (userRole !== 'admin' && userRole !== 'ti_dpo') {
-      mods = mods.filter((m) => !['backup', 'importacao-cadastros', 'usuarios'].includes(m));
+      mods = mods.filter((m) => !['backup', 'importacao-cadastros', 'usuarios', 'areas'].includes(m));
     }
     if (userRole !== 'admin' && userRole !== 'ti_dpo' && userRole !== 'almoxarife') {
-      mods = mods.filter((m) => m !== 'aprovacao-requisicoes');
+      mods = mods.filter((m) => !['aprovacao-requisicoes', 'consumo', 'kardex', 'lista-compras', 'unidades-medida', 'relatorios-outras-areas'].includes(m));
     }
 
     const areasUser = (userAreaStmt.all(u.id) as any[]) || [];
@@ -2078,13 +2078,13 @@ apiRouter.post('/usuarios', (req, res) => {
       const novoId = Number(resStmt.lastInsertRowid);
       let modsToSave: string[] = Array.isArray(modulos) ? modulos : [...(MODULOS_PADRAO_SISTEMA[perfil] || ['requisicoes', 'perfil'])];
       if (perfil === 'requisitante') {
-        modsToSave = modsToSave.filter((m) => !['saldo-estoque', 'aprovacao-requisicoes', 'backup', 'importacao-cadastros', 'usuarios'].includes(m));
+        modsToSave = modsToSave.filter((m) => !['saldo-estoque', 'aprovacao-requisicoes', 'backup', 'importacao-cadastros', 'usuarios', 'areas', 'consumo', 'kardex', 'lista-compras', 'unidades-medida', 'relatorios-outras-areas'].includes(m));
       }
       if (perfil !== 'admin' && perfil !== 'ti_dpo') {
-        modsToSave = modsToSave.filter((m) => !['backup', 'importacao-cadastros', 'usuarios'].includes(m));
+        modsToSave = modsToSave.filter((m) => !['backup', 'importacao-cadastros', 'usuarios', 'areas'].includes(m));
       }
       if (perfil !== 'admin' && perfil !== 'ti_dpo' && perfil !== 'almoxarife') {
-        modsToSave = modsToSave.filter((m) => m !== 'aprovacao-requisicoes');
+        modsToSave = modsToSave.filter((m) => !['aprovacao-requisicoes', 'consumo', 'kardex', 'lista-compras', 'unidades-medida', 'relatorios-outras-areas'].includes(m));
       }
 
       const insertModStmt = central.prepare('INSERT OR IGNORE INTO usuario_modulos (usuario_id, modulo_chave) VALUES (?, ?)');
@@ -2203,13 +2203,13 @@ apiRouter.put('/usuarios/:id', (req, res) => {
         let modsToSave = [...modulos];
         const effectivePerfil = cargoNome || dbPerfil;
         if (effectivePerfil === 'requisitante') {
-          modsToSave = modsToSave.filter((m) => !['saldo-estoque', 'aprovacao-requisicoes', 'backup', 'importacao-cadastros', 'usuarios'].includes(m));
+          modsToSave = modsToSave.filter((m) => !['saldo-estoque', 'aprovacao-requisicoes', 'backup', 'importacao-cadastros', 'usuarios', 'areas', 'consumo', 'kardex', 'lista-compras', 'unidades-medida', 'relatorios-outras-areas'].includes(m));
         }
         if (effectivePerfil !== 'admin' && effectivePerfil !== 'ti_dpo') {
-          modsToSave = modsToSave.filter((m) => !['backup', 'importacao-cadastros', 'usuarios'].includes(m));
+          modsToSave = modsToSave.filter((m) => !['backup', 'importacao-cadastros', 'usuarios', 'areas'].includes(m));
         }
         if (effectivePerfil !== 'admin' && effectivePerfil !== 'ti_dpo' && effectivePerfil !== 'almoxarife') {
-          modsToSave = modsToSave.filter((m) => m !== 'aprovacao-requisicoes');
+          modsToSave = modsToSave.filter((m) => !['aprovacao-requisicoes', 'consumo', 'kardex', 'lista-compras', 'unidades-medida', 'relatorios-outras-areas'].includes(m));
         }
 
         central.prepare('DELETE FROM usuario_modulos WHERE usuario_id = ?').run(id);

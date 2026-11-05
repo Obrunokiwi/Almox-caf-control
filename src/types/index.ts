@@ -149,6 +149,8 @@ export type ModuloChave =
   | 'fornecedores'
   | 'produtos'
   | 'saldo-estoque'
+  | 'kardex'
+  | 'lista-compras'
   | 'entradas'
   | 'movimentacoes'
   | 'inventario'
@@ -157,14 +159,16 @@ export type ModuloChave =
   | 'requisicoes'
   | 'aprovacao-requisicoes'
   | 'centros-custo'
-  | 'usuarios'
-  | 'areas'
   | 'unidades-medida'
+  | 'areas'
+  | 'usuarios'
   | 'relatorios'
   | 'relatorios-outras-areas'
   | 'perfil'
   | 'importacao-cadastros'
-  | 'backup';
+  | 'backup'
+  | 'documentacao'
+  | string;
 
 export interface ModuloInfo {
   chave: ModuloChave;
@@ -174,42 +178,37 @@ export interface ModuloInfo {
 }
 
 export const MODULOS_SISTEMA: ModuloInfo[] = [
-  { chave: 'fornecedores', nome: 'Fornecedores / Entidades', descricao: 'Cadastro próprio de fornecedores comerciais e parceiros da área', categoria: 'operacional' },
-  { chave: 'produtos', nome: 'Produtos', descricao: 'Catálogo próprio de materiais, insumos ou medicamentos da área', categoria: 'operacional' },
-  { chave: 'saldo-estoque', nome: 'Consulta de Saldo', descricao: 'Painel visual de saldos físicos da área ativa por setor e lote', categoria: 'operacional' },
-  { chave: 'entradas', nome: 'Entrada por Nota', descricao: 'Recebimento de materiais com rastreabilidade de NF e lotes da área', categoria: 'operacional' },
-  { chave: 'movimentacoes', nome: 'Movimentações Diversas', descricao: 'Ajustes, quebras, perdas, descartes e devoluções de setor na área', categoria: 'operacional' },
-  { chave: 'inventario', nome: 'Inventário', descricao: 'Auditoria de contagem física e conciliação direta de saldos da área', categoria: 'operacional' },
-  { chave: 'consumo', nome: 'Consumo', descricao: 'Entrega direta a setores sem requisição prévia com baixa de estoque', categoria: 'operacional' },
-  { chave: 'emprestimos', nome: 'Empréstimos', descricao: 'Controle de empréstimos com entidades parceiras externas', categoria: 'operacional' },
-  { chave: 'requisicoes', nome: 'Requisição', descricao: 'Solicitação de itens pelos centros de custo na área ativa', categoria: 'operacional' },
-  { chave: 'aprovacao-requisicoes', nome: 'Aprovação de Requisições', descricao: 'Análise técnica, triagem e liberação de itens pela equipe da área', categoria: 'gestao' },
-  { chave: 'centros-custo', nome: 'Centros de Custo', descricao: 'Estrutura compartilhada de setores, enfermarias e unidades assistenciais', categoria: 'gestao' },
-  { chave: 'unidades-medida', nome: 'Navegação e Permissões', descricao: 'Gestão de unidades de medida e padronização do catálogo', categoria: 'sistema' },
-  { chave: 'usuarios', nome: 'Usuário', descricao: 'Controle central de acessos, senhas, áreas liberadas e permissões', categoria: 'sistema' },
-  { chave: 'areas', nome: 'Áreas', descricao: 'Gestão de áreas independentes do sistema (Almoxarifado, CAF e novas áreas)', categoria: 'sistema' },
-  { chave: 'relatorios', nome: 'Relatórios', descricao: 'Relatórios operacionais e consumo por centro de custo da área ativa', categoria: 'gestao' },
+  { chave: 'fornecedores', nome: 'Fornecedores / Entidades', descricao: 'Cadastro de fornecedores comerciais e hospitais parceiros da área', categoria: 'operacional' },
+  { chave: 'produtos', nome: 'Produtos / Catálogo', descricao: 'Catálogo de materiais, insumos, medicamentos, código único e lotes', categoria: 'operacional' },
+  { chave: 'saldo-estoque', nome: 'Consulta de Saldo em Estoque', descricao: 'Conferência de saldos físicos, valores e lotes FEFO da área ativa', categoria: 'operacional' },
+  { chave: 'kardex', nome: 'Kardex do Produto', descricao: 'Extrato analítico e movimentações físicas/financeiras em ordem cronológica', categoria: 'operacional' },
+  { chave: 'lista-compras', nome: 'Lista de Compras / Reposição', descricao: 'Relatório gerencial de reposição baseado no consumo e saldo atual', categoria: 'operacional' },
+  { chave: 'entradas', nome: 'Entrada por Nota Fiscal', descricao: 'Lançamento de notas fiscais, recebimento e rastreabilidade de lotes', categoria: 'operacional' },
+  { chave: 'movimentacoes', nome: 'Movimentações Diversas', descricao: 'Devoluções de setor, ajustes, perdas e saídas por vencimento', categoria: 'operacional' },
+  { chave: 'inventario', nome: 'Inventário do Estoque', descricao: 'Contagem física, auditoria e conciliação direta de saldos da área', categoria: 'operacional' },
+  { chave: 'consumo', nome: 'Consumo Direto (Baixa por Consumo)', descricao: 'Saída direta de material sem requisição prévia na área ativa', categoria: 'operacional' },
+  { chave: 'emprestimos', nome: 'Empréstimos entre Entidades', descricao: 'Empréstimos recebidos/concedidos e devoluções entre hospitais', categoria: 'operacional' },
+  { chave: 'requisicoes', nome: 'Requisição', descricao: 'Abertura e acompanhamento de pedidos de insumos pelos centros de custo', categoria: 'operacional' },
+  { chave: 'aprovacao-requisicoes', nome: 'Aprovação de Requisições', descricao: 'Análise técnica, triagem, ajuste de quantidades e baixa FEFO', categoria: 'gestao' },
+  { chave: 'centros-custo', nome: 'Centros de Custo', descricao: 'Departamentos, setores hospitalares e unidades assistenciais', categoria: 'gestao' },
+  { chave: 'unidades-medida', nome: 'Navegação e Permissões (Unidades)', descricao: 'Gestão compartilhada de unidades de medida e padronização do catálogo', categoria: 'sistema' },
+  { chave: 'areas', nome: 'Áreas Operacionais', descricao: 'Gestão de áreas independentes do sistema (Almoxarifado, CAF e novas áreas)', categoria: 'sistema' },
+  { chave: 'usuarios', nome: 'Usuário', descricao: 'Gestão de operadores, áreas liberadas e permissões por módulo', categoria: 'sistema' },
+  { chave: 'relatorios', nome: 'Relatórios & Construtor Dinâmico', descricao: 'Construtor dinâmico de relatórios, Curva ABC, PDF e planilhas', categoria: 'gestao' },
   { chave: 'relatorios-outras-areas', nome: 'Relatórios de Outras Áreas', descricao: 'Consulta e exportação somente leitura de relatórios de outras áreas autorizadas', categoria: 'gestao' },
-  { chave: 'perfil', nome: 'Perfil', descricao: 'Dados cadastrais da conta e preferências', categoria: 'sistema' },
-  { chave: 'importacao-cadastros', nome: 'Importação de Cadastros', descricao: 'Carga em massa de itens e parceiros no catálogo da área ativa', categoria: 'sistema' },
-  { chave: 'backup', nome: 'Backup / Exportar', descricao: 'Geração e download de cópias por área ou banco central', categoria: 'sistema' },
+  { chave: 'perfil', nome: 'Perfil', descricao: 'Dados do operador autenticado, preferências e sessões', categoria: 'sistema' },
+  { chave: 'importacao-cadastros', nome: 'Importação de Cadastros', descricao: 'Importação em lote de produtos e fornecedores (.xlsx, .csv)', categoria: 'sistema' },
+  { chave: 'backup', nome: 'Backup / Exportar Dados', descricao: 'Download seguro do SQLite, dumps SQL e cópias de segurança', categoria: 'sistema' },
+  { chave: 'documentacao', nome: 'Arquitetura & DDL', descricao: 'Documentação técnica da arquitetura e scripts SQL do sistema', categoria: 'sistema' },
 ];
 
 export const MODULOS_PADRAO_PERFIL: Record<PerfilUsuario, ModuloChave[]> = {
-  admin: [
-    'fornecedores', 'produtos', 'saldo-estoque', 'entradas', 'movimentacoes',
-    'inventario', 'consumo', 'emprestimos', 'requisicoes', 'aprovacao-requisicoes',
-    'centros-custo', 'unidades-medida', 'usuarios', 'areas', 'relatorios', 'relatorios-outras-areas', 'perfil', 'importacao-cadastros', 'backup'
-  ],
-  ti_dpo: [
-    'fornecedores', 'produtos', 'saldo-estoque', 'entradas', 'movimentacoes',
-    'inventario', 'consumo', 'emprestimos', 'requisicoes', 'aprovacao-requisicoes',
-    'centros-custo', 'unidades-medida', 'usuarios', 'areas', 'relatorios', 'relatorios-outras-areas', 'perfil', 'importacao-cadastros', 'backup'
-  ],
+  admin: MODULOS_SISTEMA.map((m) => m.chave),
+  ti_dpo: MODULOS_SISTEMA.map((m) => m.chave),
   almoxarife: [
-    'fornecedores', 'produtos', 'saldo-estoque', 'entradas', 'movimentacoes',
+    'fornecedores', 'produtos', 'saldo-estoque', 'kardex', 'lista-compras', 'entradas', 'movimentacoes',
     'inventario', 'consumo', 'emprestimos', 'requisicoes', 'aprovacao-requisicoes',
-    'unidades-medida', 'relatorios', 'relatorios-outras-areas', 'perfil'
+    'centros-custo', 'unidades-medida', 'relatorios', 'relatorios-outras-areas', 'perfil', 'documentacao'
   ],
   requisitante: [
     'requisicoes', 'relatorios', 'perfil'

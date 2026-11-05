@@ -33,19 +33,21 @@ export interface UserSession {
 }
 
 export const ALL_SYSTEM_MODULES = [
-  'fornecedores', 'produtos', 'saldo-estoque', 'entradas', 'movimentacoes',
-  'inventario', 'consumo', 'kardex', 'lista-compras', 'emprestimos', 'requisicoes', 'aprovacao-requisicoes',
-  'centros-custo', 'unidades-medida', 'usuarios', 'areas', 'relatorios', 'relatorios-outras-areas',
-  'perfil', 'importacao-cadastros', 'backup'
+  'fornecedores', 'produtos', 'saldo-estoque', 'kardex', 'lista-compras',
+  'entradas', 'movimentacoes', 'inventario', 'consumo', 'emprestimos',
+  'requisicoes', 'aprovacao-requisicoes', 'centros-custo', 'unidades-medida',
+  'areas', 'usuarios', 'relatorios', 'relatorios-outras-areas',
+  'perfil', 'importacao-cadastros', 'backup', 'documentacao'
 ];
 
 export const MODULOS_PADRAO_SISTEMA: Record<string, string[]> = {
   admin: [...ALL_SYSTEM_MODULES],
   ti_dpo: [...ALL_SYSTEM_MODULES],
   almoxarife: [
-    'fornecedores', 'produtos', 'saldo-estoque', 'entradas', 'movimentacoes',
-    'inventario', 'consumo', 'kardex', 'lista-compras', 'emprestimos', 'requisicoes', 'aprovacao-requisicoes',
-    'unidades-medida', 'relatorios', 'relatorios-outras-areas', 'perfil'
+    'fornecedores', 'produtos', 'saldo-estoque', 'kardex', 'lista-compras',
+    'entradas', 'movimentacoes', 'inventario', 'consumo', 'emprestimos',
+    'requisicoes', 'aprovacao-requisicoes', 'centros-custo', 'unidades-medida',
+    'relatorios', 'relatorios-outras-areas', 'perfil', 'documentacao'
   ],
   requisitante: [
     'requisicoes', 'relatorios', 'perfil'
