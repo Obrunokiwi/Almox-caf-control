@@ -1,4 +1,4 @@
-import React, { useState, useMemo, useRef } from 'react';
+import React, { useState, useMemo, useRef, useEffect } from 'react';
 import { SearchableSelect } from './SearchableSelect.tsx';
 import {
   ClipboardList,
@@ -59,6 +59,12 @@ import { useToast } from '../context/ToastContext.tsx';
 import { ConfirmDeleteModal } from './ConfirmDeleteModal.tsx';
 import { QuantityStepper } from './QuantityStepper.tsx';
 import { getAuthHeaders } from '../utils/apiUtils.ts';
+import { useFormDraft } from '../hooks/useFormDraft.ts';
+import {
+  FormDraftResumeBanner,
+  FormDraftStatusIndicator,
+  FormDraftSaveButton,
+} from './FormDraftBanner.tsx';
 
 interface RequisicoesViewProps {
   requisicoes: Requisicao[];
@@ -88,7 +94,7 @@ export const RequisicoesView: React.FC<RequisicoesViewProps> = ({
   // Filtros de busca
   const [filtroNumero, setFiltroNumero] = useState('');
   const [filtroCcId, setFiltroCcId] = useState<string>('');
-  const [filtroStatus, setFiltroStatus] = useState<string>('todas');
+  const [filtroStatus, setFiltroStatus] = useState<string>('trabalho_pendente');
   const [filtroPrioridade, setFiltroPrioridade] = useState<string>('todas');
   const [filtroSolicitante, setFiltroSolicitante] = useState<string>('');
   const [isFilterOpen, setIsFilterOpen] = useState(false);
@@ -97,7 +103,7 @@ export const RequisicoesView: React.FC<RequisicoesViewProps> = ({
     let count = 0;
     if (filtroNumero.trim()) count++;
     if (filtroCcId !== '') count++;
-    if (filtroStatus !== 'todas') count++;
+    if (filtroStatus !== 'trabalho_pendente') count++;
     if (filtroPrioridade !== 'todas') count++;
     if (filtroSolicitante.trim()) count++;
     return count;
@@ -106,7 +112,7 @@ export const RequisicoesView: React.FC<RequisicoesViewProps> = ({
   const handleLimparFiltros = () => {
     setFiltroNumero('');
     setFiltroCcId('');
-    setFiltroStatus('todas');
+    setFiltroStatus('trabalho_pendente');
     setFiltroPrioridade('todas');
     setFiltroSolicitante('');
     setCurrentPage(1);
@@ -136,6 +142,85 @@ export const RequisicoesView: React.FC<RequisicoesViewProps> = ({
     saldo_atual: number;
     quantidade_solicitada: number;
   }>>([]);
+
+  // Rascunho automático e manual vinculado ao usuário e módulo
+  interface RequisicaoDraftData {
+    formCcId: number;
+    formPrioridade: PrioridadeRequisicao;
+    formObservacao: string;
+    itensAdicionados: Array<{
+      produto_id: number;
+      produto_codigo: string;
+      produto_nome: string;
+      unidade_medida: string;
+      saldo_atual: number;
+      quantidade_solicitada: number;
+    }>;
+    selectedProdutoId: number;
+    selectedQtd: number;
+    activeFormTab: 'cabecalho' | 'itens';
+  }
+
+  const draft = useFormDraft<RequisicaoDraftData>({
+    modulo: 'requisicoes',
+    isOpen: isFormOpen,
+    onRestore: (data) => {
+      if (data.formCcId) setFormCcId(data.formCcId);
+      if (data.formPrioridade) setFormPrioridade(data.formPrioridade);
+      if (typeof data.formObservacao === 'string') setFormObservacao(data.formObservacao);
+      if (Array.isArray(data.itensAdicionados)) setItensAdicionados(data.itensAdicionados);
+      if (typeof data.selectedProdutoId === 'number') setSelectedProdutoId(data.selectedProdutoId);
+      if (typeof data.selectedQtd === 'number') setSelectedQtd(data.selectedQtd);
+      if (data.activeFormTab) setActiveFormTab(data.activeFormTab);
+    },
+  });
+
+  // Salva rascunho automaticamente após alterações com debounce
+  useEffect(() => {
+    if (!isFormOpen) return;
+    const hasAnyContent =
+      itensAdicionados.length > 0 ||
+      formObservacao.trim().length > 0 ||
+      selectedProdutoId > 0 ||
+      formPrioridade !== 'normal';
+
+    if (hasAnyContent) {
+      draft.scheduleAutoSave({
+        formCcId,
+        formPrioridade,
+        formObservacao,
+        itensAdicionados,
+        selectedProdutoId,
+        selectedQtd,
+        activeFormTab,
+      });
+    }
+  }, [
+    isFormOpen,
+    formCcId,
+    formPrioridade,
+    formObservacao,
+    itensAdicionados,
+    selectedProdutoId,
+    selectedQtd,
+    activeFormTab,
+    draft.scheduleAutoSave,
+  ]);
+
+  const handleSalvarRascunhoManual = () => {
+    draft.saveDraft(
+      {
+        formCcId,
+        formPrioridade,
+        formObservacao,
+        itensAdicionados,
+        selectedProdutoId,
+        selectedQtd,
+        activeFormTab,
+      },
+      true
+    );
+  };
 
   // Análise / Atendimento pelo Almoxarife e Auditoria
   const [selectedReq, setSelectedReq] = useState<Requisicao | null>(null);
@@ -297,12 +382,58 @@ export const RequisicoesView: React.FC<RequisicoesViewProps> = ({
     }));
   }, [centrosCusto]);
 
+  // Contadores de Requisições por Etapa
+  const statusCounts = useMemo(() => {
+    let aguardando = 0;
+    let emSeparacao = 0;
+    let atendidas = 0;
+    let naoAtendidas = 0;
+
+    for (const r of requisicoes) {
+      if (r.status === 'aguardando_atendimento' || r.status === 'pendente') {
+        aguardando++;
+      } else if (r.status === 'em_separacao') {
+        emSeparacao++;
+      } else if (r.status === 'atendida' || r.status === 'aprovada_atendida') {
+        atendidas++;
+      } else if (r.status === 'nao_atendida' || r.status === 'rejeitada') {
+        naoAtendidas++;
+      }
+    }
+    return {
+      trabalhoPendente: aguardando + emSeparacao,
+      aguardando,
+      emSeparacao,
+      atendidas,
+      naoAtendidas,
+      total: requisicoes.length,
+    };
+  }, [requisicoes]);
+
   // Filtragem das Requisições
   const filteredRequisicoes = useMemo(() => {
     return requisicoes.filter((r) => {
       if (filtroNumero && !r.numero_requisicao.toLowerCase().includes(filtroNumero.toLowerCase())) return false;
       if (filtroCcId && String(r.centro_custo_id) !== filtroCcId) return false;
-      if (filtroStatus !== 'todas' && r.status !== filtroStatus) return false;
+
+      // Filtro de Status
+      if (filtroStatus === 'trabalho_pendente') {
+        // Oculta requisições atendidas por padrão; mostra requisições não finalizadas (inclusive de dias anteriores)
+        if (r.status === 'atendida' || r.status === 'aprovada_atendida') return false;
+      } else if (filtroStatus !== 'todas') {
+        if (filtroStatus === 'aguardando_atendimento') {
+          if (r.status !== 'aguardando_atendimento' && r.status !== 'pendente') return false;
+        } else if (filtroStatus === 'em_separacao') {
+          if (r.status !== 'em_separacao') return false;
+        } else if (filtroStatus === 'atendida') {
+          if (r.status !== 'atendida' && r.status !== 'aprovada_atendida') return false;
+        } else if (filtroStatus === 'nao_atendida') {
+          if (r.status !== 'nao_atendida' && r.status !== 'rejeitada') return false;
+        } else if (r.status !== filtroStatus) {
+          return false;
+        }
+      }
+
       if (filtroPrioridade !== 'todas' && (r.prioridade || 'normal') !== filtroPrioridade) return false;
       if (filtroSolicitante && !r.solicitante_nome?.toLowerCase().includes(filtroSolicitante.toLowerCase())) return false;
       return true;
@@ -445,6 +576,8 @@ export const RequisicoesView: React.FC<RequisicoesViewProps> = ({
         'Requisição Registrada com Sucesso',
         `Solicitação ${data.data?.numero_requisicao || ''} aberta com ${itensAdicionados.length} item(ns) e enviada para análise.`
       );
+
+      await draft.clearDraftOnSubmit();
 
       setIsFormOpen(false);
       if (setIsCreateModalOpen) setIsCreateModalOpen(false);
@@ -1024,6 +1157,19 @@ export const RequisicoesView: React.FC<RequisicoesViewProps> = ({
             </button>
           </div>
 
+          {/* Banner de Rascunho Detectado */}
+          <div className="px-6 pt-4">
+            <FormDraftResumeBanner
+              hasDraft={draft.hasDraft}
+              draftDate={draft.draftDate}
+              onApply={draft.applyDraft}
+              onDiscard={() => {
+                draft.discardDraft();
+              }}
+              formTitle="requisição de insumos"
+            />
+          </div>
+
           {actionError && (
             <div className="mx-6 mt-4 p-3 rounded bg-rose-50 border border-rose-200 text-rose-700 text-xs">
               {actionError}
@@ -1274,28 +1420,43 @@ export const RequisicoesView: React.FC<RequisicoesViewProps> = ({
               </div>
             )}
 
-            {/* Rodapé: ENVIAR REQUISIÇÃO (verde) e VOLTAR (teal) */}
-            <div className="pt-4 border-t border-slate-200 flex items-center justify-end gap-3">
-              <button
-                type="button"
-                onClick={() => {
-                  setIsFormOpen(false);
-                  if (setIsCreateModalOpen) setIsCreateModalOpen(false);
-                }}
-                className="bg-teal-600 hover:bg-teal-700 text-white font-medium px-4 py-2 rounded text-xs flex items-center gap-1.5 transition-all shadow uppercase tracking-wide cursor-pointer"
-              >
-                <ArrowLeft className="w-4 h-4" />
-                <span>VOLTAR</span>
-              </button>
+            {/* Rodapé: ENVIAR REQUISIÇÃO (verde), SALVAR RASCUNHO e VOLTAR */}
+            <div className="pt-4 border-t border-slate-200 flex flex-wrap items-center justify-between gap-3">
+              <div className="flex items-center gap-2">
+                <FormDraftStatusIndicator
+                  status={draft.draftStatus}
+                  lastSavedFormatted={draft.lastSavedFormatted}
+                  errorMessage={draft.errorMessage}
+                />
+              </div>
 
-              <button
-                type="submit"
-                disabled={isProcessing || itensAdicionados.length === 0}
-                className="bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800 text-white font-medium px-5 py-2 rounded text-xs flex items-center gap-1.5 transition-all shadow uppercase tracking-wide cursor-pointer disabled:opacity-50"
-              >
-                <Send className="w-4 h-4" />
-                <span>{isProcessing ? 'ENVIANDO...' : 'ENVIAR REQUISIÇÃO AO ALMOXARIFADO'}</span>
-              </button>
+              <div className="flex items-center gap-2">
+                <FormDraftSaveButton
+                  onSaveManual={handleSalvarRascunhoManual}
+                  isSaving={draft.draftStatus === 'salvando'}
+                />
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    setIsFormOpen(false);
+                    if (setIsCreateModalOpen) setIsCreateModalOpen(false);
+                  }}
+                  className="bg-slate-200 hover:bg-slate-300 text-slate-700 font-medium px-4 py-2 rounded-lg text-xs flex items-center gap-1.5 transition-all shadow-sm uppercase tracking-wide cursor-pointer"
+                >
+                  <ArrowLeft className="w-4 h-4" />
+                  <span>VOLTAR</span>
+                </button>
+
+                <button
+                  type="submit"
+                  disabled={isProcessing || itensAdicionados.length === 0}
+                  className="bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800 text-white font-medium px-5 py-2 rounded-lg text-xs flex items-center gap-1.5 transition-all shadow-sm uppercase tracking-wide cursor-pointer disabled:opacity-50"
+                >
+                  <Send className="w-4 h-4" />
+                  <span>{isProcessing ? 'ENVIANDO...' : 'ENVIAR REQUISIÇÃO AO ALMOXARIFADO'}</span>
+                </button>
+              </div>
             </div>
           </form>
         </div>

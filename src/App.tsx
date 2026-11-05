@@ -197,6 +197,36 @@ export default function App() {
     loadData();
   }, [loadUnidades, loadData]);
 
+  // Atualização automática em segundo plano das telas, contadores e listas (a cada 8s e ao alternar abas/foco)
+  useEffect(() => {
+    const pollInterval = setInterval(() => {
+      if (sessionStorage.getItem('multi_almox_token') && document.visibilityState === 'visible') {
+        loadData();
+      }
+    }, 8000);
+
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible' && sessionStorage.getItem('multi_almox_token')) {
+        loadData();
+      }
+    };
+
+    const handleWindowFocus = () => {
+      if (sessionStorage.getItem('multi_almox_token')) {
+        loadData();
+      }
+    };
+
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    window.addEventListener('focus', handleWindowFocus);
+
+    return () => {
+      clearInterval(pollInterval);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+      window.removeEventListener('focus', handleWindowFocus);
+    };
+  }, [loadData]);
+
   // Unidade ativa atual
   const activeUnidade = unidades.find((u) => u.id === activeUnidadeId) || unidades[0] || null;
 

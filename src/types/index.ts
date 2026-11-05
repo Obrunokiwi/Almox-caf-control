@@ -44,7 +44,15 @@ export interface SubgrupoProduto {
   ativo: number;
   total_produtos?: number;
 }
-export type StatusRequisicao = 'pendente' | 'aprovada_atendida' | 'rejeitada' | 'cancelada';
+export type StatusRequisicao = 
+  | 'aguardando_atendimento'
+  | 'em_separacao'
+  | 'atendida'
+  | 'nao_atendida'
+  | 'pendente' 
+  | 'aprovada_atendida' 
+  | 'rejeitada' 
+  | 'cancelada';
 export type PrioridadeRequisicao = 'normal' | 'urgente';
 export type StatusEmprestimo = 'emprestado' | 'devolvido' | 'atrasado';
 export type TipoMovimentacao = 'entrada' | 'saida' | 'estorno_entrada' | 'estorno_saida';
@@ -317,6 +325,9 @@ export type AcaoHistoricoRequisicao =
   | 'negacao_item'
   | 'aprovacao_total'
   | 'aprovacao_parcial'
+  | 'separacao_estoque'
+  | 'entrega_material'
+  | 'alteracao_status'
   | 'rejeicao_total'
   | 'cancelamento'
   | 'alteracao_prioridade'

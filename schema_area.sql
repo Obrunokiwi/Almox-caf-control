@@ -197,7 +197,7 @@ CREATE TABLE IF NOT EXISTS requisicoes (
     almoxarife_nome TEXT,
     data_solicitacao DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     data_atendimento DATETIME,
-    status TEXT NOT NULL DEFAULT 'pendente' CHECK (status IN ('pendente', 'aprovada_atendida', 'rejeitada', 'cancelada')),
+    status TEXT NOT NULL DEFAULT 'aguardando_atendimento' CHECK (status IN ('aguardando_atendimento', 'em_separacao', 'atendida', 'nao_atendida', 'pendente', 'aprovada_atendida', 'rejeitada', 'cancelada')),
     prioridade TEXT NOT NULL DEFAULT 'normal' CHECK (prioridade IN ('normal', 'urgente')),
     motivo_rejeicao TEXT,
     observacao TEXT

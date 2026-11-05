@@ -1336,6 +1336,114 @@ apiRouter.post('/auth/switch-user', (req, res) => {
 });
 
 // ============================================================================
+// 2.9 RASCUNHOS DE FORMULÁRIOS (SALVAMENTO AUTOMÁTICO E RETOMADA)
+// ============================================================================
+
+apiRouter.get('/rascunhos/:modulo', (req, res) => {
+  const user = authenticateRequest(req);
+  if (!user) {
+    res.status(401).json({ error: 'Não autenticado' });
+    return;
+  }
+
+  const { modulo } = req.params;
+  const areaSigla = (req.headers['x-area-sigla'] as string) || user.area_sigla || 'ALM';
+
+  try {
+    const centralDb = getCentralDb();
+    const row = centralDb.prepare(`
+      SELECT id, usuario_id, area_sigla, modulo, dados_json, atualizado_em
+      FROM rascunhos_formularios
+      WHERE usuario_id = ? AND UPPER(area_sigla) = UPPER(?) AND modulo = ?
+    `).get(user.id, areaSigla, modulo) as any;
+
+    if (!row) {
+      res.json({ rascunho: null });
+      return;
+    }
+
+    let dados = {};
+    try {
+      dados = JSON.parse(row.dados_json);
+    } catch {
+      dados = {};
+    }
+
+    res.json({
+      rascunho: {
+        id: row.id,
+        modulo: row.modulo,
+        area_sigla: row.area_sigla,
+        dados,
+        atualizado_em: row.atualizado_em,
+      },
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: 'Erro ao consultar rascunho: ' + err.message });
+  }
+});
+
+apiRouter.post('/rascunhos/:modulo', (req, res) => {
+  const user = authenticateRequest(req);
+  if (!user) {
+    res.status(401).json({ error: 'Não autenticado' });
+    return;
+  }
+
+  const { modulo } = req.params;
+  const areaSigla = (req.headers['x-area-sigla'] as string) || user.area_sigla || 'ALM';
+  const { dados } = req.body || {};
+
+  if (!dados || typeof dados !== 'object') {
+    res.status(400).json({ error: 'Os dados do formulário são obrigatórios para salvar rascunho.' });
+    return;
+  }
+
+  try {
+    const centralDb = getCentralDb();
+    const dadosJson = JSON.stringify(dados);
+
+    centralDb.prepare(`
+      INSERT INTO rascunhos_formularios (usuario_id, area_sigla, modulo, dados_json, atualizado_em)
+      VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+      ON CONFLICT(usuario_id, area_sigla, modulo)
+      DO UPDATE SET dados_json = excluded.dados_json, atualizado_em = CURRENT_TIMESTAMP
+    `).run(user.id, areaSigla.toUpperCase(), modulo, dadosJson);
+
+    res.json({
+      success: true,
+      mensagem: 'Rascunho salvo com sucesso.',
+      atualizado_em: new Date().toISOString(),
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: 'Erro ao salvar rascunho: ' + err.message });
+  }
+});
+
+apiRouter.delete('/rascunhos/:modulo', (req, res) => {
+  const user = authenticateRequest(req);
+  if (!user) {
+    res.status(401).json({ error: 'Não autenticado' });
+    return;
+  }
+
+  const { modulo } = req.params;
+  const areaSigla = (req.headers['x-area-sigla'] as string) || user.area_sigla || 'ALM';
+
+  try {
+    const centralDb = getCentralDb();
+    centralDb.prepare(`
+      DELETE FROM rascunhos_formularios
+      WHERE usuario_id = ? AND UPPER(area_sigla) = UPPER(?) AND modulo = ?
+    `).run(user.id, areaSigla, modulo);
+
+    res.json({ success: true, mensagem: 'Rascunho descartado com sucesso.' });
+  } catch (err: any) {
+    res.status(500).json({ error: 'Erro ao descartar rascunho: ' + err.message });
+  }
+});
+
+// ============================================================================
 // 3. DASHBOARD GERAL E INDICADORES
 // ============================================================================
 
@@ -4454,8 +4562,20 @@ apiRouter.get('/requisicoes', (req, res) => {
   }
 
   if (status && status !== 'todas') {
-    query += ' AND r.status = ?';
-    params.push(status);
+    if (status === 'trabalho_pendente' || status === 'nao_finalizadas') {
+      query += " AND r.status NOT IN ('atendida', 'aprovada_atendida')";
+    } else if (status === 'aguardando_atendimento') {
+      query += " AND r.status IN ('aguardando_atendimento', 'pendente')";
+    } else if (status === 'em_separacao') {
+      query += " AND r.status = 'em_separacao'";
+    } else if (status === 'atendida') {
+      query += " AND r.status IN ('atendida', 'aprovada_atendida')";
+    } else if (status === 'nao_atendida') {
+      query += " AND r.status IN ('nao_atendida', 'rejeitada')";
+    } else {
+      query += ' AND r.status = ?';
+      params.push(status);
+    }
   }
 
   if (prioridade && prioridade !== 'todas') {
@@ -4541,7 +4661,7 @@ apiRouter.get('/requisicoes/:id', (req, res) => {
       } catch {
         lotesAtendidos = [];
       }
-    } else if (reqRow.status === 'aprovada_atendida') {
+    } else if (reqRow.status === 'aprovada_atendida' || reqRow.status === 'atendida' || reqRow.status === 'em_separacao') {
       const movs = db.prepare(`
         SELECT lote_id, numero_lote, data_validade, quantidade
         FROM movimentacoes
@@ -4557,7 +4677,7 @@ apiRouter.get('/requisicoes/:id', (req, res) => {
     }
 
     let lotesDisponiveis: any[] = [];
-    if (reqRow.status === 'pendente') {
+    if (reqRow.status === 'pendente' || reqRow.status === 'aguardando_atendimento') {
       const lotesRaw = db.prepare(`
         SELECT le.*, COALESCE(f.nome_fantasia, f.razao_social) as fornecedor_nome
         FROM lotes_estoque le
@@ -4738,7 +4858,7 @@ apiRouter.post('/requisicoes', (req, res) => {
         INSERT INTO requisicoes (
           numero_requisicao, centro_custo_id, centro_custo_nome, centro_custo_codigo,
           solicitante_id, solicitante_nome, prioridade, status, observacao
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, 'pendente', ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, 'aguardando_atendimento', ?)
       `);
       const reqInfo = reqStmt.run(
         numero_requisicao,
@@ -4774,7 +4894,7 @@ apiRouter.post('/requisicoes', (req, res) => {
         user.id,
         'criacao_requisicao',
         null,
-        'pendente',
+        'aguardando_atendimento',
         null,
         null,
         `Requisição ${numero_requisicao} aberta por ${user.nome} (${user.perfil.toUpperCase()}) contendo ${itens.length} item(ns). ${regraEntregaTexto}`,
@@ -4905,7 +5025,7 @@ apiRouter.post('/requisicoes/:id/aprovar', (req, res) => {
       if (!reqRow) {
         throw new Error('Requisição não encontrada');
       }
-      if (reqRow.status !== 'pendente') {
+      if (reqRow.status !== 'pendente' && reqRow.status !== 'aguardando_atendimento') {
         throw new Error(`Esta requisição não pode ser analisada pois seu status atual é "${reqRow.status}"`);
       }
 
@@ -5198,13 +5318,13 @@ apiRouter.post('/requisicoes/:id/aprovar', (req, res) => {
         }
       }
 
-      // Define status final da requisição conforme decisões por item
-      let statusFinal: 'aprovada_atendida' | 'rejeitada' = 'aprovada_atendida';
-      let acaoConsolidada: 'aprovacao_total' | 'aprovacao_parcial' | 'rejeicao_total' = 'aprovacao_total';
+      // Define status final da separação conforme decisões por item (vai para 'em_separacao' ou 'nao_atendida')
+      let statusFinal: 'em_separacao' | 'nao_atendida' = 'em_separacao';
+      let acaoConsolidada: 'separacao_estoque' | 'aprovacao_parcial' | 'rejeicao_total' = 'separacao_estoque';
       let resumoConsolidado = '';
 
       if (qtdItensAprovados === 0) {
-        statusFinal = 'rejeitada';
+        statusFinal = 'nao_atendida';
         acaoConsolidada = 'rejeicao_total';
         const motivosConcatenados = itens
           .map((it) => `${it.produto_codigo}: ${decisoesMap.get(it.id)?.motivo_decisao}`)
@@ -5213,31 +5333,31 @@ apiRouter.post('/requisicoes/:id/aprovar', (req, res) => {
 
         db.prepare(`
           UPDATE requisicoes 
-          SET status = 'rejeitada', almoxarife_id = ?, data_atendimento = CURRENT_TIMESTAMP, motivo_rejeicao = ?
+          SET status = 'nao_atendida', almoxarife_id = ?, data_atendimento = CURRENT_TIMESTAMP, motivo_rejeicao = ?
           WHERE id = ?
         `).run(user.id, resumoConsolidado, id);
       } else if (qtdItensNegados > 0) {
-        statusFinal = 'aprovada_atendida';
+        statusFinal = 'em_separacao';
         acaoConsolidada = 'aprovacao_parcial';
         const negadosResumo = itens
           .filter((it) => decisoesMap.get(it.id)?.decisao === 'negado')
           .map((it) => `${it.produto_codigo} (${decisoesMap.get(it.id)?.motivo_decisao})`)
           .join('; ');
-        resumoConsolidado = `Atendimento parcial: ${qtdItensAprovados} item(ns) aprovado(s) e ${qtdItensNegados} item(ns) negado(s). Itens negados: ${negadosResumo}`;
+        resumoConsolidado = `Separação parcial: ${qtdItensAprovados} item(ns) aprovado(s) e ${qtdItensNegados} item(ns) negado(s). Itens negados: ${negadosResumo}`;
 
         db.prepare(`
           UPDATE requisicoes 
-          SET status = 'aprovada_atendida', almoxarife_id = ?, data_atendimento = CURRENT_TIMESTAMP, motivo_rejeicao = ?
+          SET status = 'em_separacao', almoxarife_id = ?, data_atendimento = CURRENT_TIMESTAMP, motivo_rejeicao = ?
           WHERE id = ?
         `).run(user.id, resumoConsolidado, id);
       } else {
-        statusFinal = 'aprovada_atendida';
-        acaoConsolidada = 'aprovacao_total';
-        resumoConsolidado = observacao_atendimento?.trim() || `Todos os ${qtdItensAprovados} item(ns) foram aprovados e dispensados por ${user.nome}.`;
+        statusFinal = 'em_separacao';
+        acaoConsolidada = 'separacao_estoque';
+        resumoConsolidado = observacao_atendimento?.trim() || `Todos os ${qtdItensAprovados} item(ns) foram separados com lotes destinados e estoque baixado por ${user.nome}.`;
 
         db.prepare(`
           UPDATE requisicoes 
-          SET status = 'aprovada_atendida', almoxarife_id = ?, data_atendimento = CURRENT_TIMESTAMP
+          SET status = 'em_separacao', almoxarife_id = ?, data_atendimento = CURRENT_TIMESTAMP
           WHERE id = ?
         `).run(user.id, id);
       }
@@ -5248,15 +5368,15 @@ apiRouter.post('/requisicoes/:id/aprovar', (req, res) => {
         null,
         user.id,
         acaoConsolidada,
-        'pendente',
+        reqRow.status || 'aguardando_atendimento',
         statusFinal,
         null,
         null,
-        acaoConsolidada === 'aprovacao_total'
-          ? `Conferência concluída por ${user.nome}: Aprovação integral de ${qtdItensAprovados} item(ns) e baixa de estoque executada.`
+        acaoConsolidada === 'separacao_estoque'
+          ? `Separação concluída por ${user.nome}: ${qtdItensAprovados} item(ns) com lotes destinados e estoque baixado. Aguardando entrega ao solicitante.`
           : acaoConsolidada === 'aprovacao_parcial'
-          ? `Conferência concluída por ${user.nome}: Atendimento parcial (${qtdItensAprovados} aprovado(s), ${qtdItensNegados} negado(s)).`
-          : `Conferência concluída por ${user.nome}: Todos os ${qtdItensNegados} item(ns) da requisição foram negados.`,
+          ? `Separação parcial por ${user.nome}: ${qtdItensAprovados} aprovado(s) e ${qtdItensNegados} negado(s). Aguardando entrega ao solicitante.`
+          : `Análise concluída por ${user.nome}: Todos os ${qtdItensNegados} item(ns) da requisição foram negados.`,
         resumoConsolidado
       );
 
@@ -5271,11 +5391,11 @@ apiRouter.post('/requisicoes/:id/aprovar', (req, res) => {
 
     res.json({
       message:
-        result.status === 'rejeitada'
+        result.status === 'nao_atendida'
           ? `Requisição ${result.numero_requisicao} concluída com todos os itens negados.`
           : result.itens_negados > 0
-          ? `Requisição ${result.numero_requisicao} atendida parcialmente (${result.itens_aprovados} aprovado(s) e ${result.itens_negados} negado(s)).`
-          : `Requisição ${result.numero_requisicao} aprovada e atendida com sucesso! Baixa de estoque efetuada.`,
+          ? `Requisição ${result.numero_requisicao} separada parcialmente (${result.itens_aprovados} aprovado(s) e ${result.itens_negados} negado(s)). Lotes destinados e estoque baixado. Status: Em separação.`
+          : `Requisição ${result.numero_requisicao} separada com sucesso! Lotes destinados e estoque baixado. Status: Em separação (aguardando entrega).`,
       data: result,
     });
   } catch (err: any) {
@@ -5304,7 +5424,7 @@ apiRouter.post('/requisicoes/:id/rejeitar', (req, res) => {
       res.status(404).json({ error: 'Requisição não encontrada' });
       return;
     }
-    if (reqRow.status !== 'pendente') {
+    if (reqRow.status !== 'pendente' && reqRow.status !== 'aguardando_atendimento') {
       res.status(400).json({ error: `Esta requisição não pode ser rejeitada pois seu status atual é "${reqRow.status}"` });
       return;
     }
@@ -5351,7 +5471,7 @@ apiRouter.post('/requisicoes/:id/rejeitar', (req, res) => {
 
       db.prepare(`
         UPDATE requisicoes 
-        SET status = 'rejeitada', almoxarife_id = ?, data_atendimento = CURRENT_TIMESTAMP, motivo_rejeicao = ?
+        SET status = 'nao_atendida', almoxarife_id = ?, data_atendimento = CURRENT_TIMESTAMP, motivo_rejeicao = ?
         WHERE id = ?
       `).run(user.id, motivo_rejeicao.trim(), id);
 
@@ -5361,8 +5481,8 @@ apiRouter.post('/requisicoes/:id/rejeitar', (req, res) => {
         null,
         user.id,
         'rejeicao_total',
-        'pendente',
-        'rejeitada',
+        reqRow.status || 'aguardando_atendimento',
+        'nao_atendida',
         null,
         null,
         `Requisição ${reqRow.numero_requisicao} rejeitada integralmente por ${user.nome} (${user.perfil.toUpperCase()}).`,
@@ -5371,9 +5491,9 @@ apiRouter.post('/requisicoes/:id/rejeitar', (req, res) => {
     });
 
     res.json({
-      message: `Requisição ${reqRow.numero_requisicao} rejeitada. Saldo de estoque mantido intacto.`,
+      message: `Requisição ${reqRow.numero_requisicao} rejeitada com status Não atendida. Saldo de estoque mantido intacto.`,
       id,
-      status: 'rejeitada',
+      status: 'nao_atendida',
     });
   } catch (err: any) {
     res.status(500).json({ error: 'Erro ao rejeitar requisição: ' + err.message });
@@ -5397,8 +5517,8 @@ apiRouter.post('/requisicoes/:id/reabrir', (req, res) => {
         throw new Error('Requisição não encontrada');
       }
 
-      if (reqRow.status === 'pendente') {
-        throw new Error('Esta requisição já está aberta e pendente de atendimento.');
+      if (reqRow.status === 'pendente' || reqRow.status === 'aguardando_atendimento') {
+        throw new Error('Esta requisição já está aberta e aguardando atendimento.');
       }
 
       const statusAnterior = reqRow.status;
@@ -5406,7 +5526,7 @@ apiRouter.post('/requisicoes/:id/reabrir', (req, res) => {
       // 1. Busca todos os itens da requisição
       const itens = db.prepare('SELECT * FROM itens_requisicao WHERE requisicao_id = ?').all(id) as any[];
 
-      // 2. Se a requisição foi atendida com baixa de estoque, estorna o saldo nos produtos e lotes
+      // 2. Se a requisição foi atendida/separada com baixa de estoque, estorna o saldo nos produtos e lotes
       for (const it of itens) {
         if (it.status_item === 'aprovado' && it.quantidade_atendida > 0) {
           // Devolve para os lotes específicos caso existam
@@ -5448,13 +5568,13 @@ apiRouter.post('/requisicoes/:id/reabrir', (req, res) => {
         DELETE FROM movimentacoes 
         WHERE (requisicao_id = ? OR documento_referencia = ?) 
           AND tipo = 'saida' 
-          AND (motivo_diverso LIKE '%Atendimento%' OR observacao LIKE '%Atendimento%')
+          AND (motivo_diverso LIKE '%Atendimento%' OR observacao LIKE '%Atendimento%' OR observacao LIKE '%dispensado%')
       `).run(id, reqRow.numero_requisicao);
 
-      // 4. Volta status da requisição para 'pendente'
+      // 4. Volta status da requisição para 'aguardando_atendimento'
       db.prepare(`
         UPDATE requisicoes 
-        SET status = 'pendente', data_atendimento = NULL, almoxarife_id = NULL, motivo_rejeicao = NULL
+        SET status = 'aguardando_atendimento', data_atendimento = NULL, almoxarife_id = NULL, motivo_rejeicao = NULL
         WHERE id = ?
       `).run(id);
 
@@ -5465,12 +5585,12 @@ apiRouter.post('/requisicoes/:id/reabrir', (req, res) => {
           requisicao_id, item_requisicao_id, produto_id, usuario_id, acao,
           status_anterior, status_novo, quantidade_solicitada, quantidade_atendida,
           detalhes, justificativa
-        ) VALUES (?, NULL, NULL, ?, 'reabertura', ?, 'pendente', NULL, NULL, ?, ?)
+        ) VALUES (?, NULL, NULL, ?, 'reabertura', ?, 'aguardando_atendimento', NULL, NULL, ?, ?)
       `).run(
         id,
         user.id,
         statusAnterior,
-        `Requisição ${reqRow.numero_requisicao} REABERTA por ${user.nome} (${user.perfil.toUpperCase()}). Saldo dispensado foi integralmente estornado ao estoque para permitir nova conferência e ajustes.`,
+        `Requisição ${reqRow.numero_requisicao} REABERTA por ${user.nome} (${user.perfil.toUpperCase()}). Saldo estornado ao estoque para nova separação e conferência.`,
         motivoFinal
       );
 
@@ -5481,12 +5601,172 @@ apiRouter.post('/requisicoes/:id/reabrir', (req, res) => {
     });
 
     res.json({
-      message: `Requisição ${result.numero_requisicao} reaberta com sucesso! Saldo estornado e requisição liberada para edição.`,
+      message: `Requisição ${result.numero_requisicao} reaberta com sucesso! Saldo estornado e requisição retornada para Aguardando atendimento.`,
       id,
-      status: 'pendente',
+      status: 'aguardando_atendimento',
     });
   } catch (err: any) {
     res.status(400).json({ error: err.message || 'Erro ao reabrir requisição.' });
+  }
+});
+
+// Endpoint: Confirmar Entrega do Material -> Transição para 'atendida'
+apiRouter.post('/requisicoes/:id/entregar', (req, res) => {
+  const user = authenticateRequest(req);
+  if (!user || (user.perfil !== 'admin' && user.perfil !== 'almoxarife')) {
+    res.status(403).json({ error: 'Apenas Almoxarifes e Administradores podem marcar requisições como atendidas' });
+    return;
+  }
+
+  const { id } = req.params;
+  const { responsavel_recebimento, observacao_entrega } = req.body || {};
+
+  try {
+    const result = runInTransaction(() => {
+      const reqRow = db.prepare('SELECT * FROM requisicoes WHERE id = ?').get(id) as any;
+      if (!reqRow) {
+        throw new Error('Requisição não encontrada');
+      }
+
+      if (reqRow.status === 'atendida' || reqRow.status === 'aprovada_atendida') {
+        throw new Error('Esta requisição já está finalizada como Atendida.');
+      }
+
+      const statusAnterior = reqRow.status;
+
+      db.prepare(`
+        UPDATE requisicoes 
+        SET status = 'atendida', almoxarife_id = COALESCE(almoxarife_id, ?), data_atendimento = CURRENT_TIMESTAMP
+        WHERE id = ?
+      `).run(user.id, id);
+
+      const detalhes = `Material entregue ao solicitante e requisição FINALIZADA por ${user.nome} (${user.perfil.toUpperCase()}).${responsavel_recebimento ? ` Recebido por: ${responsavel_recebimento}.` : ''}`;
+
+      db.prepare(`
+        INSERT INTO historico_requisicoes (
+          requisicao_id, item_requisicao_id, produto_id, usuario_id, acao,
+          status_anterior, status_novo, quantidade_solicitada, quantidade_atendida,
+          detalhes, justificativa
+        ) VALUES (?, NULL, NULL, ?, 'entrega_material', ?, 'atendida', NULL, NULL, ?, ?)
+      `).run(
+        id,
+        user.id,
+        statusAnterior,
+        detalhes,
+        observacao_entrega ? String(observacao_entrega).trim() : null
+      );
+
+      return {
+        id: Number(id),
+        numero_requisicao: reqRow.numero_requisicao,
+        status: 'atendida',
+      };
+    });
+
+    res.json({
+      message: `Requisição ${result.numero_requisicao} finalizada com sucesso! Material entregue ao solicitante.`,
+      data: result,
+    });
+  } catch (err: any) {
+    res.status(400).json({ error: err.message || 'Erro ao finalizar entrega da requisição' });
+  }
+});
+
+// Endpoint: Alterar Status Manualmente por Usuário Autorizado
+apiRouter.post('/requisicoes/:id/alterar-status', (req, res) => {
+  const user = authenticateRequest(req);
+  if (!user || (user.perfil !== 'admin' && user.perfil !== 'almoxarife')) {
+    res.status(403).json({ error: 'Apenas Almoxarifes e Administradores podem alterar o status da requisição' });
+    return;
+  }
+
+  const { id } = req.params;
+  const { novo_status, justificativa } = req.body || {};
+
+  const statusValidos = ['aguardando_atendimento', 'em_separacao', 'atendida', 'nao_atendida'];
+  if (!statusValidos.includes(novo_status)) {
+    res.status(400).json({ error: `Status inválido. Valores permitidos: ${statusValidos.join(', ')}` });
+    return;
+  }
+
+  try {
+    const result = runInTransaction(() => {
+      const reqRow = db.prepare('SELECT * FROM requisicoes WHERE id = ?').get(id) as any;
+      if (!reqRow) throw new Error('Requisição não encontrada');
+
+      const statusAnterior = reqRow.status;
+      if (statusAnterior === novo_status) {
+        return { id: Number(id), numero_requisicao: reqRow.numero_requisicao, status: novo_status };
+      }
+
+      // Se voltar para aguardando_atendimento a partir de em_separacao/atendida, estorna estoque
+      if (novo_status === 'aguardando_atendimento' && (statusAnterior === 'em_separacao' || statusAnterior === 'atendida' || statusAnterior === 'aprovada_atendida')) {
+        const itens = db.prepare('SELECT * FROM itens_requisicao WHERE requisicao_id = ?').all(id) as any[];
+        for (const it of itens) {
+          if (it.quantidade_atendida > 0) {
+            if (it.lotes_atendidos) {
+              try {
+                const lotes = JSON.parse(it.lotes_atendidos);
+                for (const l of lotes) {
+                  if (l.lote_id && l.quantidade > 0) {
+                    db.prepare('UPDATE lotes_estoque SET quantidade_atual = quantidade_atual + ? WHERE id = ?').run(l.quantidade, l.lote_id);
+                  }
+                }
+              } catch {}
+            }
+            db.prepare('UPDATE produtos SET quantidade_atual = quantidade_atual + ? WHERE id = ?').run(it.quantidade_atendida, it.produto_id);
+          }
+          db.prepare("UPDATE itens_requisicao SET quantidade_atendida = 0, status_item = 'pendente', lotes_atendidos = NULL WHERE id = ?").run(it.id);
+        }
+        db.prepare("DELETE FROM movimentacoes WHERE (requisicao_id = ? OR documento_referencia = ?) AND tipo = 'saida'").run(id, reqRow.numero_requisicao);
+      }
+
+      db.prepare(`
+        UPDATE requisicoes 
+        SET status = ?, almoxarife_id = COALESCE(almoxarife_id, ?),
+            data_atendimento = CASE WHEN ? = 'atendida' OR ? = 'em_separacao' THEN CURRENT_TIMESTAMP ELSE data_atendimento END,
+            motivo_rejeicao = CASE WHEN ? = 'nao_atendida' THEN ? ELSE motivo_rejeicao END
+        WHERE id = ?
+      `).run(novo_status, user.id, novo_status, novo_status, novo_status, justificativa || null, id);
+
+      const statusNomes: Record<string, string> = {
+        aguardando_atendimento: 'Aguardando atendimento',
+        pendente: 'Aguardando atendimento',
+        em_separacao: 'Em separação',
+        atendida: 'Atendida',
+        aprovada_atendida: 'Atendida',
+        nao_atendida: 'Não atendida',
+        rejeitada: 'Não atendida',
+      };
+
+      db.prepare(`
+        INSERT INTO historico_requisicoes (
+          requisicao_id, item_requisicao_id, produto_id, usuario_id, acao,
+          status_anterior, status_novo, quantidade_solicitada, quantidade_atendida,
+          detalhes, justificativa
+        ) VALUES (?, NULL, NULL, ?, 'alteracao_status', ?, ?, NULL, NULL, ?, ?)
+      `).run(
+        id,
+        user.id,
+        statusAnterior,
+        novo_status,
+        `Etapa da requisição alterada por ${user.nome} (${user.perfil.toUpperCase()}) de "${statusNomes[statusAnterior] || statusAnterior}" para "${statusNomes[novo_status]}".`,
+        justificativa ? String(justificativa).trim() : null
+      );
+
+      return {
+        id: Number(id),
+        numero_requisicao: reqRow.numero_requisicao,
+        status: novo_status,
+      };
+    });
+
+    res.json({
+      message: `Status da requisição atualizado para "${result.status}".`,
+      data: result,
+    });
+  } catch (err: any) {
+    res.status(400).json({ error: err.message || 'Erro ao alterar status da requisição.' });
   }
 });
 

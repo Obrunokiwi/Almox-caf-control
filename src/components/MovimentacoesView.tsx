@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import { SearchableSelect } from './SearchableSelect.tsx';
 import {
   History,
@@ -34,6 +34,12 @@ import { PdfPrintModal } from './PdfPrintModal.tsx';
 import { HelpFloatingModal } from './HelpFloatingModal.tsx';
 import { useToast } from '../context/ToastContext.tsx';
 import { getAuthHeaders } from '../utils/apiUtils.ts';
+import { useFormDraft } from '../hooks/useFormDraft.ts';
+import {
+  FormDraftResumeBanner,
+  FormDraftStatusIndicator,
+  FormDraftSaveButton,
+} from './FormDraftBanner.tsx';
 
 interface MovimentacoesViewProps {
   movimentacoes: Movimentacao[];
@@ -124,6 +130,111 @@ export const MovimentacoesView: React.FC<MovimentacoesViewProps> = ({
     } finally {
       setIsLoadingRequisicoesAtendidas(false);
     }
+  };
+
+  // Rascunho automático e manual vinculado ao usuário, área e módulo
+  interface MovimentacaoDraftData {
+    naturezaDiversa: 'saida' | 'entrada';
+    motivoDiverso: string;
+    divProdutoId: number;
+    divLoteId: number;
+    divNumeroLote: string;
+    divDataValidade: string;
+    divQuantidade: number;
+    divEntidadeId: number;
+    divResponsavel: string;
+    divDocumento: string;
+    divJustificativa: string;
+    divCentroCustoId: number | '';
+    divRequisicaoOrigemId: number | '';
+  }
+
+  const draft = useFormDraft<MovimentacaoDraftData>({
+    modulo: 'movimentacoes',
+    isOpen: isDiversaOpen,
+    onRestore: (data) => {
+      if (data.naturezaDiversa) setNaturezaDiversa(data.naturezaDiversa);
+      if (data.motivoDiverso) setMotivoDiverso(data.motivoDiverso);
+      if (typeof data.divProdutoId === 'number') setDivProdutoId(data.divProdutoId);
+      if (typeof data.divLoteId === 'number') setDivLoteId(data.divLoteId);
+      if (typeof data.divNumeroLote === 'string') setDivNumeroLote(data.divNumeroLote);
+      if (typeof data.divDataValidade === 'string') setDivDataValidade(data.divDataValidade);
+      if (typeof data.divQuantidade === 'number') setDivQuantidade(data.divQuantidade);
+      if (typeof data.divEntidadeId === 'number') setDivEntidadeId(data.divEntidadeId);
+      if (typeof data.divResponsavel === 'string') setDivResponsavel(data.divResponsavel);
+      if (typeof data.divDocumento === 'string') setDivDocumento(data.divDocumento);
+      if (typeof data.divJustificativa === 'string') setDivJustificativa(data.divJustificativa);
+      if (data.divCentroCustoId !== undefined) {
+        setDivCentroCustoId(data.divCentroCustoId);
+        if (data.divCentroCustoId) carregarRequisicoesAtendidas(Number(data.divCentroCustoId));
+      }
+      if (data.divRequisicaoOrigemId !== undefined) setDivRequisicaoOrigemId(data.divRequisicaoOrigemId);
+    },
+  });
+
+  // Salva rascunho de movimentação diversa automaticamente com debounce
+  useEffect(() => {
+    if (!isDiversaOpen) return;
+    const hasAnyContent =
+      divProdutoId > 0 ||
+      divJustificativa.trim().length > 0 ||
+      divDocumento.trim().length > 0 ||
+      divQuantidade > 1;
+
+    if (hasAnyContent) {
+      draft.scheduleAutoSave({
+        naturezaDiversa,
+        motivoDiverso,
+        divProdutoId,
+        divLoteId,
+        divNumeroLote,
+        divDataValidade,
+        divQuantidade,
+        divEntidadeId,
+        divResponsavel,
+        divDocumento,
+        divJustificativa,
+        divCentroCustoId,
+        divRequisicaoOrigemId,
+      });
+    }
+  }, [
+    isDiversaOpen,
+    naturezaDiversa,
+    motivoDiverso,
+    divProdutoId,
+    divLoteId,
+    divNumeroLote,
+    divDataValidade,
+    divQuantidade,
+    divEntidadeId,
+    divResponsavel,
+    divDocumento,
+    divJustificativa,
+    divCentroCustoId,
+    divRequisicaoOrigemId,
+    draft.scheduleAutoSave,
+  ]);
+
+  const handleSalvarRascunhoManual = () => {
+    draft.saveDraft(
+      {
+        naturezaDiversa,
+        motivoDiverso,
+        divProdutoId,
+        divLoteId,
+        divNumeroLote,
+        divDataValidade,
+        divQuantidade,
+        divEntidadeId,
+        divResponsavel,
+        divDocumento,
+        divJustificativa,
+        divCentroCustoId,
+        divRequisicaoOrigemId,
+      },
+      true
+    );
   };
 
   // Termo de Descarte / Baixa por Vencimento para Impressão
@@ -272,6 +383,8 @@ export const MovimentacoesView: React.FC<MovimentacoesViewProps> = ({
         naturezaDiversa === 'saida' ? 'Saída Diversa Registrada' : 'Entrada Diversa Registrada',
         data.message
       );
+
+      await draft.clearDraftOnSubmit();
 
       setIsDiversaOpen(false);
       if (data.data?.termo_descarte) {
@@ -595,6 +708,19 @@ export const MovimentacoesView: React.FC<MovimentacoesViewProps> = ({
               <X className="w-4 h-4" />
               <span>Fechar</span>
             </button>
+          </div>
+
+          {/* Banner de Rascunho Detectado */}
+          <div className="px-6 pt-4">
+            <FormDraftResumeBanner
+              hasDraft={draft.hasDraft}
+              draftDate={draft.draftDate}
+              onApply={draft.applyDraft}
+              onDiscard={() => {
+                draft.discardDraft();
+              }}
+              formTitle="movimentação diversa"
+            />
           </div>
 
           {divError && (
@@ -946,34 +1072,49 @@ export const MovimentacoesView: React.FC<MovimentacoesViewProps> = ({
               </div>
             </div>
 
-            <div className="pt-3 border-t border-slate-200 flex items-center justify-end gap-3">
-              <button
-                type="button"
-                onClick={() => setIsDiversaOpen(false)}
-                className="px-4 py-2 rounded text-xs font-semibold text-slate-600 hover:bg-slate-100 cursor-pointer"
-              >
-                Cancelar
-              </button>
-              <button
-                type="submit"
-                disabled={isSavingDiversa}
-                className={`px-5 py-2 rounded text-xs font-bold uppercase tracking-wider text-white flex items-center gap-1.5 shadow cursor-pointer disabled:opacity-50 ${
-                  naturezaDiversa === 'saida'
-                    ? 'bg-rose-600 hover:bg-rose-700'
-                    : 'bg-emerald-600 hover:bg-emerald-700'
-                }`}
-              >
-                <Save className="w-4 h-4" />
-                <span>
-                  {isSavingDiversa
-                    ? 'Registrando...'
-                    : naturezaDiversa === 'saida' && motivoDiverso === 'Saída por Vencimento/Descarte'
-                    ? 'Confirmar Baixa e Gerar Termo de Descarte'
-                    : motivoDiverso === 'Devolução de Setor'
-                    ? 'Confirmar Devolução de Setor e Emitir Comprovante A4'
-                    : `Confirmar ${naturezaDiversa === 'saida' ? 'Saída Diversa' : 'Entrada Diversa'}`}
-                </span>
-              </button>
+            <div className="pt-3 border-t border-slate-200 flex flex-wrap items-center justify-between gap-3">
+              <div className="flex items-center gap-2">
+                <FormDraftStatusIndicator
+                  status={draft.draftStatus}
+                  lastSavedFormatted={draft.lastSavedFormatted}
+                  errorMessage={draft.errorMessage}
+                />
+              </div>
+
+              <div className="flex items-center gap-2">
+                <FormDraftSaveButton
+                  onSaveManual={handleSalvarRascunhoManual}
+                  isSaving={draft.draftStatus === 'salvando'}
+                />
+
+                <button
+                  type="button"
+                  onClick={() => setIsDiversaOpen(false)}
+                  className="px-4 py-2 rounded text-xs font-semibold text-slate-600 hover:bg-slate-100 cursor-pointer"
+                >
+                  Cancelar
+                </button>
+                <button
+                  type="submit"
+                  disabled={isSavingDiversa}
+                  className={`px-5 py-2 rounded text-xs font-bold uppercase tracking-wider text-white flex items-center gap-1.5 shadow cursor-pointer disabled:opacity-50 ${
+                    naturezaDiversa === 'saida'
+                      ? 'bg-rose-600 hover:bg-rose-700'
+                      : 'bg-emerald-600 hover:bg-emerald-700'
+                  }`}
+                >
+                  <Save className="w-4 h-4" />
+                  <span>
+                    {isSavingDiversa
+                      ? 'Registrando...'
+                      : naturezaDiversa === 'saida' && motivoDiverso === 'Saída por Vencimento/Descarte'
+                      ? 'Confirmar Baixa e Gerar Termo de Descarte'
+                      : motivoDiverso === 'Devolução de Setor'
+                      ? 'Confirmar Devolução de Setor e Emitir Comprovante A4'
+                      : `Confirmar ${naturezaDiversa === 'saida' ? 'Saída Diversa' : 'Entrada Diversa'}`}
+                  </span>
+                </button>
+              </div>
             </div>
           </form>
         </div>

@@ -716,9 +716,13 @@ export async function generateComprovanteRequisicaoPDF(params: {
 
   // Quadro de Identificação da Requisição
   const statusMap: Record<string, string> = {
-    pendente: 'PENDENTE (EM ANÁLISE)',
-    aprovada_atendida: 'APROVADA E ATENDIDA (BAIXA EFETUADA)',
-    rejeitada: 'REJEITADA COM PARECER TÉCNICO',
+    aguardando_atendimento: 'AGUARDANDO ATENDIMENTO',
+    pendente: 'AGUARDANDO ATENDIMENTO',
+    em_separacao: 'EM SEPARAÇÃO (LOTES BAIXADOS)',
+    atendida: 'ATENDIDA (MATERIAL ENTREGUE)',
+    aprovada_atendida: 'ATENDIDA (MATERIAL ENTREGUE)',
+    nao_atendida: 'NÃO ATENDIDA (NEGADA)',
+    rejeitada: 'NÃO ATENDIDA (NEGADA)',
     cancelada: 'CANCELADA',
   };
 

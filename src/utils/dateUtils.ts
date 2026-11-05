@@ -8,44 +8,61 @@ export function formatDateTimeBrasilia(
 ): string {
   if (!dateInput) return '-';
   try {
+    let d: Date;
+
     if (dateInput instanceof Date) {
-      if (isNaN(dateInput.getTime())) return '-';
-      const pad = (n: number) => String(n).padStart(2, '0');
-      const timePart = options?.hideSeconds
-        ? `${pad(dateInput.getHours())}:${pad(dateInput.getMinutes())}`
-        : `${pad(dateInput.getHours())}:${pad(dateInput.getMinutes())}:${pad(dateInput.getSeconds())}`;
-      return `${pad(dateInput.getDate())}/${pad(dateInput.getMonth() + 1)}/${dateInput.getFullYear()} ${timePart}`;
-    }
+      d = dateInput;
+    } else {
+      let dateStr = String(dateInput).trim();
+      if (!dateStr) return '-';
 
-    let dateStr = String(dateInput).trim();
-    if (!dateStr) return '-';
+      // Se a string já veio formatada como "05/11/2026 09:18" ou similar
+      if (/^\d{2}\/\d{2}\/\d{4}/.test(dateStr)) {
+        return dateStr;
+      }
 
-    // Se a string veio do SQLite como "2026-10-14 15:42:07" sem indicador de fuso,
-    // o SQLite grava CURRENT_TIMESTAMP em UTC. Adiciona 'Z' para conversão correta ao horário do computador
-    if (!dateStr.includes('Z') && !dateStr.includes('+')) {
-      if (!dateStr.includes('T')) {
-        dateStr = dateStr.replace(' ', 'T') + 'Z';
-      } else {
-        dateStr = dateStr + 'Z';
+      // Se a string veio do SQLite como "2026-10-14 15:42:07" sem indicador de fuso,
+      // o SQLite grava CURRENT_TIMESTAMP em UTC. Adiciona 'Z' para conversão correta ao horário de Brasília
+      if (!dateStr.includes('Z') && !dateStr.includes('+')) {
+        if (!dateStr.includes('T')) {
+          dateStr = dateStr.replace(' ', 'T') + 'Z';
+        } else {
+          dateStr = dateStr + 'Z';
+        }
+      }
+
+      d = new Date(dateStr);
+      if (isNaN(d.getTime())) {
+        d = new Date(String(dateInput));
       }
     }
 
-    const d = new Date(dateStr);
-    if (isNaN(d.getTime())) {
-      const fallback = new Date(dateInput);
-      if (isNaN(fallback.getTime())) return String(dateInput);
-      const pad = (n: number) => String(n).padStart(2, '0');
-      const timePart = options?.hideSeconds
-        ? `${pad(fallback.getHours())}:${pad(fallback.getMinutes())}`
-        : `${pad(fallback.getHours())}:${pad(fallback.getMinutes())}:${pad(fallback.getSeconds())}`;
-      return `${pad(fallback.getDate())}/${pad(fallback.getMonth() + 1)}/${fallback.getFullYear()} ${timePart}`;
-    }
+    if (isNaN(d.getTime())) return String(dateInput);
 
-    const pad = (n: number) => String(n).padStart(2, '0');
-    const timePart = options?.hideSeconds
-      ? `${pad(d.getHours())}:${pad(d.getMinutes())}`
-      : `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
-    return `${pad(d.getDate())}/${pad(d.getMonth() + 1)}/${d.getFullYear()} ${timePart}`;
+    const parts = new Intl.DateTimeFormat('pt-BR', {
+      timeZone: 'America/Sao_Paulo',
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+      hour12: false,
+    }).formatToParts(d);
+
+    const getPart = (type: string) => parts.find((p) => p.type === type)?.value || '00';
+
+    const day = getPart('day');
+    const month = getPart('month');
+    const year = getPart('year');
+    const hour = getPart('hour');
+    const minute = getPart('minute');
+    const second = getPart('second');
+
+    if (options?.hideSeconds) {
+      return `${day}/${month}/${year} ${hour}:${minute}`;
+    }
+    return `${day}/${month}/${year} ${hour}:${minute}:${second}`;
   } catch {
     return String(dateInput);
   }

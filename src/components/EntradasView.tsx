@@ -54,6 +54,12 @@ import { CentroCustoAlertBanner } from './CentroCustoAlertBanner.tsx';
 import { SearchableSelect, type SearchableOption } from './SearchableSelect.tsx';
 import { useToast } from '../context/ToastContext.tsx';
 import { getAuthHeaders } from '../utils/apiUtils.ts';
+import { useFormDraft } from '../hooks/useFormDraft.ts';
+import {
+  FormDraftResumeBanner,
+  FormDraftStatusIndicator,
+  FormDraftSaveButton,
+} from './FormDraftBanner.tsx';
 
 interface EntradasViewProps {
   produtos: Produto[];
@@ -183,6 +189,92 @@ export const EntradasView: React.FC<EntradasViewProps> = ({
       ...prev,
       [tempId]: !prev[tempId],
     }));
+  };
+
+  // Rascunho automático e manual vinculado ao usuário, área e módulo
+  interface EntradasNotaDraftData {
+    newNotaDoc: string;
+    newNotaFornecedorId: number;
+    newNotaCentroCustoId: number;
+    newNotaObservacao: string;
+    newNotaItens: Array<{
+      tempId: string;
+      produto_id: number;
+      numero_lote: string;
+      data_validade: string;
+      quantidade: number;
+      valor_total: number;
+      valor_unitario: number;
+      marca: string;
+      nomenclatura_fornecedor: string;
+    }>;
+    expandedItemIds: Record<string, boolean>;
+  }
+
+  const draft = useFormDraft<EntradasNotaDraftData>({
+    modulo: 'entradas_nota',
+    isOpen: isNewNotaOpen,
+    onRestore: (data) => {
+      if (typeof data.newNotaDoc === 'string') setNewNotaDoc(data.newNotaDoc);
+      if (typeof data.newNotaFornecedorId === 'number') setNewNotaFornecedorId(data.newNotaFornecedorId);
+      if (typeof data.newNotaCentroCustoId === 'number') setNewNotaCentroCustoId(data.newNotaCentroCustoId);
+      if (typeof data.newNotaObservacao === 'string') setNewNotaObservacao(data.newNotaObservacao);
+      if (Array.isArray(data.newNotaItens) && data.newNotaItens.length > 0) {
+        setNewNotaItens(data.newNotaItens);
+      }
+      if (data.expandedItemIds) setExpandedItemIds(data.expandedItemIds);
+    },
+  });
+
+  // Salva rascunho de nota fiscal automaticamente com debounce
+  useEffect(() => {
+    if (!isNewNotaOpen) return;
+    const hasAnyContent =
+      newNotaDoc.trim().length > 0 ||
+      newNotaFornecedorId > 0 ||
+      newNotaCentroCustoId > 0 ||
+      newNotaObservacao.trim().length > 0 ||
+      newNotaItens.some(
+        (it) =>
+          it.produto_id > 0 ||
+          it.numero_lote.trim().length > 0 ||
+          Number(it.quantidade) > 0 ||
+          Number(it.valor_total) > 0
+      );
+
+    if (hasAnyContent) {
+      draft.scheduleAutoSave({
+        newNotaDoc,
+        newNotaFornecedorId,
+        newNotaCentroCustoId,
+        newNotaObservacao,
+        newNotaItens,
+        expandedItemIds,
+      });
+    }
+  }, [
+    isNewNotaOpen,
+    newNotaDoc,
+    newNotaFornecedorId,
+    newNotaCentroCustoId,
+    newNotaObservacao,
+    newNotaItens,
+    expandedItemIds,
+    draft.scheduleAutoSave,
+  ]);
+
+  const handleSalvarRascunhoManual = () => {
+    draft.saveDraft(
+      {
+        newNotaDoc,
+        newNotaFornecedorId,
+        newNotaCentroCustoId,
+        newNotaObservacao,
+        newNotaItens,
+        expandedItemIds,
+      },
+      true
+    );
   };
 
   // Preview de PDF
@@ -429,6 +521,8 @@ export const EntradasView: React.FC<EntradasViewProps> = ({
         'Nota Fiscal Registrada (ABERTA)',
         `Documento ${newNotaDoc.trim().toUpperCase()} registrado com ${newNotaItens.length} item(ns).`
       );
+
+      await draft.clearDraftOnSubmit();
 
       setIsNewNotaOpen(false);
       if (setIsCreateModalOpen) setIsCreateModalOpen(false);
@@ -1592,6 +1686,18 @@ export const EntradasView: React.FC<EntradasViewProps> = ({
             </div>
 
             <form onSubmit={handleSalvarNovaNota} className="flex-1 overflow-y-auto p-6 space-y-5 text-xs">
+              {/* Banner de Rascunho Detectado */}
+              <FormDraftResumeBanner
+                hasDraft={draft.hasDraft}
+                draftDate={draft.draftDate}
+                onApply={draft.applyDraft}
+                onDiscard={() => {
+                  draft.discardDraft();
+                  handleAbrirNovaNota();
+                }}
+                formTitle="lançamento de nota fiscal"
+              />
+
               {/* Cabeçalho */}
               <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-4 bg-slate-50/70 p-4 rounded-xl border border-slate-200">
                 <div>
@@ -1647,42 +1753,240 @@ export const EntradasView: React.FC<EntradasViewProps> = ({
               </div>
 
               {/* Itens da Nota Fiscal */}
-              <div className="space-y-3">
+              <div className="space-y-4">
                 <div className="flex items-center justify-between">
                   <span className="text-[11px] font-bold uppercase tracking-wider text-slate-700 flex items-center gap-2">
-                    <span>Itens da Nota Fiscal ({newNotaItens.length})</span>
-                    <span className="text-[10px] text-slate-500 font-normal normal-case">
-                      (clique no item para expandir ou minimizar)
-                    </span>
+                    <PackagePlus className="w-4 h-4 text-[#00237D]" />
+                    <span>Formulário de Inclusão de Item ({newNotaItens.length} no total)</span>
                   </span>
+                  {newNotaItens.length > 1 && (
+                    <span className="text-[10px] text-emerald-800 font-bold bg-emerald-50 border border-emerald-200 px-2 py-0.5 rounded-full">
+                      {newNotaItens.length - 1} item(ns) salvos na lista abaixo
+                    </span>
+                  )}
                 </div>
 
-                <div className="space-y-2.5">
-                  {newNotaItens.map((item, index) => {
-                    const prod = produtos.find((p) => p.id === item.produto_id);
-                    const exigeLote = prod?.controla_validade === 1;
-                    const unitarioCalc =
-                      item.quantidade > 0 && item.valor_total
-                        ? item.valor_total / item.quantidade
-                        : item.valor_unitario;
+                {/* 1. FORMULÁRIO DE ITEM FIXO NA PARTE SUPERIOR */}
+                {(() => {
+                  const activeItemIndex = newNotaItens.findIndex((it) => expandedItemIds[it.tempId]);
+                  const actualIndex = activeItemIndex >= 0 ? activeItemIndex : newNotaItens.length - 1;
+                  const item = newNotaItens[actualIndex] || newNotaItens[0];
 
-                    const isExpanded = expandedItemIds[item.tempId] ?? (index === newNotaItens.length - 1);
+                  if (!item) return null;
 
-                    if (!isExpanded) {
-                      // Visualização Minimizada (1 Linha)
+                  const prod = produtos.find((p) => p.id === item.produto_id);
+                  const exigeLote = prod?.controla_validade === 1;
+                  const unitarioCalc =
+                    item.quantidade > 0 && item.valor_total
+                      ? item.valor_total / item.quantidade
+                      : item.valor_unitario;
+
+                  return (
+                    <div className="p-3.5 bg-slate-50/90 border-2 border-[#00237D]/30 rounded-xl shadow-xs space-y-3">
+                      <div className="flex items-center justify-between pb-2 border-b border-slate-200">
+                        <div className="flex items-center gap-2">
+                          <span className="px-2 py-0.5 bg-[#00237D] text-white font-bold font-mono text-[10px] rounded uppercase">
+                            ITEM ATIVO #{actualIndex + 1}
+                          </span>
+                          <span className="text-xs font-bold text-slate-900">
+                            {prod ? `${prod.codigo} - ${prod.nome}` : 'Preencha os dados do produto para incluir na nota'}
+                          </span>
+                        </div>
+
+                        {newNotaItens.length > 1 && (
+                          <button
+                            type="button"
+                            onClick={() => handleRemoveItemFromNewNota(item.tempId)}
+                            className="text-rose-600 hover:text-rose-800 text-xs font-semibold flex items-center gap-1 cursor-pointer"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                            <span>Remover Este Item</span>
+                          </button>
+                        )}
+                      </div>
+
+                      <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-6 gap-2.5">
+                        <div className="md:col-span-3">
+                          <label className="block text-[10px] font-bold text-slate-600 uppercase tracking-wider mb-0.5">
+                            Produto (Código Único de Estoque) *
+                          </label>
+                          <SearchableSelect
+                            options={produtosOptions}
+                            value={item.produto_id}
+                            onChange={(val) => {
+                              const next = [...newNotaItens];
+                              const pId = Number(val);
+                              next[actualIndex].produto_id = pId;
+                              const pObj = produtos.find((p) => p.id === pId);
+                              const pUnit = pObj?.valor_unitario || pObj?.custo_unitario || 0;
+                              const qtd = next[actualIndex].quantidade || 1;
+                              next[actualIndex].valor_unitario = pUnit;
+                              next[actualIndex].valor_total = Number((qtd * pUnit).toFixed(2));
+                              setNewNotaItens(next);
+                            }}
+                            placeholder="Digite código ou nome do produto..."
+                          />
+                        </div>
+
+                        <div>
+                          <label className="block text-[10px] font-bold text-slate-600 uppercase tracking-wider mb-0.5">
+                            Lote {exigeLote ? '*' : '(Opcional)'}
+                          </label>
+                          <input
+                            type="text"
+                            value={item.numero_lote}
+                            onChange={(e) => {
+                              const next = [...newNotaItens];
+                              next[actualIndex].numero_lote = e.target.value.toUpperCase();
+                              setNewNotaItens(next);
+                            }}
+                            className="w-full px-2 py-1.5 bg-white border border-slate-300 rounded font-mono text-xs uppercase"
+                            placeholder={exigeLote ? 'LOTE' : 'SEM LOTE'}
+                          />
+                        </div>
+
+                        <div>
+                          <label className="block text-[10px] font-bold text-slate-600 uppercase tracking-wider mb-0.5">
+                            Validade {exigeLote ? '*' : '(Opcional)'}
+                          </label>
+                          <input
+                            type="date"
+                            value={item.data_validade}
+                            onChange={(e) => {
+                              const next = [...newNotaItens];
+                              next[actualIndex].data_validade = e.target.value;
+                              setNewNotaItens(next);
+                            }}
+                            className="w-full px-2 py-1.5 bg-white border border-slate-300 rounded text-xs"
+                          />
+                        </div>
+
+                        <div>
+                          <label className="block text-[10px] font-bold text-slate-600 uppercase tracking-wider mb-0.5">
+                            Quantidade ({prod?.unidade_medida || 'UN'}) *
+                          </label>
+                          <input
+                            type="number"
+                            min="0.001"
+                            step="any"
+                            value={item.quantidade || ''}
+                            onChange={(e) => {
+                              const next = [...newNotaItens];
+                              const val = e.target.value;
+                              const q = val === '' ? ('' as any) : Number(val);
+                              next[actualIndex].quantidade = q;
+                              if (next[actualIndex].valor_total && Number(q) > 0) {
+                                next[actualIndex].valor_unitario = Number(next[actualIndex].valor_total) / Number(q);
+                              }
+                              setNewNotaItens(next);
+                            }}
+                            placeholder="0"
+                            className="w-full px-2 py-1.5 bg-white border border-slate-300 rounded font-mono font-bold text-right text-xs"
+                          />
+                        </div>
+
+                        <div className="md:col-span-3">
+                          <label className="block text-[10px] font-bold text-slate-600 uppercase tracking-wider mb-0.5">
+                            Marca / Nomenclatura na NF (Opcional)
+                          </label>
+                          <input
+                            type="text"
+                            value={item.marca}
+                            onChange={(e) => {
+                              const next = [...newNotaItens];
+                              next[actualIndex].marca = e.target.value;
+                              setNewNotaItens(next);
+                            }}
+                            placeholder="ex: Cremer, Descarpack..."
+                            className="w-full px-2 py-1.5 bg-white border border-slate-300 rounded text-xs"
+                          />
+                        </div>
+
+                        <div className="md:col-span-3">
+                          <div className="flex items-center justify-between mb-0.5">
+                            <label className="block text-[10px] font-bold text-slate-700 uppercase tracking-wider">
+                              Custo Total da NF (R$) *
+                            </label>
+                            {item.quantidade > 0 && item.valor_total > 0 && (
+                              <span className="text-[10px] font-mono text-[#00237D] font-bold bg-blue-50 px-1.5 py-0.5 rounded border border-blue-200">
+                                Unit.: {unitarioCalc.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL', minimumFractionDigits: 2, maximumFractionDigits: 4 })} / {prod?.unidade_medida || 'UN'}
+                              </span>
+                            )}
+                          </div>
+                          <input
+                            type="number"
+                            step="0.01"
+                            min="0"
+                            value={item.valor_total || ''}
+                            onChange={(e) => {
+                              const next = [...newNotaItens];
+                              const val = e.target.value;
+                              const tot = val === '' ? ('' as any) : Number(val);
+                              next[actualIndex].valor_total = tot;
+                              const q = Number(next[actualIndex].quantidade) || 0;
+                              next[actualIndex].valor_unitario = q > 0 && tot ? Number(tot) / q : 0;
+                              setNewNotaItens(next);
+                            }}
+                            placeholder="0,00"
+                            className="w-full px-2 py-1.5 bg-white border border-slate-300 rounded font-mono font-bold text-right text-xs text-slate-900 focus:border-[#00237D] focus:ring-1 focus:ring-[#00237D]"
+                          />
+                          <div className="mt-1 flex items-center justify-between text-[10px] text-slate-500">
+                            <span>Calculado automaticamente: Custo Total ÷ Quantidade</span>
+                            <span className="font-mono text-slate-700 font-semibold">
+                              Unitário: R$ {unitarioCalc.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 4 })}
+                            </span>
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Botão de Adicionar / Confirmar Item Fixo no Topo */}
+                      <div className="pt-2 border-t border-slate-200">
+                        <button
+                          type="button"
+                          onClick={handleAddNewItemToNewNota}
+                          className="w-full py-2 px-4 text-xs font-bold text-[#00237D] bg-blue-50 hover:bg-blue-100 border-2 border-dashed border-blue-300 hover:border-blue-500 rounded-xl inline-flex items-center justify-center gap-2 transition-all cursor-pointer shadow-2xs active:scale-[0.99]"
+                        >
+                          <Plus className="w-4 h-4 text-[#00237D]" />
+                          <span>+ INCLUIR ESTE ITEM E ADICIONAR OUTRO ITEM À NOTA FISCAL</span>
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })()}
+
+                {/* 2. LISTA DE ITENS CRIADA E ALIMENTADA ABAIXO */}
+                <div className="space-y-2 pt-1">
+                  <div className="text-[11px] font-bold text-slate-700 uppercase tracking-wider flex items-center justify-between">
+                    <span>Itens Inseridos na Nota Fiscal ({newNotaItens.length})</span>
+                    <span className="text-[10px] text-slate-500 font-normal">
+                      (clique no item para editar no formulário superior)
+                    </span>
+                  </div>
+
+                  <div className="space-y-2 max-h-[220px] overflow-y-auto pr-1">
+                    {newNotaItens.map((item, index) => {
+                      const prod = produtos.find((p) => p.id === item.produto_id);
+                      const isActive = expandedItemIds[item.tempId];
+
                       return (
                         <div
                           key={item.tempId}
-                          onClick={() => toggleExpandItem(item.tempId)}
-                          className="p-2.5 bg-slate-50/90 hover:bg-slate-100 border border-slate-200 hover:border-slate-300 rounded-xl transition-all cursor-pointer flex flex-wrap items-center justify-between gap-2 text-xs shadow-2xs"
+                          onClick={() => setExpandedItemIds({ [item.tempId]: true })}
+                          className={`p-2.5 rounded-xl border transition-all cursor-pointer flex flex-wrap items-center justify-between gap-2 text-xs shadow-2xs ${
+                            isActive
+                              ? 'bg-blue-50/90 border-[#00237D] ring-2 ring-blue-100'
+                              : 'bg-white hover:bg-slate-50 border-slate-200 hover:border-slate-300'
+                          }`}
                         >
                           <div className="flex items-center gap-2.5 min-w-0 flex-1">
-                            <span className="px-2 py-0.5 bg-teal-100 text-teal-900 font-bold font-mono text-[10px] rounded shrink-0">
+                            <span className={`px-2 py-0.5 font-bold font-mono text-[10px] rounded shrink-0 ${
+                              isActive ? 'bg-[#00237D] text-white' : 'bg-slate-100 text-slate-700'
+                            }`}>
                               #{index + 1}
                             </span>
                             <div className="truncate min-w-0 flex items-center gap-1.5">
                               <span className="font-bold text-slate-800 truncate">
-                                {prod ? `${prod.codigo} - ${prod.nome}` : 'Selecione um produto...'}
+                                {prod ? `${prod.codigo} - ${prod.nome}` : 'Aguardando preenchimento...'}
                               </span>
                               {item.marca && (
                                 <span className="text-[11px] text-slate-500 font-normal truncate hidden sm:inline">
@@ -1693,14 +1997,14 @@ export const EntradasView: React.FC<EntradasViewProps> = ({
                           </div>
 
                           <div className="flex items-center gap-2 shrink-0 text-[11px] font-mono">
-                            <span className="hidden sm:inline-block bg-white px-2 py-0.5 rounded border border-slate-200 text-slate-600">
+                            <span className="hidden sm:inline-block bg-slate-50 px-2 py-0.5 rounded border border-slate-200 text-slate-600">
                               Lote: <strong className="text-slate-800">{item.numero_lote || 'SEM LOTE'}</strong>
                             </span>
-                            <span className="hidden md:inline-block bg-white px-2 py-0.5 rounded border border-slate-200 text-slate-600">
+                            <span className="hidden md:inline-block bg-slate-50 px-2 py-0.5 rounded border border-slate-200 text-slate-600">
                               Val: <strong className="text-slate-800">{item.data_validade ? formatDataValidade(item.data_validade) : '—'}</strong>
                             </span>
-                            <span className="bg-white px-2 py-0.5 rounded border border-slate-200 text-slate-700">
-                              Qtd: <strong className="text-teal-900">{item.quantidade} {prod?.unidade_medida || 'UN'}</strong>
+                            <span className="bg-slate-50 px-2 py-0.5 rounded border border-slate-200 text-slate-700">
+                              Qtd: <strong className="text-teal-900">{item.quantidade || 0} {prod?.unidade_medida || 'UN'}</strong>
                             </span>
                             <span className="bg-blue-50 text-[#00237D] px-2 py-0.5 rounded border border-blue-200 font-bold">
                               R$ {item.valor_total ? item.valor_total.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '0,00'}
@@ -1720,227 +2024,56 @@ export const EntradasView: React.FC<EntradasViewProps> = ({
                                   <Trash2 className="w-3.5 h-3.5" />
                                 </button>
                               )}
-                              <span className="p-1 text-slate-400 group-hover:text-slate-600">
-                                <ChevronDown className="w-4 h-4 text-slate-500" />
-                              </span>
+                              {isActive && (
+                                <span className="text-[10px] font-bold text-[#00237D] bg-blue-100 px-1.5 py-0.5 rounded">
+                                  Editando no topo
+                                </span>
+                              )}
                             </div>
                           </div>
                         </div>
                       );
-                    }
-
-                    // Visualização Expandida Completa
-                    return (
-                      <div
-                        key={item.tempId}
-                        className="p-3.5 bg-white border-2 border-teal-200/80 rounded-xl shadow-2xs space-y-3 relative"
-                      >
-                        <div className="flex items-center justify-between pb-2 border-b border-slate-100">
-                          <div className="flex items-center gap-2">
-                            <span className="px-2 py-0.5 bg-teal-100 text-teal-900 font-bold font-mono text-[10px] rounded uppercase">
-                              ITEM #{index + 1}
-                            </span>
-                            <span className="text-xs font-bold text-slate-800">
-                              {prod ? `${prod.codigo} - ${prod.nome}` : 'Ajustando item'}
-                            </span>
-                          </div>
-
-                          <div className="flex items-center gap-2">
-                            <button
-                              type="button"
-                              onClick={() => toggleExpandItem(item.tempId)}
-                              className="px-2.5 py-1 text-xs font-semibold text-slate-600 hover:text-slate-900 bg-slate-100 hover:bg-slate-200 rounded-lg flex items-center gap-1 cursor-pointer transition-colors"
-                            >
-                              <ChevronUp className="w-3.5 h-3.5" />
-                              <span>Minimizar</span>
-                            </button>
-
-                            {newNotaItens.length > 1 && (
-                              <button
-                                type="button"
-                                onClick={() => handleRemoveItemFromNewNota(item.tempId)}
-                                className="text-rose-500 hover:text-rose-700 text-xs font-semibold flex items-center gap-1 cursor-pointer pl-2 border-l border-slate-200"
-                              >
-                                <Trash2 className="w-3.5 h-3.5" />
-                                <span>Remover</span>
-                              </button>
-                            )}
-                          </div>
-                        </div>
-
-                        <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-6 gap-2.5">
-                          <div className="md:col-span-3">
-                            <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-0.5">
-                              Produto (Código Único de Estoque) *
-                            </label>
-                            <SearchableSelect
-                              options={produtosOptions}
-                              value={item.produto_id}
-                              onChange={(val) => {
-                                const next = [...newNotaItens];
-                                const pId = Number(val);
-                                next[index].produto_id = pId;
-                                const pObj = produtos.find((p) => p.id === pId);
-                                const pUnit = pObj?.valor_unitario || pObj?.custo_unitario || 0;
-                                const qtd = next[index].quantidade || 1;
-                                next[index].valor_unitario = pUnit;
-                                next[index].valor_total = Number((qtd * pUnit).toFixed(2));
-                                setNewNotaItens(next);
-                              }}
-                              placeholder="Digite código ou nome..."
-                            />
-                          </div>
-
-                          <div>
-                            <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-0.5">
-                              Lote {exigeLote ? '*' : '(Opcional)'}
-                            </label>
-                            <input
-                              type="text"
-                              value={item.numero_lote}
-                              onChange={(e) => {
-                                const next = [...newNotaItens];
-                                next[index].numero_lote = e.target.value.toUpperCase();
-                                setNewNotaItens(next);
-                              }}
-                              className="w-full px-2 py-1.5 border border-slate-300 rounded font-mono text-xs uppercase"
-                              placeholder={exigeLote ? 'LOTE' : 'SEM LOTE'}
-                            />
-                          </div>
-
-                          <div>
-                            <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-0.5">
-                              Validade {exigeLote ? '*' : '(Opcional)'}
-                            </label>
-                            <input
-                              type="date"
-                              value={item.data_validade}
-                              onChange={(e) => {
-                                const next = [...newNotaItens];
-                                next[index].data_validade = e.target.value;
-                                setNewNotaItens(next);
-                              }}
-                              className="w-full px-2 py-1.5 border border-slate-300 rounded text-xs"
-                            />
-                          </div>
-
-                          <div>
-                            <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-0.5">
-                              Quantidade ({prod?.unidade_medida || 'UN'}) *
-                            </label>
-                            <input
-                              type="number"
-                              required
-                              min="0.001"
-                              step="any"
-                              value={item.quantidade || ''}
-                              onChange={(e) => {
-                                const next = [...newNotaItens];
-                                const val = e.target.value;
-                                const q = val === '' ? ('' as any) : Number(val);
-                                next[index].quantidade = q;
-                                if (next[index].valor_total && Number(q) > 0) {
-                                  next[index].valor_unitario = Number(next[index].valor_total) / Number(q);
-                                }
-                                setNewNotaItens(next);
-                              }}
-                              placeholder="0"
-                              className="w-full px-2 py-1.5 border border-slate-300 rounded font-mono font-bold text-right text-xs"
-                            />
-                          </div>
-
-                          <div className="md:col-span-3">
-                            <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-0.5">
-                              Marca / Nomenclatura na NF (Opcional)
-                            </label>
-                            <input
-                              type="text"
-                              value={item.marca}
-                              onChange={(e) => {
-                                const next = [...newNotaItens];
-                                next[index].marca = e.target.value;
-                                setNewNotaItens(next);
-                              }}
-                              placeholder="ex: Cremer, Descarpack..."
-                              className="w-full px-2 py-1.5 border border-slate-300 rounded text-xs"
-                            />
-                          </div>
-
-                          <div className="md:col-span-3">
-                            <div className="flex items-center justify-between mb-0.5">
-                              <label className="block text-[10px] font-bold text-slate-700 uppercase tracking-wider">
-                                Custo Total da NF (R$) *
-                              </label>
-                              {item.quantidade > 0 && item.valor_total > 0 && (
-                                <span className="text-[10px] font-mono text-[#00237D] font-bold bg-blue-50 px-1.5 py-0.5 rounded border border-blue-200">
-                                  Unit.: {unitarioCalc.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL', minimumFractionDigits: 2, maximumFractionDigits: 4 })} / {prod?.unidade_medida || 'UN'}
-                                </span>
-                              )}
-                            </div>
-                            <input
-                              type="number"
-                              step="0.01"
-                              min="0"
-                              required
-                              value={item.valor_total || ''}
-                              onChange={(e) => {
-                                const next = [...newNotaItens];
-                                const val = e.target.value;
-                                const tot = val === '' ? ('' as any) : Number(val);
-                                next[index].valor_total = tot;
-                                const q = Number(next[index].quantidade) || 0;
-                                next[index].valor_unitario = q > 0 && tot ? Number(tot) / q : 0;
-                                setNewNotaItens(next);
-                              }}
-                              placeholder="0,00"
-                              className="w-full px-2 py-1.5 border border-slate-300 rounded font-mono font-bold text-right text-xs text-slate-900 focus:border-[#00237D] focus:ring-1 focus:ring-[#00237D]"
-                            />
-                            <div className="mt-1 flex items-center justify-between text-[10px] text-slate-500">
-                              <span>Calculado automaticamente: Custo Total ÷ Quantidade</span>
-                              <span className="font-mono text-slate-700 font-semibold">
-                                Unitário: R$ {unitarioCalc.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 4 })}
-                              </span>
-                            </div>
-                          </div>
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
-
-                {/* Botão de Adicionar Novo Item movido para a parte inferior */}
-                <div className="pt-1">
-                  <button
-                    type="button"
-                    onClick={handleAddNewItemToNewNota}
-                    className="w-full py-2.5 px-4 text-xs font-bold text-[#00237D] bg-blue-50/80 hover:bg-blue-100/90 border-2 border-dashed border-blue-200 hover:border-blue-400 rounded-xl inline-flex items-center justify-center gap-2 transition-all cursor-pointer shadow-2xs active:scale-[0.99]"
-                  >
-                    <Plus className="w-4 h-4" />
-                    <span>+ ADICIONAR NOVO ITEM NA NOTA FISCAL</span>
-                  </button>
+                    })}
+                  </div>
                 </div>
               </div>
 
-              {/* Botões do Formulário de Criação */}
-              <div className="pt-3 border-t border-slate-200 flex items-center justify-end gap-2 shrink-0">
-                <button
-                  type="button"
-                  onClick={() => {
-                    setIsNewNotaOpen(false);
-                    if (setIsCreateModalOpen) setIsCreateModalOpen(false);
-                  }}
-                  className="px-4 py-2 bg-white border border-slate-300 rounded text-xs font-semibold text-slate-700 hover:bg-slate-100 cursor-pointer"
-                >
-                  Cancelar
-                </button>
-                <button
-                  type="submit"
-                  disabled={isProcessingAction}
-                  className="px-5 py-2 bg-emerald-600 hover:bg-emerald-700 text-white font-bold rounded text-xs shadow flex items-center gap-1.5 uppercase tracking-wide cursor-pointer disabled:opacity-50"
-                >
-                  <Save className="w-4 h-4" />
-                  <span>{isProcessingAction ? 'Gravando...' : 'Gravar Entrada da Nota'}</span>
-                </button>
+              {/* Botões do Formulário de Criação com Rascunho */}
+              <div className="pt-3 border-t border-slate-200 flex flex-wrap items-center justify-between gap-2 shrink-0">
+                <div className="flex items-center gap-2">
+                  <FormDraftStatusIndicator
+                    status={draft.draftStatus}
+                    lastSavedFormatted={draft.lastSavedFormatted}
+                    errorMessage={draft.errorMessage}
+                  />
+                </div>
+
+                <div className="flex items-center gap-2">
+                  <FormDraftSaveButton
+                    onSaveManual={handleSalvarRascunhoManual}
+                    isSaving={draft.draftStatus === 'salvando'}
+                  />
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setIsNewNotaOpen(false);
+                      if (setIsCreateModalOpen) setIsCreateModalOpen(false);
+                    }}
+                    className="px-4 py-2 bg-white border border-slate-300 rounded text-xs font-semibold text-slate-700 hover:bg-slate-100 cursor-pointer"
+                  >
+                    Cancelar
+                  </button>
+
+                  <button
+                    type="submit"
+                    disabled={isProcessingAction}
+                    className="px-5 py-2 bg-emerald-600 hover:bg-emerald-700 text-white font-bold rounded text-xs shadow flex items-center gap-1.5 uppercase tracking-wide cursor-pointer disabled:opacity-50"
+                  >
+                    <Save className="w-4 h-4" />
+                    <span>{isProcessingAction ? 'Gravando...' : 'Gravar Entrada da Nota'}</span>
+                  </button>
+                </div>
               </div>
             </form>
           </div>

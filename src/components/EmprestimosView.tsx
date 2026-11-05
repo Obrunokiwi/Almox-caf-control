@@ -33,6 +33,12 @@ import { HelpFloatingModal } from './HelpFloatingModal.tsx';
 import { SearchableSelect, type SearchableOption } from './SearchableSelect.tsx';
 import { getAuthHeaders } from '../utils/apiUtils.ts';
 import { formatDateTimeBrasilia } from '../utils/dateUtils.ts';
+import { useFormDraft } from '../hooks/useFormDraft.ts';
+import {
+  FormDraftResumeBanner,
+  FormDraftStatusIndicator,
+  FormDraftSaveButton,
+} from './FormDraftBanner.tsx';
 
 interface EmprestimosViewProps {
   emprestimos?: Emprestimo[];
@@ -107,6 +113,103 @@ export const EmprestimosView: React.FC<EmprestimosViewProps> = ({
     const p = produtos[0];
     return Number(p?.valor_unitario ?? p?.custo_unitario ?? 0);
   });
+
+  // Rascunho automático e manual vinculado ao usuário, área e módulo
+  interface EmprestimoDraftData {
+    formTipo: 'recebido' | 'concedido';
+    formDataOperacao: string;
+    formEntidadeId: number;
+    formResponsavelParceiro: string;
+    formObservacao: string;
+    draftItens: DraftItemEmprestimo[];
+    itemProdId: number;
+    itemLoteId: number;
+    itemNumeroLote: string;
+    itemDataValidade: string;
+    itemQuantidade: number;
+    itemCustoUnitario: number;
+  }
+
+  const draft = useFormDraft<EmprestimoDraftData>({
+    modulo: 'emprestimos',
+    isOpen: isFormOpen,
+    onRestore: (data) => {
+      if (data.formTipo) setFormTipo(data.formTipo);
+      if (data.formDataOperacao) setFormDataOperacao(data.formDataOperacao);
+      if (typeof data.formEntidadeId === 'number') setFormEntidadeId(data.formEntidadeId);
+      if (typeof data.formResponsavelParceiro === 'string') setFormResponsavelParceiro(data.formResponsavelParceiro);
+      if (typeof data.formObservacao === 'string') setFormObservacao(data.formObservacao);
+      if (Array.isArray(data.draftItens)) setDraftItens(data.draftItens);
+      if (typeof data.itemProdId === 'number') setItemProdId(data.itemProdId);
+      if (typeof data.itemLoteId === 'number') setItemLoteId(data.itemLoteId);
+      if (typeof data.itemNumeroLote === 'string') setItemNumeroLote(data.itemNumeroLote);
+      if (typeof data.itemDataValidade === 'string') setItemDataValidade(data.itemDataValidade);
+      if (typeof data.itemQuantidade === 'number') setItemQuantidade(data.itemQuantidade);
+      if (typeof data.itemCustoUnitario === 'number') setItemCustoUnitario(data.itemCustoUnitario);
+    },
+  });
+
+  // Salva rascunho de empréstimo automaticamente com debounce
+  useEffect(() => {
+    if (!isFormOpen) return;
+    const hasAnyContent =
+      formEntidadeId > 0 ||
+      formResponsavelParceiro.trim().length > 0 ||
+      draftItens.length > 0 ||
+      (formObservacao.trim().length > 0 && formObservacao !== 'Empréstimo emergencial autorizado pela diretoria');
+
+    if (hasAnyContent) {
+      draft.scheduleAutoSave({
+        formTipo,
+        formDataOperacao,
+        formEntidadeId,
+        formResponsavelParceiro,
+        formObservacao,
+        draftItens,
+        itemProdId,
+        itemLoteId,
+        itemNumeroLote,
+        itemDataValidade,
+        itemQuantidade,
+        itemCustoUnitario,
+      });
+    }
+  }, [
+    isFormOpen,
+    formTipo,
+    formDataOperacao,
+    formEntidadeId,
+    formResponsavelParceiro,
+    formObservacao,
+    draftItens,
+    itemProdId,
+    itemLoteId,
+    itemNumeroLote,
+    itemDataValidade,
+    itemQuantidade,
+    itemCustoUnitario,
+    draft.scheduleAutoSave,
+  ]);
+
+  const handleSalvarRascunhoManual = () => {
+    draft.saveDraft(
+      {
+        formTipo,
+        formDataOperacao,
+        formEntidadeId,
+        formResponsavelParceiro,
+        formObservacao,
+        draftItens,
+        itemProdId,
+        itemLoteId,
+        itemNumeroLote,
+        itemDataValidade,
+        itemQuantidade,
+        itemCustoUnitario,
+      },
+      true
+    );
+  };
 
   const [formError, setFormError] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState<boolean>(false);
@@ -381,6 +484,8 @@ export const EmprestimosView: React.FC<EmprestimosViewProps> = ({
           : 'Saída por Empréstimo Concedido Lançada com Sucesso',
         data.message
       );
+
+      await draft.clearDraftOnSubmit();
 
       setIsFormOpen(false);
       await fetchInstitucionalData();
@@ -780,6 +885,19 @@ export const EmprestimosView: React.FC<EmprestimosViewProps> = ({
             </button>
           </div>
 
+          {/* Banner de Rascunho Detectado */}
+          <div className="px-6 pt-4">
+            <FormDraftResumeBanner
+              hasDraft={draft.hasDraft}
+              draftDate={draft.draftDate}
+              onApply={draft.applyDraft}
+              onDiscard={() => {
+                draft.discardDraft();
+              }}
+              formTitle="termo de empréstimo"
+            />
+          </div>
+
           {formError && (
             <div className="mx-6 mt-4 p-3 rounded-lg bg-rose-50 border border-rose-200 text-rose-800 text-xs flex items-start gap-2">
               <AlertTriangle className="w-4 h-4 text-rose-600 shrink-0 mt-0.5" />
@@ -1081,46 +1199,61 @@ export const EmprestimosView: React.FC<EmprestimosViewProps> = ({
               />
             </div>
 
-            <div className="pt-3 border-t border-slate-200 flex flex-wrap items-center justify-end gap-2.5">
-              <button
-                type="button"
-                onClick={() => setIsFormOpen(false)}
-                className="px-4 py-2 rounded-lg text-xs font-semibold text-slate-600 hover:bg-slate-100 cursor-pointer transition-colors"
-              >
-                Cancelar
-              </button>
+            <div className="pt-3 border-t border-slate-200 flex flex-wrap items-center justify-between gap-2.5">
+              <div className="flex items-center gap-2">
+                <FormDraftStatusIndicator
+                  status={draft.draftStatus}
+                  lastSavedFormatted={draft.lastSavedFormatted}
+                  errorMessage={draft.errorMessage}
+                />
+              </div>
 
-              <button
-                type="button"
-                disabled={isSubmitting}
-                onClick={(e) => handleSalvarEmprestimo(e, 'rascunho')}
-                className="px-4 py-2 bg-slate-800 hover:bg-slate-900 active:bg-black text-white font-bold rounded-lg text-xs shadow flex items-center gap-1.5 uppercase tracking-wider cursor-pointer disabled:opacity-50 transition-colors"
-                title="Salva na fila sem movimentar estoque até que seja lançado"
-              >
-                <Save className="w-4 h-4 text-emerald-400" />
-                <span>{isSubmitting ? 'Salvando...' : 'Salvar Empréstimo (Apenas Fila)'}</span>
-              </button>
+              <div className="flex items-center gap-2">
+                <FormDraftSaveButton
+                  onSaveManual={handleSalvarRascunhoManual}
+                  isSaving={draft.draftStatus === 'salvando'}
+                />
 
-              <button
-                type="button"
-                disabled={isSubmitting}
-                onClick={(e) => handleSalvarEmprestimo(e, 'pendente_devolucao')}
-                className={`px-5 py-2 rounded-lg text-xs font-bold uppercase tracking-wider text-white flex items-center gap-1.5 shadow cursor-pointer disabled:opacity-50 transition-colors ${
-                  formTipo === 'recebido'
-                    ? 'bg-emerald-600 hover:bg-emerald-700'
-                    : 'bg-indigo-600 hover:bg-indigo-700'
-                }`}
-                title="Lança imediatamente movimentando o estoque e gera a ficha para impressão"
-              >
-                <CheckCircle2 className="w-4 h-4" />
-                <span>
-                  {isSubmitting
-                    ? 'Lançando...'
-                    : formTipo === 'recebido'
-                    ? 'Lançar Entrada e Gerar Ficha'
-                    : 'Lançar Concessão e Gerar Ficha'}
-                </span>
-              </button>
+                <button
+                  type="button"
+                  onClick={() => setIsFormOpen(false)}
+                  className="px-4 py-2 rounded-lg text-xs font-semibold text-slate-600 hover:bg-slate-100 cursor-pointer transition-colors"
+                >
+                  Cancelar
+                </button>
+
+                <button
+                  type="button"
+                  disabled={isSubmitting}
+                  onClick={(e) => handleSalvarEmprestimo(e, 'rascunho')}
+                  className="px-4 py-2 bg-slate-800 hover:bg-slate-900 active:bg-black text-white font-bold rounded-lg text-xs shadow flex items-center gap-1.5 uppercase tracking-wider cursor-pointer disabled:opacity-50 transition-colors"
+                  title="Salva na fila sem movimentar estoque até que seja lançado"
+                >
+                  <Save className="w-4 h-4 text-emerald-400" />
+                  <span>{isSubmitting ? 'Salvando...' : 'Salvar Empréstimo (Apenas Fila)'}</span>
+                </button>
+
+                <button
+                  type="button"
+                  disabled={isSubmitting}
+                  onClick={(e) => handleSalvarEmprestimo(e, 'pendente_devolucao')}
+                  className={`px-5 py-2 rounded-lg text-xs font-bold uppercase tracking-wider text-white flex items-center gap-1.5 shadow cursor-pointer disabled:opacity-50 transition-colors ${
+                    formTipo === 'recebido'
+                      ? 'bg-emerald-600 hover:bg-emerald-700'
+                      : 'bg-indigo-600 hover:bg-indigo-700'
+                  }`}
+                  title="Lança imediatamente movimentando o estoque e gera a ficha para impressão"
+                >
+                  <CheckCircle2 className="w-4 h-4" />
+                  <span>
+                    {isSubmitting
+                      ? 'Lançando...'
+                      : formTipo === 'recebido'
+                      ? 'Lançar Entrada e Gerar Ficha'
+                      : 'Lançar Concessão e Gerar Ficha'}
+                  </span>
+                </button>
+              </div>
             </div>
           </form>
         </div>

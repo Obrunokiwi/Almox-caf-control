@@ -310,6 +310,17 @@ function migrateCentralDb(db: DatabaseSync, dbFilePath: string) {
     );
     CREATE INDEX IF NOT EXISTS idx_logs_acesso_data ON logs_acesso (data_hora);
     CREATE INDEX IF NOT EXISTS idx_logs_acesso_login ON logs_acesso (login);
+
+    CREATE TABLE IF NOT EXISTS rascunhos_formularios (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        usuario_id INTEGER NOT NULL REFERENCES usuarios(id) ON DELETE CASCADE,
+        area_sigla TEXT NOT NULL,
+        modulo TEXT NOT NULL,
+        dados_json TEXT NOT NULL,
+        atualizado_em DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE(usuario_id, area_sigla, modulo)
+    );
+    CREATE INDEX IF NOT EXISTS idx_rascunhos_user_area ON rascunhos_formularios (usuario_id, area_sigla, modulo);
   `);
 
   // 5. Comparação e adição idempotente de colunas via PRAGMA table_info
@@ -1057,6 +1068,74 @@ function migrateAreaDb(areaDb: DatabaseSync, areaSigla: string, dbFilePath: stri
       }
     } catch (e: any) {
       console.warn(`[DB Área ${areaSigla}] Aviso ao migrar historico_requisicoes:`, e.message);
+    }
+
+    // 6.3 Atualização da tabela 'requisicoes' para suportar os 4 novos status:
+    // 'aguardando_atendimento', 'em_separacao', 'atendida', 'nao_atendida'
+    try {
+      const reqTableSql = (areaDb.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='requisicoes'").get() as any)?.sql || '';
+      if (reqTableSql.includes("CHECK (status IN ('pendente', 'aprovada_atendida'") || 
+          reqTableSql.includes("CHECK(status IN ('pendente', 'aprovada_atendida'")) {
+        areaDb.exec('PRAGMA foreign_keys = OFF;');
+        areaDb.exec(`
+          CREATE TABLE IF NOT EXISTS requisicoes_new (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              numero_requisicao TEXT UNIQUE NOT NULL,
+              centro_custo_id INTEGER NOT NULL REFERENCES centros_custo(id),
+              centro_custo_nome TEXT,
+              centro_custo_codigo TEXT,
+              solicitante_id INTEGER NOT NULL REFERENCES usuarios(id),
+              solicitante_nome TEXT,
+              almoxarife_id INTEGER REFERENCES usuarios(id),
+              almoxarife_nome TEXT,
+              data_solicitacao DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+              data_atendimento DATETIME,
+              status TEXT NOT NULL DEFAULT 'aguardando_atendimento' CHECK (status IN ('aguardando_atendimento', 'em_separacao', 'atendida', 'nao_atendida', 'pendente', 'aprovada_atendida', 'rejeitada', 'cancelada')),
+              prioridade TEXT NOT NULL DEFAULT 'normal' CHECK (prioridade IN ('normal', 'urgente')),
+              motivo_rejeicao TEXT,
+              observacao TEXT,
+              avaliacao_agilidade INTEGER,
+              avaliacao_qualidade INTEGER,
+              avaliacao_entrega INTEGER,
+              avaliacao_media REAL,
+              avaliacao_sugestao TEXT,
+              avaliacao_data DATETIME,
+              avaliacao_status TEXT DEFAULT 'pendente'
+          );
+          INSERT INTO requisicoes_new (
+            id, numero_requisicao, centro_custo_id, centro_custo_nome, centro_custo_codigo,
+            solicitante_id, solicitante_nome, almoxarife_id, almoxarife_nome,
+            data_solicitacao, data_atendimento, status, prioridade, motivo_rejeicao, observacao,
+            avaliacao_agilidade, avaliacao_qualidade, avaliacao_entrega, avaliacao_media,
+            avaliacao_sugestao, avaliacao_data, avaliacao_status
+          )
+          SELECT 
+            id, numero_requisicao, centro_custo_id, centro_custo_nome, centro_custo_codigo,
+            solicitante_id, solicitante_nome, almoxarife_id, almoxarife_nome,
+            data_solicitacao, data_atendimento, 
+            CASE 
+              WHEN status = 'pendente' THEN 'aguardando_atendimento'
+              WHEN status = 'aprovada_atendida' THEN 'atendida'
+              WHEN status = 'rejeitada' THEN 'nao_atendida'
+              ELSE status
+            END,
+            prioridade, motivo_rejeicao, observacao,
+            avaliacao_agilidade, avaliacao_qualidade, avaliacao_entrega, avaliacao_media,
+            avaliacao_sugestao, avaliacao_data, avaliacao_status
+          FROM requisicoes;
+          DROP TABLE requisicoes;
+          ALTER TABLE requisicoes_new RENAME TO requisicoes;
+          CREATE INDEX IF NOT EXISTS idx_requisicoes_numero ON requisicoes (numero_requisicao);
+          CREATE INDEX IF NOT EXISTS idx_requisicoes_status ON requisicoes (status);
+          CREATE INDEX IF NOT EXISTS idx_requisicoes_centro_custo ON requisicoes (centro_custo_id);
+          CREATE INDEX IF NOT EXISTS idx_requisicoes_solicitante ON requisicoes (solicitante_id);
+        `);
+        areaDb.exec('PRAGMA foreign_keys = ON;');
+        appliedMigrations++;
+      }
+    } catch (e: any) {
+      try { areaDb.exec('PRAGMA foreign_keys = ON;'); } catch {}
+      console.warn(`[DB Área ${areaSigla}] Aviso ao migrar status de requisicoes:`, e.message);
     }
 
     // 7. Verificação e adição de colunas em produtos
