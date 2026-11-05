@@ -7513,6 +7513,11 @@ apiRouter.get('/relatorios/catalogo', (_req, res) => {
 });
 
 apiRouter.get('/relatorios/consumo-mensal', (req, res) => {
+  const user = authenticateRequest(req);
+  if (!user || !['admin', 'ti_dpo', 'almoxarife'].includes(user.perfil)) {
+    res.status(403).json({ error: 'Acesso restrito a administradores e almoxarifes autorizados.' });
+    return;
+  }
   const { produto_id, centro_custo_id, meses } = req.query;
   const numMeses = Math.min(Math.max(Number(meses) || 6, 3), 24);
 
@@ -7558,7 +7563,7 @@ apiRouter.get('/relatorios/consumo-mensal', (req, res) => {
           (CASE WHEN m.tipo = 'saida' THEN m.quantidade ELSE -m.quantidade END) *
           COALESCE(m.valor_unitario, p.valor_unitario, 0)
         ) as valor_liquido
-      FROM movimentacoes m
+    FROM movimentacoes m
       JOIN produtos p ON m.produto_id = p.id
       WHERE m.tipo IN ('saida', 'estorno_saida')
         AND m.centro_custo_id IS NOT NULL
@@ -7671,6 +7676,11 @@ apiRouter.get('/relatorios/consumo-mensal', (req, res) => {
 });
 
 apiRouter.post('/relatorios/executar', (req, res) => {
+  const user = authenticateRequest(req);
+  if (!user || !['admin', 'ti_dpo', 'almoxarife'].includes(user.perfil)) {
+    res.status(403).json({ error: 'Acesso restrito a administradores e almoxarifes autorizados.' });
+    return;
+  }
   const { tipo_relatorio, centro_custo_id, produto_id, tipo_produto, grupo_id, subgrupo_id, data_inicio, data_fim } = req.body;
 
   try {
@@ -8557,6 +8567,1660 @@ apiRouter.post('/relatorios/executar', (req, res) => {
     });
   } catch (err: any) {
     res.status(500).json({ error: 'Erro ao processar relatório: ' + err.message });
+  }
+});
+
+// ============================================================================
+// 11.B CONSTRUTOR DINÂMICO DE RELATÓRIOS & MINHAS REQUISIÇÕES
+// ============================================================================
+
+apiRouter.get('/relatorios/metadados', (req, res) => {
+  const user = authenticateRequest(req);
+  if (!user) {
+    res.status(401).json({ error: 'Não autenticado' });
+    return;
+  }
+
+  try {
+    const areaSigla = String((req as any).areaSigla || 'ALM');
+
+    // Restrição rigorosa para perfil Requisitante: apenas dados de "Minhas requisições"
+    if (user.perfil === 'requisitante') {
+      const minhasRequisicoes = db.prepare(`
+        SELECT DISTINCT
+          r.id,
+          r.numero_requisicao,
+          r.status,
+          r.data_solicitacao,
+          cc.nome as centro_custo_nome
+        FROM requisicoes r
+        LEFT JOIN centros_custo cc ON r.centro_custo_id = cc.id
+        WHERE r.solicitante_id = ?
+        ORDER BY r.data_solicitacao DESC, r.id DESC
+      `).all(user.id) as any[];
+
+      const itensSolicitados = db.prepare(`
+        SELECT DISTINCT
+          p.id,
+          p.codigo,
+          p.nome,
+          p.unidade_medida
+        FROM itens_requisicao ir
+        JOIN requisicoes r ON ir.requisicao_id = r.id
+        JOIN produtos p ON ir.produto_id = p.id
+        WHERE r.solicitante_id = ?
+        ORDER BY p.nome ASC
+      `).all(user.id) as any[];
+
+      const statusExistentes = Array.from(
+        new Set([
+          'RASCUNHO',
+          'PENDENTE',
+          'AGUARDANDO_ATENDIMENTO',
+          'EM_SEPARACAO',
+          'ATENDIDA',
+          'ATENDIDA_PARCIAL',
+          'PARCIALMENTE_ATENDIDA',
+          'RECUSADA',
+          'NEGADA',
+          'CANCELADA',
+          ...minhasRequisicoes.map((r) => r.status).filter(Boolean),
+        ])
+      );
+
+      res.json({
+        restrito_requisitante: true,
+        area_sigla: areaSigla,
+        minhas_requisicoes: minhasRequisicoes,
+        produtos: itensSolicitados,
+        status_opcoes: statusExistentes,
+      });
+      return;
+    }
+
+    // Perfis autorizados ao Construtor Dinâmico: admin, ti_dpo, almoxarife
+    if (!['admin', 'ti_dpo', 'almoxarife'].includes(user.perfil)) {
+      res.status(403).json({ error: 'Sem permissão para acessar o construtor de relatórios.' });
+      return;
+    }
+
+    const centrosCusto = db.prepare(`
+      SELECT id, codigo, nome, departamento as sigla, ativo
+      FROM centros_custo
+      ORDER BY nome ASC
+    `).all() as any[];
+
+    const grupos = db.prepare(`
+      SELECT id, codigo, nome, tipo_padrao as descricao
+      FROM grupos_produtos
+      ORDER BY nome ASC
+    `).all() as any[];
+
+    const subgrupos = db.prepare(`
+      SELECT s.id, s.grupo_id, s.nome, s.codigo as descricao, g.nome as grupo_nome
+      FROM subgrupos_produtos s
+      LEFT JOIN grupos_produtos g ON s.grupo_id = g.id
+      ORDER BY g.nome ASC, s.nome ASC
+    `).all() as any[];
+
+    const produtos = db.prepare(`
+      SELECT
+        p.id,
+        p.codigo,
+        p.nome,
+        p.descricao,
+        p.unidade_medida,
+        p.grupo_id,
+        p.subgrupo_id,
+        p.subgrupo_nome,
+        p.ativo,
+        g.nome as grupo_nome,
+        COALESCE(sg.nome, p.subgrupo_nome) as subgrupo_resolvido
+      FROM produtos p
+      LEFT JOIN grupos_produtos g ON p.grupo_id = g.id
+      LEFT JOIN subgrupos_produtos sg ON p.subgrupo_id = sg.id
+      ORDER BY p.nome ASC
+    `).all() as any[];
+
+    // Unidades de medida existentes no cadastro e nos produtos da área
+    let unidadesCadastradas: any[] = [];
+    try {
+      unidadesCadastradas = db.prepare(`
+        SELECT sigla, descricao FROM unidades_medida WHERE ativo = 1 ORDER BY sigla ASC
+      `).all() as any[];
+    } catch {
+      unidadesCadastradas = [];
+    }
+    const mapaUnidades = new Map<string, string>();
+    for (const u of unidadesCadastradas) {
+      if (u.sigla) mapaUnidades.set(String(u.sigla).trim().toUpperCase(), u.descricao || u.sigla);
+    }
+    for (const p of produtos) {
+      if (p.unidade_medida) {
+        const s = String(p.unidade_medida).trim().toUpperCase();
+        if (s && !mapaUnidades.has(s)) {
+          mapaUnidades.set(s, s);
+        }
+      }
+    }
+    const unidadesMedida = Array.from(mapaUnidades.entries())
+      .map(([sigla, descricao]) => ({ sigla, descricao }))
+      .sort((a, b) => a.sigla.localeCompare(b.sigla, 'pt-BR'));
+
+    // Lotes existentes em lotes_estoque e em movimentações
+    const lotesEstoque = db.prepare(`
+      SELECT
+        le.id,
+        le.produto_id,
+        le.numero_lote,
+        le.data_validade,
+        le.quantidade_atual,
+        p.codigo as produto_codigo,
+        p.nome as produto_nome
+      FROM lotes_estoque le
+      JOIN produtos p ON le.produto_id = p.id
+      WHERE le.numero_lote IS NOT NULL AND TRIM(le.numero_lote) != ''
+      ORDER BY le.numero_lote ASC
+    `).all() as any[];
+
+    const lotesMov = db.prepare(`
+      SELECT DISTINCT
+        m.numero_lote,
+        m.data_validade,
+        m.produto_id,
+        p.codigo as produto_codigo,
+        p.nome as produto_nome
+      FROM movimentacoes m
+      JOIN produtos p ON m.produto_id = p.id
+      WHERE m.numero_lote IS NOT NULL AND TRIM(m.numero_lote) != ''
+    `).all() as any[];
+
+    const mapaLotes = new Map<string, { numero_lote: string; data_validade: string | null; produto_id: number; produto_codigo: string; produto_nome: string }>();
+    for (const l of [...lotesEstoque, ...lotesMov]) {
+      const num = String(l.numero_lote || '').trim();
+      if (!num) continue;
+      const chave = `${num}::${l.produto_id}`;
+      if (!mapaLotes.has(chave)) {
+        mapaLotes.set(chave, {
+          numero_lote: num,
+          data_validade: l.data_validade || null,
+          produto_id: Number(l.produto_id),
+          produto_codigo: String(l.produto_codigo || ''),
+          produto_nome: String(l.produto_nome || ''),
+        });
+      }
+    }
+
+    // Motivos de saída existentes no banco + padrões operacionais do sistema
+    const motivosSaidaDb = db.prepare(`
+      SELECT DISTINCT COALESCE(NULLIF(TRIM(motivo_diverso), ''), 'Saída / Requisição Padrão') as motivo
+      FROM movimentacoes
+      WHERE tipo = 'saida'
+      ORDER BY motivo ASC
+    `).all() as { motivo: string }[];
+
+    const motivosSaidaPadrao = [
+      'Atendimento de Requisição',
+      'Consumo Direto',
+      'Consumo',
+      'Saída / Requisição Padrão',
+      'Ajuste de Inventário (-)',
+      'Saída por Vencimento/Descarte',
+      'Vencimento/Descarte',
+      'Avaria/Quebra',
+      'Quebra',
+      'Perda/Extravio',
+      'Doação/Empréstimo Concedido',
+      'Empréstimo Concedido a Terceiros',
+      'Devolução de Empréstimo a Terceiros',
+    ];
+    const tiposSaidaSet = new Set<string>(motivosSaidaPadrao);
+    for (const row of motivosSaidaDb) {
+      if (row.motivo) tiposSaidaSet.add(row.motivo);
+    }
+
+    const tiposMovimentacao = [
+      { id: 'entrada', label: 'Entrada (Notas Fiscais, Doações, Ajustes +, Devoluções)' },
+      { id: 'saida', label: 'Saída (Requisições, Consumo Direto, Descarte, Ajustes -)' },
+      { id: 'estorno_entrada', label: 'Estorno de Entrada' },
+      { id: 'estorno_saida', label: 'Estorno de Saída' },
+    ];
+
+    res.json({
+      restrito_requisitante: false,
+      area_sigla: areaSigla,
+      centros_custo: centrosCusto,
+      grupos,
+      subgrupos,
+      produtos,
+      unidades_medida: unidadesMedida,
+      lotes: Array.from(mapaLotes.values()),
+      tipos_saida: Array.from(tiposSaidaSet),
+      tipos_movimentacao: tiposMovimentacao,
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: 'Erro ao carregar metadados de relatórios: ' + err.message });
+  }
+});
+
+// Helper para avaliar filtro de seleção múltipla distinguindo explicitamente TODOS vs NENHUM vs SELECIONADOS
+function matchMultiFilter<T>(
+  filterConfig: { modo?: 'todos' | 'nenhum' | 'selecionados'; valores?: T[] } | undefined,
+  itemValue: T | null | undefined,
+  normalizeFn?: (v: any) => any
+): boolean {
+  if (!filterConfig || !filterConfig.modo || filterConfig.modo === 'todos') {
+    return true;
+  }
+  if (filterConfig.modo === 'nenhum') {
+    return false;
+  }
+  const vals = Array.isArray(filterConfig.valores) ? filterConfig.valores : [];
+  if (vals.length === 0) {
+    return false;
+  }
+  if (itemValue === null || itemValue === undefined) {
+    return false;
+  }
+  if (normalizeFn) {
+    const target = normalizeFn(itemValue);
+    return vals.some((v) => normalizeFn(v) === target);
+  }
+  return vals.some((v) => String(v) === String(itemValue));
+}
+
+apiRouter.post('/relatorios/dinamico', (req, res) => {
+  const user = authenticateRequest(req);
+  if (!user) {
+    res.status(401).json({ error: 'Não autenticado' });
+    return;
+  }
+
+  try {
+    const areaSigla = String((req as any).areaSigla || 'ALM');
+    const body = req.body || {};
+
+    // ========================================================================
+    // MODO RESTRITO: PERFIL REQUISITANTE ("Minhas requisições")
+    // ========================================================================
+    if (user.perfil === 'requisitante') {
+      const {
+        data_inicio,
+        data_fim,
+        numero_requisicao,
+        status_filtro, // { modo: 'todos' | 'nenhum' | 'selecionados', valores: string[] }
+        produtos_filtro, // { modo: 'todos' | 'nenhum' | 'selecionados', valores: number[] }
+        colunas_selecionadas,
+        ordenacao_coluna,
+        ordenacao_sentido,
+      } = body;
+
+      const ALLOWED_REQ_COLS: Record<string, { id: string; label: string; tipo: 'texto' | 'data' | 'numero' }> = {
+        numero_requisicao: { id: 'numero_requisicao', label: 'Nº da Requisição', tipo: 'texto' },
+        data_solicitacao: { id: 'data_solicitacao', label: 'Data da Solicitação', tipo: 'data' },
+        centro_custo_nome: { id: 'centro_custo_nome', label: 'Centro de Custo', tipo: 'texto' },
+        status: { id: 'status', label: 'Status da Requisição', tipo: 'texto' },
+        produto_codigo: { id: 'produto_codigo', label: 'Código do Item', tipo: 'texto' },
+        produto_nome: { id: 'produto_nome', label: 'Descrição Completa do Item', tipo: 'texto' },
+        unidade_medida: { id: 'unidade_medida', label: 'Unidade', tipo: 'texto' },
+        quantidade_solicitada: { id: 'quantidade_solicitada', label: 'Qtd. Solicitada', tipo: 'numero' },
+        quantidade_atendida: { id: 'quantidade_atendida', label: 'Qtd. Atendida', tipo: 'numero' },
+        status_item: { id: 'status_item', label: 'Decisão do Item', tipo: 'texto' },
+      };
+
+      const colsValidas = (Array.isArray(colunas_selecionadas) ? colunas_selecionadas : Object.keys(ALLOWED_REQ_COLS))
+        .filter((c: string) => Boolean(ALLOWED_REQ_COLS[c]));
+      const colunasFinais = colsValidas.length > 0 ? colsValidas : Object.keys(ALLOWED_REQ_COLS);
+
+      let sql = `
+        SELECT
+          r.id as requisicao_id,
+          r.numero_requisicao,
+          r.data_solicitacao,
+          COALESCE(cc.nome, 'Não informado') as centro_custo_nome,
+          r.status,
+          p.id as produto_id,
+          p.codigo as produto_codigo,
+          p.nome as produto_nome,
+          p.unidade_medida,
+          COALESCE(ir.quantidade_solicitada, 0) as quantidade_solicitada,
+          COALESCE(ir.quantidade_atendida, 0) as quantidade_atendida,
+          COALESCE(ir.status_item, 'PENDENTE') as status_item
+        FROM requisicoes r
+        JOIN itens_requisicao ir ON ir.requisicao_id = r.id
+        JOIN produtos p ON ir.produto_id = p.id
+        LEFT JOIN centros_custo cc ON r.centro_custo_id = cc.id
+        WHERE r.solicitante_id = ?
+      `;
+      const params: any[] = [user.id];
+
+      if (data_inicio && /^\d{4}-\d{2}-\d{2}$/.test(String(data_inicio))) {
+        sql += ` AND datetime(r.data_solicitacao) >= datetime(?)`;
+        params.push(`${data_inicio} 00:00:00`);
+      }
+      if (data_fim && /^\d{4}-\d{2}-\d{2}$/.test(String(data_fim))) {
+        sql += ` AND datetime(r.data_solicitacao) <= datetime(?)`;
+        params.push(`${data_fim} 23:59:59`);
+      }
+      if (numero_requisicao && String(numero_requisicao).trim() !== '') {
+        sql += ` AND UPPER(r.numero_requisicao) LIKE UPPER(?)`;
+        params.push(`%${String(numero_requisicao).trim()}%`);
+      }
+
+      const rawRows = db.prepare(sql).all(...params) as any[];
+
+      const filteredRows = rawRows.filter((row) => {
+        if (!matchMultiFilter(status_filtro, row.status, (v) => String(v).trim().toUpperCase())) return false;
+        if (!matchMultiFilter(produtos_filtro, row.produto_id, (v) => Number(v))) return false;
+        return true;
+      });
+
+      const sortCol = ALLOWED_REQ_COLS[ordenacao_coluna]?.id || 'data_solicitacao';
+      const sortDir = ordenacao_sentido === 'asc' ? 1 : -1;
+
+      filteredRows.sort((a, b) => {
+        const va = a[sortCol];
+        const vb = b[sortCol];
+        if (typeof va === 'number' && typeof vb === 'number') {
+          return (va - vb) * sortDir;
+        }
+        return String(va ?? '').localeCompare(String(vb ?? ''), 'pt-BR', { numeric: true }) * sortDir;
+      });
+
+      // Resumo de unidades para totalização segura
+      const unidadesDistintas = Array.from(new Set(filteredRows.map((r) => String(r.unidade_medida || '').trim().toUpperCase()).filter(Boolean)));
+      const mesmaUnidade = unidadesDistintas.length === 1;
+      const totalGeral: Record<string, any> = {};
+      if (mesmaUnidade) {
+        totalGeral.quantidade_solicitada = filteredRows.reduce((acc, r) => acc + Number(r.quantidade_solicitada || 0), 0);
+        totalGeral.quantidade_atendida = filteredRows.reduce((acc, r) => acc + Number(r.quantidade_atendida || 0), 0);
+        totalGeral.unidade_medida = unidadesDistintas[0];
+      } else {
+        totalGeral.unidades_mistas = true;
+      }
+
+      res.json({
+        restrito_requisitante: true,
+        titulo: 'Relatório — Minhas Requisições',
+        area_sigla: areaSigla,
+        area_nome: areaSigla === 'CAF' ? 'Central de Abastecimento Farmacêutico (CAF)' : 'Almoxarifado Central',
+        data_emissao: new Date().toLocaleString('pt-BR'),
+        usuario_emissor: `${user.nome} (${user.login || user.email || user.perfil})`,
+        colunas: colunasFinais.map((c: string) => ALLOWED_REQ_COLS[c]),
+        linhas: filteredRows,
+        grupos_render: null,
+        total_geral: totalGeral,
+        total_registros: filteredRows.length,
+        avisos: [],
+      });
+      return;
+    }
+
+    // ========================================================================
+    // MODO COMPLETO: CONSTRUTOR DINÂMICO (ADMIN, TI_DPO, ALMOXARIFE)
+    // ========================================================================
+    if (!['admin', 'ti_dpo', 'almoxarife'].includes(user.perfil)) {
+      res.status(403).json({ error: 'Sem permissão para gerar relatórios administrativos.' });
+      return;
+    }
+
+    // 1. Validação de Base e Datas (Allowlist)
+    const BASES_PERMITIDAS = ['saldo_estoque', 'movimentacoes', 'consumo_saidas'] as const;
+    type BaseRelatorio = typeof BASES_PERMITIDAS[number];
+    const base: BaseRelatorio = BASES_PERMITIDAS.includes(body.base) ? body.base : 'saldo_estoque';
+
+    const modoSaldo: 'atual' | 'data_referencia' =
+      body.modo_saldo === 'data_referencia' ? 'data_referencia' : 'atual';
+    const dataReferencia: string =
+      modoSaldo === 'data_referencia' && /^\d{4}-\d{2}-\d{2}$/.test(String(body.data_referencia || ''))
+        ? String(body.data_referencia)
+        : new Date().toISOString().slice(0, 10);
+
+    const dataInicio: string | null =
+      /^\d{4}-\d{2}-\d{2}$/.test(String(body.data_inicio || '')) ? String(body.data_inicio) : null;
+    const dataFim: string | null =
+      /^\d{4}-\d{2}-\d{2}$/.test(String(body.data_fim || '')) ? String(body.data_fim) : null;
+
+    // Configuração de Consumo/Saídas
+    const tiposSaidaFiltro: { modo?: 'todos' | 'nenhum' | 'selecionados'; valores?: string[] } =
+      body.tipos_saida_considerados || { modo: 'selecionados', valores: ['Atendimento de Requisição', 'Consumo Direto', 'Consumo', 'Saída / Requisição Padrão'] };
+
+    const tratamentoDevolucoes: 'liquido' | 'separado' =
+      body.tratamento_devolucoes === 'separado' ? 'separado' : 'liquido';
+
+    // Detalhamento e Agrupamento (Allowlist)
+    const DETALHAMENTOS_PERMITIDOS = ['produto', 'produto_lote', 'movimentacao'] as const;
+    type Detalhamento = typeof DETALHAMENTOS_PERMITIDOS[number];
+    let detalhamento: Detalhamento = DETALHAMENTOS_PERMITIDOS.includes(body.detalhamento)
+      ? body.detalhamento
+      : base === 'movimentacoes'
+      ? 'movimentacao'
+      : 'produto';
+
+    // Compatibilidade entre base e detalhamento
+    if (base === 'saldo_estoque' && detalhamento === 'movimentacao') {
+      detalhamento = 'produto';
+    }
+
+    const AGRUPAMENTOS_PERMITIDOS = ['nenhum', 'grupo_subgrupo', 'centro_custo'] as const;
+    type Agrupamento = typeof AGRUPAMENTOS_PERMITIDOS[number];
+    let agrupamento: Agrupamento = AGRUPAMENTOS_PERMITIDOS.includes(body.agrupamento)
+      ? body.agrupamento
+      : 'nenhum';
+
+    // Centro de custo representa a origem/destinação das movimentações, não estoque próprio do setor
+    if (base === 'saldo_estoque' && agrupamento === 'centro_custo') {
+      agrupamento = 'nenhum';
+    }
+
+    const exibirCustos = body.exibir_custos !== false;
+    const exibirSubtotais = Boolean(body.exibir_subtotais);
+    const exibirTotalGeral = body.exibir_total_geral !== false;
+
+    const filtros = body.filtros || {};
+    const incluirZeros = Boolean(filtros.incluir_zeros);
+    const incluirSemLote = filtros.incluir_sem_lote !== false;
+
+    const avisos: string[] = [];
+
+    // 2. Carregamento de dados de catálogo da área ativa
+    const produtosRows = db.prepare(`
+      SELECT
+        p.id,
+        p.codigo,
+        p.nome,
+        p.descricao,
+        p.unidade_medida,
+        p.grupo_id,
+        p.subgrupo_id,
+        p.subgrupo_nome,
+        p.quantidade_atual,
+        p.valor_unitario,
+        p.custo_unitario,
+        p.estoque_minimo,
+        p.estoque_maximo,
+        p.localizacao,
+        p.ativo,
+        COALESCE(g.nome, 'Sem Grupo') as grupo_nome,
+        COALESCE(sg.nome, NULLIF(TRIM(p.subgrupo_nome), ''), 'Sem Subgrupo') as subgrupo_resolvido
+      FROM produtos p
+      LEFT JOIN grupos_produtos g ON p.grupo_id = g.id
+      LEFT JOIN subgrupos_produtos sg ON p.subgrupo_id = sg.id
+    `).all() as any[];
+
+    const mapaProdutos = new Map<number, any>();
+    for (const p of produtosRows) {
+      const custoCadastro = Number(p.valor_unitario || p.custo_unitario || 0);
+      mapaProdutos.set(Number(p.id), {
+        ...p,
+        custo_cadastro: custoCadastro,
+      });
+    }
+
+    const lotesRows = db.prepare(`
+      SELECT
+        le.id,
+        le.produto_id,
+        le.numero_lote,
+        le.data_validade,
+        le.quantidade_atual
+      FROM lotes_estoque le
+    `).all() as any[];
+
+    // 3. Carregamento de Movimentações
+    const todasMovimentacoes = db.prepare(`
+      SELECT
+        m.id,
+        m.tipo,
+        m.motivo_diverso,
+        COALESCE(NULLIF(TRIM(m.motivo_diverso), ''), CASE WHEN m.tipo = 'saida' THEN 'Saída / Requisição Padrão' ELSE 'Movimentação Padrão' END) as motivo_normalizado,
+        m.produto_id,
+        m.lote_id,
+        m.numero_lote,
+        m.data_validade,
+        m.quantidade,
+        m.valor_unitario,
+        m.centro_custo_id,
+        cc.nome as centro_custo_nome,
+        cc.codigo as centro_custo_sigla,
+        m.documento_referencia,
+        m.requisicao_id,
+        r.numero_requisicao,
+        m.nota_fiscal_id,
+        nf.numero_documento as numero_nota,
+        m.responsavel_nome,
+        m.observacao,
+        m.data_movimentacao
+      FROM movimentacoes m
+      LEFT JOIN centros_custo cc ON m.centro_custo_id = cc.id
+      LEFT JOIN requisicoes r ON m.requisicao_id = r.id
+      LEFT JOIN notas_fiscais nf ON m.nota_fiscal_id = nf.id
+      ORDER BY datetime(m.data_movimentacao) ASC, m.id ASC
+    `).all() as any[];
+
+    // Helper para verificar se uma movimentação de saída pertence aos tipos considerados para consumo
+    const isSaidaConsumoConsiderada = (m: any): boolean => {
+      if (m.tipo !== 'saida') return false;
+      const motivo = String(m.motivo_normalizado || '').trim();
+      return matchMultiFilter(tiposSaidaFiltro, motivo, (v) => String(v).trim().toUpperCase());
+    };
+
+    // Helper para verificar se uma movimentação é devolução ou estorno de saída
+    const isDevolucaoOuEstornoSaida = (m: any): boolean => {
+      if (m.tipo === 'estorno_saida') return true;
+      if (m.tipo === 'entrada' && String(m.motivo_diverso || '').trim().toUpperCase() === 'DEVOLUÇÃO DE SETOR') {
+        return true;
+      }
+      return false;
+    };
+
+    // Helper para verificar se movimentação aumenta ou reduz saldo físico
+    const deltaEstoqueMov = (m: any): number => {
+      const q = Number(m.quantidade || 0);
+      if (m.tipo === 'entrada' || m.tipo === 'estorno_saida') return q;
+      if (m.tipo === 'saida' || m.tipo === 'estorno_entrada') return -q;
+      return 0;
+    };
+
+    // Filtros de produto/catálogo comuns
+    const passaFiltrosCatalogo = (prod: any): boolean => {
+      if (!prod) return false;
+      if (!matchMultiFilter(filtros.grupos, prod.grupo_id, (v) => Number(v))) return false;
+      // Subgrupos respeitam estritamente o ID do subgrupo vinculado ao grupo escolhido
+      if (!matchMultiFilter(filtros.subgrupos, prod.subgrupo_id, (v) => Number(v))) return false;
+      if (!matchMultiFilter(filtros.produtos, prod.id, (v) => Number(v))) return false;
+      if (!matchMultiFilter(filtros.unidades_medida, prod.unidade_medida, (v) => String(v).trim().toUpperCase())) return false;
+      return true;
+    };
+
+    // Filtros de Lote e Validade
+    const passaFiltrosLoteValidade = (numeroLote: string | null | undefined, dataValidade: string | null | undefined): boolean => {
+      const numNorm = String(numeroLote || '').trim();
+      const semLote = !numNorm || numNorm === 'S/L' || numNorm === '-';
+
+      if (semLote && !incluirSemLote) {
+        return false;
+      }
+
+      if (filtros.lotes && filtros.lotes.modo && filtros.lotes.modo !== 'todos') {
+        if (filtros.lotes.modo === 'nenhum') return false;
+        if (!semLote) {
+          if (!matchMultiFilter(filtros.lotes, numNorm, (v) => String(v).trim().toUpperCase())) return false;
+        } else if (!incluirSemLote) {
+          return false;
+        } else {
+          // Quando lotes específicos foram marcados, só aceita itens com os lotes marcados
+          return false;
+        }
+      }
+
+      const valInicio = filtros.validade_inicio && /^\d{4}-\d{2}-\d{2}$/.test(String(filtros.validade_inicio)) ? String(filtros.validade_inicio) : null;
+      const valFim = filtros.validade_fim && /^\d{4}-\d{2}-\d{2}$/.test(String(filtros.validade_fim)) ? String(filtros.validade_fim) : null;
+
+      if (valInicio || valFim) {
+        const dv = dataValidade ? String(dataValidade).slice(0, 10) : '';
+        if (!dv || !/^\d{4}-\d{2}-\d{2}$/.test(dv)) {
+          return false;
+        }
+        if (valInicio && dv < valInicio) return false;
+        if (valFim && dv > valFim) return false;
+      }
+
+      return true;
+    };
+
+    // Origem do custo selecionada pelo usuário
+    const origemCusto: 'cadastro_atual' | 'movimentacao_lote' =
+      body.origem_custo === 'movimentacao_lote' ? 'movimentacao_lote' : 'cadastro_atual';
+
+    let linhasBrutas: any[] = [];
+    let movsSemCustoHistorico = 0;
+
+    // ========================================================================
+    // CONSTRUÇÃO DOS REGISTROS CONFORME A BASE E O DETALHAMENTO
+    // ========================================================================
+    if (base === 'saldo_estoque') {
+      const refLimitStr = `${dataReferencia} 23:59:59`;
+
+      if (modoSaldo === 'data_referencia') {
+        avisos.push(
+          `Saldo histórico na data de referência (${dataReferencia.split('-').reverse().join('/')}) calculado retroativamente a partir do saldo atual e das movimentações registradas após ${dataReferencia.split('-').reverse().join('/')} 23:59:59.`
+        );
+      }
+
+      if (detalhamento === 'produto') {
+        for (const prod of produtosRows) {
+          if (!passaFiltrosCatalogo(prod)) continue;
+
+          // Se há filtro de lote ou validade ativo no detalhamento por produto, verifica se o produto possui algum lote compatível
+          const lotesDoProd = lotesRows.filter((l) => Number(l.produto_id) === Number(prod.id));
+          if (
+            (filtros.lotes && filtros.lotes.modo && filtros.lotes.modo !== 'todos') ||
+            filtros.validade_inicio ||
+            filtros.validade_fim ||
+            !incluirSemLote
+          ) {
+            if (lotesDoProd.length === 0) {
+              if (!passaFiltrosLoteValidade(null, null)) continue;
+            } else {
+              const algumLotePassa = lotesDoProd.some((l) => passaFiltrosLoteValidade(l.numero_lote, l.data_validade));
+              if (!algumLotePassa) continue;
+            }
+          }
+
+          let saldoFinal = Number(prod.quantidade_atual || 0);
+          let entradasAteRef = 0;
+          let saidasAteRef = 0;
+          let ultimoCustoMov: number | null = null;
+          let faltouCustoMov = false;
+
+          for (const m of todasMovimentacoes) {
+            if (Number(m.produto_id) !== Number(prod.id)) continue;
+            const dtMov = String(m.data_movimentacao || '');
+            if (modoSaldo === 'data_referencia' && dtMov > refLimitStr) {
+              // Desfaz movimentação ocorrida após a data de referência
+              saldoFinal -= deltaEstoqueMov(m);
+            } else {
+              const delta = deltaEstoqueMov(m);
+              if (delta > 0) entradasAteRef += delta;
+              if (delta < 0) saidasAteRef += Math.abs(delta);
+              if (m.valor_unitario !== null && m.valor_unitario !== undefined && Number(m.valor_unitario) > 0) {
+                ultimoCustoMov = Number(m.valor_unitario);
+              } else {
+                faltouCustoMov = true;
+              }
+            }
+          }
+
+          if (!incluirZeros && Math.abs(saldoFinal) < 1e-9) continue;
+
+          let custoUnitario: number | null = Number(prod.valor_unitario || prod.custo_unitario || 0);
+          if (origemCusto === 'movimentacao_lote') {
+            if (ultimoCustoMov !== null) {
+              custoUnitario = ultimoCustoMov;
+            } else {
+              custoUnitario = null;
+              if (faltouCustoMov || saldoFinal > 0) movsSemCustoHistorico++;
+            }
+          }
+
+          const valorTotal = custoUnitario !== null ? saldoFinal * custoUnitario : null;
+          const lotesResumo = lotesDoProd
+            .filter((l) => Number(l.quantidade_atual || 0) > 0)
+            .map((l) => l.numero_lote)
+            .filter(Boolean)
+            .join(', ');
+          const menorValidade = lotesDoProd
+            .filter((l) => Number(l.quantidade_atual || 0) > 0 && l.data_validade)
+            .map((l) => String(l.data_validade).slice(0, 10))
+            .sort()[0] || null;
+
+          linhasBrutas.push({
+            produto_id: Number(prod.id),
+            codigo: String(prod.codigo || ''),
+            descricao: String(prod.nome || ''),
+            grupo: String(prod.grupo_nome || 'Sem Grupo'),
+            subgrupo: String(prod.subgrupo_resolvido || 'Sem Subgrupo'),
+            unidade: String(prod.unidade_medida || 'UN'),
+            lote: lotesResumo || 'S/L',
+            validade: menorValidade,
+            centro_custo: 'Estoque da Área (' + areaSigla + ')',
+            data: modoSaldo === 'data_referencia' ? dataReferencia : new Date().toISOString().slice(0, 10),
+            tipo_movimentacao: modoSaldo === 'data_referencia' ? 'Posição Histórica' : 'Posição Atual',
+            documento: '-',
+            saldo_inicial: 0,
+            entradas: entradasAteRef,
+            saidas: saidasAteRef,
+            saldo_final: saldoFinal,
+            quantidade_consumida: 0,
+            custo_unitario: exibirCustos ? custoUnitario : null,
+            valor_total: exibirCustos ? valorTotal : null,
+          });
+        }
+      } else {
+        // detalhamento === 'produto_lote'
+        for (const prod of produtosRows) {
+          if (!passaFiltrosCatalogo(prod)) continue;
+          const lotesDoProd = lotesRows.filter((l) => Number(l.produto_id) === Number(prod.id));
+
+          if (lotesDoProd.length === 0) {
+            if (!passaFiltrosLoteValidade(null, null)) continue;
+            let saldoFinal = Number(prod.quantidade_atual || 0);
+            if (modoSaldo === 'data_referencia') {
+              for (const m of todasMovimentacoes) {
+                if (Number(m.produto_id) === Number(prod.id) && String(m.data_movimentacao || '') > refLimitStr) {
+                  saldoFinal -= deltaEstoqueMov(m);
+                }
+              }
+            }
+            if (!incluirZeros && Math.abs(saldoFinal) < 1e-9) continue;
+
+            const custoUnitario =
+              origemCusto === 'cadastro_atual'
+                ? Number(prod.valor_unitario || prod.custo_unitario || 0)
+                : null;
+            if (origemCusto === 'movimentacao_lote' && custoUnitario === null) movsSemCustoHistorico++;
+
+            linhasBrutas.push({
+              produto_id: Number(prod.id),
+              lote_id: null,
+              codigo: String(prod.codigo || ''),
+              descricao: String(prod.nome || ''),
+              grupo: String(prod.grupo_nome || 'Sem Grupo'),
+              subgrupo: String(prod.subgrupo_resolvido || 'Sem Subgrupo'),
+              unidade: String(prod.unidade_medida || 'UN'),
+              lote: 'Sem Lote',
+              validade: null,
+              centro_custo: 'Estoque da Área (' + areaSigla + ')',
+              data: modoSaldo === 'data_referencia' ? dataReferencia : new Date().toISOString().slice(0, 10),
+              tipo_movimentacao: modoSaldo === 'data_referencia' ? 'Posição Histórica' : 'Posição Atual',
+              documento: '-',
+              saldo_inicial: 0,
+              entradas: 0,
+              saidas: 0,
+              saldo_final: saldoFinal,
+              quantidade_consumida: 0,
+              custo_unitario: exibirCustos ? custoUnitario : null,
+              valor_total: exibirCustos && custoUnitario !== null ? saldoFinal * custoUnitario : null,
+            });
+          } else {
+            for (const lote of lotesDoProd) {
+              if (!passaFiltrosLoteValidade(lote.numero_lote, lote.data_validade)) continue;
+
+              let saldoLote = Number(lote.quantidade_atual || 0);
+              let entradasLote = 0;
+              let saidasLote = 0;
+              let ultimoCustoMovLote: number | null = null;
+
+              for (const m of todasMovimentacoes) {
+                if (Number(m.produto_id) !== Number(prod.id)) continue;
+                const mesmoLote =
+                  (m.lote_id && Number(m.lote_id) === Number(lote.id)) ||
+                  (!m.lote_id && String(m.numero_lote || '').trim() === String(lote.numero_lote || '').trim());
+                if (!mesmoLote) continue;
+
+                const dtMov = String(m.data_movimentacao || '');
+                if (modoSaldo === 'data_referencia' && dtMov > refLimitStr) {
+                  saldoLote -= deltaEstoqueMov(m);
+                } else {
+                  const delta = deltaEstoqueMov(m);
+                  if (delta > 0) entradasLote += delta;
+                  if (delta < 0) saidasLote += Math.abs(delta);
+                  if (m.valor_unitario !== null && m.valor_unitario !== undefined && Number(m.valor_unitario) > 0) {
+                    ultimoCustoMovLote = Number(m.valor_unitario);
+                  }
+                }
+              }
+
+              if (!incluirZeros && Math.abs(saldoLote) < 1e-9) continue;
+
+              let custoUnitario: number | null = Number(prod.valor_unitario || prod.custo_unitario || 0);
+              if (origemCusto === 'movimentacao_lote') {
+                if (ultimoCustoMovLote !== null) {
+                  custoUnitario = ultimoCustoMovLote;
+                } else {
+                  custoUnitario = null;
+                  movsSemCustoHistorico++;
+                }
+              }
+
+              linhasBrutas.push({
+                produto_id: Number(prod.id),
+                lote_id: Number(lote.id),
+                codigo: String(prod.codigo || ''),
+                descricao: String(prod.nome || ''),
+                grupo: String(prod.grupo_nome || 'Sem Grupo'),
+                subgrupo: String(prod.subgrupo_resolvido || 'Sem Subgrupo'),
+                unidade: String(prod.unidade_medida || 'UN'),
+                lote: String(lote.numero_lote || 'S/L'),
+                validade: lote.data_validade ? String(lote.data_validade).slice(0, 10) : null,
+                centro_custo: 'Estoque da Área (' + areaSigla + ')',
+                data: modoSaldo === 'data_referencia' ? dataReferencia : new Date().toISOString().slice(0, 10),
+                tipo_movimentacao: modoSaldo === 'data_referencia' ? 'Posição Histórica (Lote)' : 'Posição Atual (Lote)',
+                documento: '-',
+                saldo_inicial: 0,
+                entradas: entradasLote,
+                saidas: saidasLote,
+                saldo_final: saldoLote,
+                quantidade_consumida: 0,
+                custo_unitario: exibirCustos ? custoUnitario : null,
+                valor_total: exibirCustos && custoUnitario !== null ? saldoLote * custoUnitario : null,
+              });
+            }
+          }
+        }
+      }
+    } else if (base === 'movimentacoes' || base === 'consumo_saidas') {
+      const dtIniStr = dataInicio ? `${dataInicio} 00:00:00` : null;
+      const dtFimStr = dataFim ? `${dataFim} 23:59:59` : null;
+
+      // Explicação clara sobre a regra de devoluções e estornos quando base === 'consumo_saidas'
+      if (base === 'consumo_saidas') {
+        if (tratamentoDevolucoes === 'liquido') {
+          avisos.push(
+            'Regra de Devoluções e Estornos (Resultado Líquido): A quantidade consumida líquida abate uma única vez os registros de "Estorno de Saída" e "Devolução de Setor" ocorridos no período selecionado, sem duplicar descontos.'
+          );
+        } else {
+          avisos.push(
+            'Regra de Devoluções e Estornos (Separadamente): As saídas brutas são apresentadas integralmente sem abatimento automático na coluna de consumo, e as devoluções/estornos de saída são listadas/contabilizadas na coluna de Entradas/Estornos.'
+          );
+        }
+      }
+
+      // Filtrar movimentações do período e calcular saldos antes/depois por produto
+      const saldoAtualPorProd = new Map<number, number>();
+      for (const p of produtosRows) {
+        saldoAtualPorProd.set(Number(p.id), Number(p.quantidade_atual || 0));
+      }
+
+      // Reconstruir saldo no início do período e no fim do período para cada produto
+      const saldoInicialPeriodoProd = new Map<number, number>();
+      const saldoFinalPeriodoProd = new Map<number, number>();
+      for (const p of produtosRows) {
+        const pid = Number(p.id);
+        let sFim = saldoAtualPorProd.get(pid) || 0;
+        let sIni = sFim;
+        for (const m of todasMovimentacoes) {
+          if (Number(m.produto_id) !== pid) continue;
+          const dt = String(m.data_movimentacao || '');
+          const delta = deltaEstoqueMov(m);
+          if (dtFimStr && dt > dtFimStr) {
+            sFim -= delta;
+          }
+          if (dtIniStr && dt >= dtIniStr) {
+            sIni -= delta;
+          } else if (!dtIniStr) {
+            sIni -= delta;
+          }
+        }
+        saldoInicialPeriodoProd.set(pid, sIni);
+        saldoFinalPeriodoProd.set(pid, sFim);
+      }
+
+      // Movimentações elegíveis dentro do intervalo de datas e filtros operacionais
+      const movsNoPeriodo = todasMovimentacoes.filter((m) => {
+        const dt = String(m.data_movimentacao || '');
+        if (dtIniStr && dt < dtIniStr) return false;
+        if (dtFimStr && dt > dtFimStr) return false;
+
+        const prod = mapaProdutos.get(Number(m.produto_id));
+        if (!passaFiltrosCatalogo(prod)) return false;
+
+        // Filtro de Centro de Custo (origem/destinação da movimentação)
+        if (!matchMultiFilter(filtros.centros_custo, m.centro_custo_id, (v) => Number(v))) return false;
+
+        // Filtro de Lote e Validade
+        if (!passaFiltrosLoteValidade(m.numero_lote, m.data_validade)) return false;
+
+        if (base === 'movimentacoes') {
+          if (!matchMultiFilter(filtros.tipos_movimentacao, m.tipo, (v) => String(v).trim().toLowerCase())) {
+            return false;
+          }
+          return true;
+        } else {
+          // base === 'consumo_saidas'
+          const ehSaidaConsiderada = isSaidaConsumoConsiderada(m);
+          const ehDevolucaoOuEstorno = isDevolucaoOuEstornoSaida(m);
+          return ehSaidaConsiderada || ehDevolucaoOuEstorno;
+        }
+      });
+
+      if (detalhamento === 'movimentacao') {
+        for (const m of movsNoPeriodo) {
+          const prod = mapaProdutos.get(Number(m.produto_id));
+          if (!prod) continue;
+
+          const qtd = Number(m.quantidade || 0);
+          if (!incluirZeros && Math.abs(qtd) < 1e-9) continue;
+
+          const ehSaidaConsumo = isSaidaConsumoConsiderada(m);
+          const ehDevEstorno = isDevolucaoOuEstornoSaida(m);
+
+          let entradasLinha = 0;
+          let saidasLinha = 0;
+          let qtdConsumidaLinha = 0;
+
+          if (m.tipo === 'entrada' || m.tipo === 'estorno_saida') {
+            entradasLinha = qtd;
+          } else if (m.tipo === 'saida' || m.tipo === 'estorno_entrada') {
+            saidasLinha = qtd;
+          }
+
+          if (base === 'consumo_saidas') {
+            if (ehSaidaConsumo) {
+              qtdConsumidaLinha = qtd;
+            } else if (ehDevEstorno) {
+              qtdConsumidaLinha = tratamentoDevolucoes === 'liquido' ? -qtd : 0;
+            }
+          } else {
+            // Na base 'movimentacoes', se o tipo for uma saída considerada consumo, informa quantidade consumida
+            if (ehSaidaConsumo) {
+              qtdConsumidaLinha = qtd;
+            }
+          }
+
+          let custoUnit: number | null = prod.custo_cadastro;
+          if (origemCusto === 'movimentacao_lote') {
+            if (m.valor_unitario !== null && m.valor_unitario !== undefined && Number(m.valor_unitario) > 0) {
+              custoUnit = Number(m.valor_unitario);
+            } else {
+              custoUnit = null;
+              movsSemCustoHistorico++;
+            }
+          }
+
+          const grandezaBaseValor = base === 'consumo_saidas' ? qtdConsumidaLinha : qtd;
+          const valorTotal = custoUnit !== null ? grandezaBaseValor * custoUnit : null;
+
+          const docRef =
+            m.documento_referencia ||
+            (m.numero_requisicao ? `REQ ${m.numero_requisicao}` : null) ||
+            (m.numero_nota ? `NF ${m.numero_nota}` : null) ||
+            `MOV #${m.id}`;
+
+          const labelTipoMov =
+            m.tipo === 'saida'
+              ? `Saída (${m.motivo_normalizado})`
+              : m.tipo === 'entrada'
+              ? `Entrada (${m.motivo_normalizado})`
+              : m.tipo === 'estorno_saida'
+              ? 'Estorno de Saída'
+              : 'Estorno de Entrada';
+
+          linhasBrutas.push({
+            movimentacao_id: Number(m.id),
+            produto_id: Number(prod.id),
+            codigo: String(prod.codigo || ''),
+            descricao: String(prod.nome || ''),
+            grupo: String(prod.grupo_nome || 'Sem Grupo'),
+            subgrupo: String(prod.subgrupo_resolvido || 'Sem Subgrupo'),
+            unidade: String(prod.unidade_medida || 'UN'),
+            lote: String(m.numero_lote || 'S/L'),
+            validade: m.data_validade ? String(m.data_validade).slice(0, 10) : null,
+            centro_custo: String(m.centro_custo_nome || 'Sem Centro de Custo'),
+            centro_custo_id: m.centro_custo_id ? Number(m.centro_custo_id) : null,
+            data: String(m.data_movimentacao || '').slice(0, 19),
+            tipo_movimentacao: labelTipoMov,
+            documento: String(docRef),
+            saldo_inicial: saldoInicialPeriodoProd.get(Number(prod.id)) ?? 0,
+            entradas: entradasLinha,
+            saidas: saidasLinha,
+            saldo_final: saldoFinalPeriodoProd.get(Number(prod.id)) ?? 0,
+            quantidade_consumida: qtdConsumidaLinha,
+            custo_unitario: exibirCustos ? custoUnit : null,
+            valor_total: exibirCustos ? valorTotal : null,
+          });
+        }
+      } else {
+        // Consolidação por 'produto' ou 'produto_lote' (e opcionalmente por 'centro_custo' quando agrupado por centro de custo)
+        const gruposConsol = new Map<string, any>();
+
+        for (const m of movsNoPeriodo) {
+          const prod = mapaProdutos.get(Number(m.produto_id));
+          if (!prod) continue;
+
+          const loteChave = detalhamento === 'produto_lote' ? String(m.numero_lote || 'S/L').trim() : '__TODOS__';
+          const ccChave = agrupamento === 'centro_custo' ? String(m.centro_custo_id || 0) : '__TODOS__';
+          const chave = `${prod.id}::${loteChave}::${ccChave}`;
+
+          if (!gruposConsol.has(chave)) {
+            gruposConsol.set(chave, {
+              produto_id: Number(prod.id),
+              prod,
+              lote: detalhamento === 'produto_lote' ? String(m.numero_lote || 'S/L') : 'Consolidado',
+              validade: detalhamento === 'produto_lote' && m.data_validade ? String(m.data_validade).slice(0, 10) : null,
+              centro_custo_id: agrupamento === 'centro_custo' ? m.centro_custo_id : null,
+              centro_custo:
+                agrupamento === 'centro_custo'
+                  ? String(m.centro_custo_nome || 'Sem Centro de Custo')
+                  : 'Todos os Centros Filtrados',
+              centros_distintos: new Set<string>(),
+              tipos_distintos: new Set<string>(),
+              docs_distintos: new Set<string>(),
+              ultima_data: String(m.data_movimentacao || ''),
+              entradas: 0,
+              saidas: 0,
+              saidas_consumo_bruto: 0,
+              devolucoes_estornos: 0,
+              soma_custo_mov_ponderado: 0,
+              qtd_com_custo_mov: 0,
+              faltou_custo_mov: false,
+            });
+          }
+
+          const item = gruposConsol.get(chave)!;
+          const qtd = Number(m.quantidade || 0);
+          if (m.centro_custo_nome) item.centros_distintos.add(String(m.centro_custo_nome));
+
+          const labelTipo =
+            m.tipo === 'saida'
+              ? `Saída (${m.motivo_normalizado})`
+              : m.tipo === 'entrada'
+              ? `Entrada (${m.motivo_normalizado})`
+              : m.tipo;
+          item.tipos_distintos.add(labelTipo);
+
+          const docRef =
+            m.documento_referencia ||
+            (m.numero_requisicao ? `REQ ${m.numero_requisicao}` : null) ||
+            (m.numero_nota ? `NF ${m.numero_nota}` : null);
+          if (docRef) item.docs_distintos.add(String(docRef));
+
+          if (String(m.data_movimentacao || '') > item.ultima_data) {
+            item.ultima_data = String(m.data_movimentacao || '');
+          }
+
+          if (m.tipo === 'entrada' || m.tipo === 'estorno_saida') {
+            item.entradas += qtd;
+          } else if (m.tipo === 'saida' || m.tipo === 'estorno_entrada') {
+            item.saidas += qtd;
+          }
+
+          if (isSaidaConsumoConsiderada(m)) {
+            item.saidas_consumo_bruto += qtd;
+          } else if (isDevolucaoOuEstornoSaida(m)) {
+            item.devolucoes_estornos += qtd;
+          }
+
+          if (m.valor_unitario !== null && m.valor_unitario !== undefined && Number(m.valor_unitario) > 0) {
+            item.soma_custo_mov_ponderado += qtd * Number(m.valor_unitario);
+            item.qtd_com_custo_mov += qtd;
+          } else {
+            item.faltou_custo_mov = true;
+          }
+        }
+
+        // Se incluirZeros estiver ativo no detalhamento por produto, inclui produtos do catálogo que passaram nos filtros mesmo sem movimentação no período
+        if (incluirZeros && detalhamento === 'produto' && agrupamento !== 'centro_custo') {
+          for (const prod of produtosRows) {
+            if (!passaFiltrosCatalogo(prod)) continue;
+            const chave = `${prod.id}::__TODOS__::__TODOS__`;
+            if (!gruposConsol.has(chave)) {
+              gruposConsol.set(chave, {
+                produto_id: Number(prod.id),
+                prod,
+                lote: '-',
+                validade: null,
+                centro_custo_id: null,
+                centro_custo: '-',
+                centros_distintos: new Set<string>(),
+                tipos_distintos: new Set<string>(),
+                docs_distintos: new Set<string>(),
+                ultima_data: dataFim || new Date().toISOString().slice(0, 10),
+                entradas: 0,
+                saidas: 0,
+                saidas_consumo_bruto: 0,
+                devolucoes_estornos: 0,
+                soma_custo_mov_ponderado: 0,
+                qtd_com_custo_mov: 0,
+                faltou_custo_mov: false,
+              });
+            }
+          }
+        }
+
+        for (const item of gruposConsol.values()) {
+          const prod = item.prod;
+          const qtdConsumida =
+            tratamentoDevolucoes === 'liquido'
+              ? Math.max(0, item.saidas_consumo_bruto - item.devolucoes_estornos)
+              : item.saidas_consumo_bruto;
+
+          const grandezaPrincipal = base === 'consumo_saidas' ? qtdConsumida : item.entradas + item.saidas;
+          if (!incluirZeros && Math.abs(grandezaPrincipal) < 1e-9) continue;
+
+          let custoUnit: number | null = prod.custo_cadastro;
+          if (origemCusto === 'movimentacao_lote') {
+            if (item.qtd_com_custo_mov > 0 && !item.faltou_custo_mov) {
+              custoUnit = item.soma_custo_mov_ponderado / item.qtd_com_custo_mov;
+            } else {
+              custoUnit = null;
+              if (item.faltou_custo_mov) movsSemCustoHistorico++;
+            }
+          }
+
+          const qtdBaseValor =
+            base === 'consumo_saidas'
+              ? qtdConsumida
+              : item.saidas > 0
+              ? item.saidas
+              : item.entradas;
+          const valorTotal = custoUnit !== null ? qtdBaseValor * custoUnit : null;
+
+          const ccDisplay =
+            agrupamento === 'centro_custo'
+              ? item.centro_custo
+              : item.centros_distintos.size === 1
+              ? Array.from(item.centros_distintos)[0]
+              : item.centros_distintos.size > 1
+              ? `${item.centros_distintos.size} centros de custo`
+              : 'Não vinculado';
+
+          // Nota: Saldo inicial e final do produto pertencem ao estoque geral da área, não ao centro de custo específico
+          const saldoIni = agrupamento === 'centro_custo' ? null : (saldoInicialPeriodoProd.get(Number(prod.id)) ?? 0);
+          const saldoFim = agrupamento === 'centro_custo' ? null : (saldoFinalPeriodoProd.get(Number(prod.id)) ?? 0);
+
+          linhasBrutas.push({
+            produto_id: Number(prod.id),
+            codigo: String(prod.codigo || ''),
+            descricao: String(prod.nome || ''),
+            grupo: String(prod.grupo_nome || 'Sem Grupo'),
+            subgrupo: String(prod.subgrupo_resolvido || 'Sem Subgrupo'),
+            unidade: String(prod.unidade_medida || 'UN'),
+            lote: item.lote,
+            validade: item.validade,
+            centro_custo: ccDisplay,
+            centro_custo_id: item.centro_custo_id,
+            data: item.ultima_data ? String(item.ultima_data).slice(0, 19) : '-',
+            tipo_movimentacao: Array.from(item.tipos_distintos).join('; ') || '-',
+            documento: Array.from(item.docs_distintos).slice(0, 5).join(', ') || '-',
+            saldo_inicial: saldoIni,
+            entradas: item.entradas,
+            saidas: item.saidas,
+            saldo_final: saldoFim,
+            quantidade_consumida: qtdConsumida,
+            custo_unitario: exibirCustos ? custoUnit : null,
+            valor_total: exibirCustos ? valorTotal : null,
+          });
+        }
+      }
+    }
+
+    if (origemCusto === 'movimentacao_lote' && movsSemCustoHistorico > 0) {
+      avisos.push(
+        `Limitação de custo histórico: ${movsSemCustoHistorico} registro(s)/lote(s) não possuem valor unitário histórico gravado na movimentação/lote. Seus custos e valores foram mantidos como "Sem custo histórico" sem substituição silenciosa pelo custo atual.`
+      );
+    }
+
+    // ========================================================================
+    // 4. FILTRO DE FAIXAS DE QUANTIDADE E VALOR (Identificando a grandeza)
+    // ========================================================================
+    const grandezaQuantidade: 'saldo_final' | 'quantidade_consumida' | 'entradas' | 'saidas' =
+      ['saldo_final', 'quantidade_consumida', 'entradas', 'saidas'].includes(filtros.grandeza_quantidade)
+        ? filtros.grandeza_quantidade
+        : base === 'saldo_estoque'
+        ? 'saldo_final'
+        : base === 'consumo_saidas'
+        ? 'quantidade_consumida'
+        : 'saidas';
+
+    const grandezaValor: 'valor_total' | 'custo_unitario' =
+      filtros.grandeza_valor === 'custo_unitario' ? 'custo_unitario' : 'valor_total';
+
+    const qtdMin = filtros.qtd_min !== undefined && filtros.qtd_min !== null && String(filtros.qtd_min) !== '' ? Number(filtros.qtd_min) : null;
+    const qtdMax = filtros.qtd_max !== undefined && filtros.qtd_max !== null && String(filtros.qtd_max) !== '' ? Number(filtros.qtd_max) : null;
+    const valMin = filtros.valor_min !== undefined && filtros.valor_min !== null && String(filtros.valor_min) !== '' ? Number(filtros.valor_min) : null;
+    const valMax = filtros.valor_max !== undefined && filtros.valor_max !== null && String(filtros.valor_max) !== '' ? Number(filtros.valor_max) : null;
+
+    if (qtdMin !== null || qtdMax !== null || valMin !== null || valMax !== null) {
+      linhasBrutas = linhasBrutas.filter((row) => {
+        const vQtd = Number(row[grandezaQuantidade] ?? 0);
+        if (qtdMin !== null && !Number.isNaN(qtdMin) && vQtd < qtdMin) return false;
+        if (qtdMax !== null && !Number.isNaN(qtdMax) && vQtd > qtdMax) return false;
+
+        if (valMin !== null || valMax !== null) {
+          const rawVal = row[grandezaValor];
+          if (rawVal === null || rawVal === undefined) return false;
+          const vVal = Number(rawVal);
+          if (valMin !== null && !Number.isNaN(valMin) && vVal < valMin) return false;
+          if (valMax !== null && !Number.isNaN(valMax) && vVal > valMax) return false;
+        }
+        return true;
+      });
+    }
+
+    // ========================================================================
+    // 5. CURVA ABC CONFIGURÁVEL
+    // ========================================================================
+    const abcConfig = body.curva_abc || {};
+    const calcularAbc = Boolean(abcConfig.calcular_abc);
+    let metadadosAbc: any = null;
+
+    if (calcularAbc) {
+      const INDICADORES_ABC = ['quantidade_consumida', 'valor_consumo', 'quantidade_estoque', 'valor_estoque'] as const;
+      type IndicadorAbc = typeof INDICADORES_ABC[number];
+      const indicador: IndicadorAbc = INDICADORES_ABC.includes(abcConfig.indicador)
+        ? abcConfig.indicador
+        : base === 'saldo_estoque'
+        ? 'valor_estoque'
+        : 'valor_consumo';
+
+      const pctA = Number(abcConfig.pct_a ?? 80);
+      const pctB = Number(abcConfig.pct_b ?? 15);
+      const pctC = Number(abcConfig.pct_c ?? 5);
+      const somaPct = Math.round((pctA + pctB + pctC) * 100) / 100;
+
+      if (pctA <= 0 || pctB < 0 || pctC < 0 || Math.abs(somaPct - 100) > 0.01) {
+        res.status(400).json({
+          error: `Os percentuais da Curva ABC (A: ${pctA}%, B: ${pctB}%, C: ${pctC}%) devem somar exatamente 100% (atual: ${somaPct}%).`,
+        });
+        return;
+      }
+
+      const limiteA = pctA;
+      const limiteB = pctA + pctB;
+
+      const abrangencia: 'geral' | 'por_agrupamento' =
+        abcConfig.abrangencia === 'por_agrupamento' && agrupamento !== 'nenhum'
+          ? 'por_agrupamento'
+          : 'geral';
+
+      const regraFronteira: 'incluir_na_atual' | 'mover_para_seguinte' =
+        abcConfig.regra_fronteira === 'mover_para_seguinte' ? 'mover_para_seguinte' : 'incluir_na_atual';
+
+      const regraEmpate: 'manter_mesma_classe' | 'desempatar_codigo' =
+        abcConfig.regra_empate === 'desempatar_codigo' ? 'desempatar_codigo' : 'manter_mesma_classe';
+
+      const classesExibidas: string[] = Array.isArray(abcConfig.classes_exibidas)
+        ? abcConfig.classes_exibidas
+        : ['A', 'B', 'C', 'SC'];
+
+      // Helper para extrair o valor do indicador de uma linha
+      const extrairIndicadorLinha = (row: any): number | null => {
+        const prod = mapaProdutos.get(Number(row.produto_id));
+        const custoUnit =
+          row.custo_unitario !== null && row.custo_unitario !== undefined
+            ? Number(row.custo_unitario)
+            : origemCusto === 'cadastro_atual' && prod
+            ? Number(prod.custo_cadastro || 0)
+            : null;
+
+        if (indicador === 'quantidade_consumida') {
+          return Number(row.quantidade_consumida ?? 0);
+        }
+        if (indicador === 'valor_consumo') {
+          if (custoUnit === null) return null;
+          return Number(row.quantidade_consumida ?? 0) * custoUnit;
+        }
+        if (indicador === 'quantidade_estoque') {
+          return Number(row.saldo_final ?? 0);
+        }
+        if (indicador === 'valor_estoque') {
+          if (custoUnit === null) return null;
+          return Number(row.saldo_final ?? 0) * custoUnit;
+        }
+        return 0;
+      };
+
+      const obterChaveAgrupamento = (row: any): string => {
+        if (abrangencia !== 'por_agrupamento') return '__GERAL__';
+        if (agrupamento === 'grupo_subgrupo') return `${row.grupo} / ${row.subgrupo}`;
+        if (agrupamento === 'centro_custo') return String(row.centro_custo || 'Sem Centro de Custo');
+        return '__GERAL__';
+      };
+
+      // Particionar linhas por escopo de classificação (Geral ou Por Agrupamento)
+      // consolidando sempre por Produto (produto_id) para NUNCA classificar lotes ou movimentações do mesmo produto separadamente
+      const escoposMap = new Map<string, any[]>();
+      for (const row of linhasBrutas) {
+        const escopo = obterChaveAgrupamento(row);
+        if (!escoposMap.has(escopo)) escoposMap.set(escopo, []);
+        escoposMap.get(escopo)!.push(row);
+      }
+
+      for (const [, rowsDoEscopo] of escoposMap.entries()) {
+        // Consolidar indicador por produto_id dentro do escopo
+        const entidadesProd = new Map<
+          number,
+          {
+            produto_id: number;
+            codigo: string;
+            indicador_total: number | null;
+            jaContouEstoque: boolean;
+          }
+        >();
+
+        for (const row of rowsDoEscopo) {
+          const pid = Number(row.produto_id);
+          const valLinha = extrairIndicadorLinha(row);
+
+          if (!entidadesProd.has(pid)) {
+            entidadesProd.set(pid, {
+              produto_id: pid,
+              codigo: String(row.codigo || ''),
+              indicador_total: valLinha,
+              jaContouEstoque: false,
+            });
+            if (indicador === 'quantidade_estoque' || indicador === 'valor_estoque') {
+              // Se o detalhamento for produto_lote, soma o estoque de cada lote; se for movimentacao, usa o saldo_final do produto uma única vez
+              if (detalhamento === 'movimentacao') {
+                entidadesProd.get(pid)!.jaContouEstoque = true;
+              }
+            }
+          } else {
+            const ent = entidadesProd.get(pid)!;
+            if (valLinha === null || ent.indicador_total === null) {
+              ent.indicador_total = null;
+            } else {
+              if ((indicador === 'quantidade_estoque' || indicador === 'valor_estoque') && detalhamento === 'movimentacao') {
+                // Não soma saldo_final repetido em múltiplas movimentações do mesmo produto
+              } else {
+                ent.indicador_total += valLinha;
+              }
+            }
+          }
+        }
+
+        const positivas: { produto_id: number; codigo: string; valor: number }[] = [];
+        const resultadoAbcPorProd = new Map<
+          number,
+          { classe_abc: 'A' | 'B' | 'C' | 'SC'; participacao_abc: number | null; acumulado_abc: number | null; valor_indicador_abc: number | null }
+        >();
+
+        for (const ent of entidadesProd.values()) {
+          if (ent.indicador_total === null || ent.indicador_total <= 0) {
+            resultadoAbcPorProd.set(ent.produto_id, {
+              classe_abc: 'SC',
+              participacao_abc: null,
+              acumulado_abc: null,
+              valor_indicador_abc: ent.indicador_total,
+            });
+          } else {
+            positivas.push({
+              produto_id: ent.produto_id,
+              codigo: ent.codigo,
+              valor: ent.indicador_total,
+            });
+          }
+        }
+
+        // Ordenar decrescente pelo indicador, com desempate determinístico por código crescente
+        positivas.sort((a, b) => {
+          if (Math.abs(b.valor - a.valor) > 1e-9) {
+            return b.valor - a.valor;
+          }
+          return a.codigo.localeCompare(b.codigo, 'pt-BR', { numeric: true });
+        });
+
+        const somaTotalIndicador = positivas.reduce((acc, item) => acc + item.valor, 0);
+        let acumPct = 0;
+        let ultimoValor: number | null = null;
+        let ultimaClasse: 'A' | 'B' | 'C' = 'A';
+
+        for (let idx = 0; idx < positivas.length; idx++) {
+          const item = positivas[idx];
+          const partPct = somaTotalIndicador > 0 ? (item.valor / somaTotalIndicador) * 100 : 0;
+          const prevAcum = acumPct;
+          acumPct = Math.min(100, acumPct + partPct);
+
+          let classeItem: 'A' | 'B' | 'C' = 'C';
+          if (regraEmpate === 'manter_mesma_classe' && ultimoValor !== null && Math.abs(item.valor - ultimoValor) <= 1e-9) {
+            classeItem = ultimaClasse;
+          } else if (regraFronteira === 'incluir_na_atual') {
+            // O item que atinge ou ultrapassa o limite fecha a classe que estava sendo preenchida
+            if (prevAcum < limiteA - 1e-7) {
+              classeItem = 'A';
+            } else if (prevAcum < limiteB - 1e-7) {
+              classeItem = 'B';
+            } else {
+              classeItem = 'C';
+            }
+          } else {
+            // mover_para_seguinte: se o percentual acumulado com o item ultrapassa o limite (exceto quando é o 1º item da classe), passa para a classe seguinte
+            if (acumPct <= limiteA + 1e-7 || prevAcum === 0) {
+              classeItem = 'A';
+            } else if (acumPct <= limiteB + 1e-7) {
+              classeItem = 'B';
+            } else {
+              classeItem = 'C';
+            }
+          }
+
+          ultimoValor = item.valor;
+          ultimaClasse = classeItem;
+
+          resultadoAbcPorProd.set(item.produto_id, {
+            classe_abc: classeItem,
+            participacao_abc: partPct,
+            acumulado_abc: acumPct,
+            valor_indicador_abc: item.valor,
+          });
+        }
+
+        // Atribuir classificação às linhas do escopo
+        for (const row of rowsDoEscopo) {
+          const info = resultadoAbcPorProd.get(Number(row.produto_id));
+          row.classe_abc = info?.classe_abc || 'SC';
+          row.participacao_abc = info?.participacao_abc ?? null;
+          row.acumulado_abc = info?.acumulado_abc ?? null;
+          row.valor_indicador_abc = info?.valor_indicador_abc ?? null;
+        }
+      }
+
+      // Filtrar as classes exibidas APÓS o cálculo, sem recalcular os percentuais
+      const setClasses = new Set(classesExibidas.map((c) => String(c).toUpperCase()));
+      linhasBrutas = linhasBrutas.filter((row) => setClasses.has(String(row.classe_abc || 'SC').toUpperCase()));
+
+      const LABELS_INDICADOR: Record<string, string> = {
+        quantidade_consumida: 'Quantidade Consumida no Período',
+        valor_consumo: 'Valor Total do Consumo no Período',
+        quantidade_estoque: 'Quantidade em Estoque',
+        valor_estoque: 'Valor Total em Estoque',
+      };
+
+      metadadosAbc = {
+        ativa: true,
+        indicador,
+        indicador_label: LABELS_INDICADOR[indicador] || indicador,
+        origem_custo: origemCusto === 'cadastro_atual' ? 'Custo Unitário do Cadastro Atual do Produto' : 'Custo Unitário Registrado no Lote / Movimentação Histórica',
+        pct_a: pctA,
+        pct_b: pctB,
+        pct_c: pctC,
+        faixas_acumuladas: `Classe A: 0% a ${limiteA}% | Classe B: >${limiteA}% a ${limiteB}% | Classe C: >${limiteB}% a 100%`,
+        abrangencia: abrangencia === 'por_agrupamento' ? 'Classificação independente por agrupamento' : 'Classificação única para todo o resultado filtrado',
+        regra_fronteira:
+          regraFronteira === 'incluir_na_atual'
+            ? 'Item que ultrapassa o limite permanece na classe que está sendo preenchida'
+            : 'Item que ultrapassa o limite é alocado na classe seguinte',
+        regra_empate:
+          regraEmpate === 'manter_mesma_classe'
+            ? 'Itens com indicador idêntico permanecem juntos na mesma classe'
+            : 'Itens com indicador idêntico são desempatados por ordem crescente de código do produto',
+        classes_exibidas: classesExibidas,
+      };
+    }
+
+    // ========================================================================
+    // 6. DEFINIÇÃO DE COLUNAS PERMITIDAS E COMPATÍVEIS (ALLOWLIST)
+    // ========================================================================
+    const CATALOGO_COLUNAS: Record<
+      string,
+      { id: string; label: string; tipo: 'texto' | 'data' | 'numero' | 'moeda' | 'percentual' | 'classe_abc'; requerCusto?: boolean; requerAbc?: boolean }
+    > = {
+      codigo: { id: 'codigo', label: 'Código', tipo: 'texto' },
+      descricao: { id: 'descricao', label: 'Descrição Completa', tipo: 'texto' },
+      grupo: { id: 'grupo', label: 'Grupo', tipo: 'texto' },
+      subgrupo: { id: 'subgrupo', label: 'Subgrupo', tipo: 'texto' },
+      unidade: { id: 'unidade', label: 'Unidade', tipo: 'texto' },
+      lote: { id: 'lote', label: 'Lote', tipo: 'texto' },
+      validade: { id: 'validade', label: 'Validade', tipo: 'data' },
+      centro_custo: { id: 'centro_custo', label: 'Centro de Custo', tipo: 'texto' },
+      data: { id: 'data', label: 'Data', tipo: 'data' },
+      tipo_movimentacao: { id: 'tipo_movimentacao', label: 'Tipo de Movimentação', tipo: 'texto' },
+      documento: { id: 'documento', label: 'Documento', tipo: 'texto' },
+      saldo_inicial: { id: 'saldo_inicial', label: 'Saldo Inicial', tipo: 'numero' },
+      entradas: { id: 'entradas', label: 'Entradas', tipo: 'numero' },
+      saidas: { id: 'saidas', label: 'Saídas', tipo: 'numero' },
+      saldo_final: { id: 'saldo_final', label: 'Saldo Final', tipo: 'numero' },
+      quantidade_consumida: { id: 'quantidade_consumida', label: 'Quantidade Consumida', tipo: 'numero' },
+      custo_unitario: { id: 'custo_unitario', label: 'Custo Unitário', tipo: 'moeda', requerCusto: true },
+      valor_total: { id: 'valor_total', label: 'Valor Total', tipo: 'moeda', requerCusto: true },
+      classe_abc: { id: 'classe_abc', label: 'Classe ABC', tipo: 'classe_abc', requerAbc: true },
+      participacao_abc: { id: 'participacao_abc', label: '% Participação', tipo: 'percentual', requerAbc: true },
+      acumulado_abc: { id: 'acumulado_abc', label: '% Acumulado', tipo: 'percentual', requerAbc: true },
+    };
+
+    const colunasSolicitadas: string[] = Array.isArray(body.colunas) ? body.colunas : [];
+    const colunasValidas = colunasSolicitadas.filter((colId) => {
+      const def = CATALOGO_COLUNAS[colId];
+      if (!def) return false;
+      if (def.requerCusto && !exibirCustos) return false;
+      if (def.requerAbc && !calcularAbc) return false;
+      return true;
+    });
+
+    const colunasPadrao =
+      base === 'saldo_estoque'
+        ? ['codigo', 'descricao', 'grupo', 'subgrupo', 'unidade', 'lote', 'validade', 'saldo_final', ...(exibirCustos ? ['custo_unitario', 'valor_total'] : [])]
+        : base === 'consumo_saidas'
+        ? ['codigo', 'descricao', 'unidade', 'centro_custo', 'quantidade_consumida', ...(exibirCustos ? ['custo_unitario', 'valor_total'] : [])]
+        : ['data', 'codigo', 'descricao', 'unidade', 'lote', 'tipo_movimentacao', 'centro_custo', 'documento', 'entradas', 'saidas', ...(exibirCustos ? ['custo_unitario', 'valor_total'] : [])];
+
+    const colunasIdsFinais = Array.from(
+      new Set([
+        ...(colunasValidas.length > 0 ? colunasValidas : colunasPadrao),
+        ...(calcularAbc && colunasValidas.length === 0 ? ['classe_abc', 'participacao_abc', 'acumulado_abc'] : []),
+      ])
+    );
+
+    const colunasDefinicao = colunasIdsFinais.map((id) => CATALOGO_COLUNAS[id]).filter(Boolean);
+
+    // ========================================================================
+    // 7. ORDENAÇÃO CONFIGURÁVEL
+    // ========================================================================
+    const ordCol = CATALOGO_COLUNAS[body.ordenacao_coluna]?.id || (calcularAbc ? 'participacao_abc' : 'descricao');
+    const ordDir = body.ordenacao_sentido === 'desc' ? -1 : 1;
+
+    linhasBrutas.sort((a, b) => {
+      const va = a[ordCol];
+      const vb = b[ordCol];
+      if (va === null || va === undefined) return 1;
+      if (vb === null || vb === undefined) return -1;
+      if (typeof va === 'number' && typeof vb === 'number') {
+        if (Math.abs(va - vb) > 1e-9) return (va - vb) * ordDir;
+        return String(a.codigo || '').localeCompare(String(b.codigo || ''), 'pt-BR', { numeric: true });
+      }
+      return String(va).localeCompare(String(vb), 'pt-BR', { numeric: true }) * ordDir;
+    });
+
+    // ========================================================================
+    // 8. FUNÇÃO DE SUBTOTAL / TOTALIZAÇÃO SEGURA
+    // - Nunca soma custos unitários
+    // - Nunca duplica saldos de um mesmo produto em múltiplas movimentações
+    // - Só soma quantidades quando todas as linhas têm a mesma unidade de medida
+    // - Oculta totais financeiros quando exibirCustos = false
+    // ========================================================================
+    const calcularTotaisConjunto = (rows: any[]) => {
+      const unidades = Array.from(new Set(rows.map((r) => String(r.unidade || '').trim().toUpperCase()).filter(Boolean)));
+      const mesmaUnidade = unidades.length === 1;
+      const unidadeUnica = mesmaUnidade ? unidades[0] : null;
+
+      let somaEntradas: number | null = null;
+      let somaSaidas: number | null = null;
+      let somaConsumo: number | null = null;
+      let somaSaldoInicial: number | null = null;
+      let somaSaldoFinal: number | null = null;
+
+      if (mesmaUnidade) {
+        somaEntradas = rows.reduce((acc, r) => acc + Number(r.entradas || 0), 0);
+        somaSaidas = rows.reduce((acc, r) => acc + Number(r.saidas || 0), 0);
+        somaConsumo = rows.reduce((acc, r) => acc + Number(r.quantidade_consumida || 0), 0);
+
+        if (detalhamento === 'movimentacao') {
+          // Não duplicar saldo inicial/final de produtos que aparecem em várias movimentações
+          const vistos = new Set<number>();
+          let sIni = 0;
+          let sFim = 0;
+          for (const r of rows) {
+            const pid = Number(r.produto_id);
+            if (!vistos.has(pid)) {
+              vistos.add(pid);
+              sIni += Number(r.saldo_inicial || 0);
+              sFim += Number(r.saldo_final || 0);
+            }
+          }
+          somaSaldoInicial = sIni;
+          somaSaldoFinal = sFim;
+        } else {
+          const temSaldoValido = rows.some((r) => r.saldo_final !== null && r.saldo_final !== undefined);
+          if (temSaldoValido) {
+            somaSaldoInicial = rows.reduce((acc, r) => acc + Number(r.saldo_inicial || 0), 0);
+            somaSaldoFinal = rows.reduce((acc, r) => acc + Number(r.saldo_final || 0), 0);
+          }
+        }
+      }
+
+      let somaValorTotal: number | null = null;
+      if (exibirCustos) {
+        const linhasComValor = rows.filter((r) => r.valor_total !== null && r.valor_total !== undefined);
+        if (linhasComValor.length > 0) {
+          somaValorTotal = linhasComValor.reduce((acc, r) => acc + Number(r.valor_total || 0), 0);
+        }
+      }
+
+      return {
+        total_linhas: rows.length,
+        mesma_unidade: mesmaUnidade,
+        unidade: unidadeUnica,
+        unidades_encontradas: unidades,
+        entradas: somaEntradas,
+        saidas: somaSaidas,
+        quantidade_consumida: somaConsumo,
+        saldo_inicial: somaSaldoInicial,
+        saldo_final: somaSaldoFinal,
+        custo_unitario: null, // Jamais somar custos unitários
+        valor_total: exibirCustos ? somaValorTotal : null,
+      };
+    };
+
+    // Agrupamento e Subtotais
+    let gruposRender: { chave: string; titulo: string; linhas: any[]; subtotal: any }[] | null = null;
+    if (agrupamento !== 'nenhum') {
+      const mapaGrupos = new Map<string, any[]>();
+      for (const row of linhasBrutas) {
+        const chave =
+          agrupamento === 'grupo_subgrupo'
+            ? `${row.grupo || 'Sem Grupo'} — ${row.subgrupo || 'Sem Subgrupo'}`
+            : String(row.centro_custo || 'Sem Centro de Custo');
+        if (!mapaGrupos.has(chave)) mapaGrupos.set(chave, []);
+        mapaGrupos.get(chave)!.push(row);
+      }
+      gruposRender = Array.from(mapaGrupos.entries()).map(([chave, linhasGrupo]) => ({
+        chave,
+        titulo: chave,
+        linhas: linhasGrupo,
+        subtotal: exibirSubtotais ? calcularTotaisConjunto(linhasGrupo) : null,
+      }));
+    }
+
+    const totalGeral = exibirTotalGeral ? calcularTotaisConjunto(linhasBrutas) : null;
+
+    const TITULOS_BASE: Record<BaseRelatorio, string> = {
+      saldo_estoque:
+        modoSaldo === 'data_referencia'
+          ? `Relatório de Saldo em Estoque (Posição em ${dataReferencia.split('-').reverse().join('/')})`
+          : 'Relatório de Saldo em Estoque (Posição Atual)',
+      movimentacoes: 'Relatório Analítico de Movimentações de Estoque',
+      consumo_saidas: 'Relatório de Consumo e Saídas de Materiais',
+    };
+
+    res.json({
+      restrito_requisitante: false,
+      titulo: body.nome_relatorio || TITULOS_BASE[base],
+      base,
+      modo_saldo: modoSaldo,
+      data_referencia: dataReferencia,
+      data_inicio: dataInicio,
+      data_fim: dataFim,
+      detalhamento,
+      agrupamento,
+      exibir_custos: exibirCustos,
+      exibir_subtotais: exibirSubtotais,
+      exibir_total_geral: exibirTotalGeral,
+      area_sigla: areaSigla,
+      area_nome: areaSigla === 'CAF' ? 'Central de Abastecimento Farmacêutico (CAF)' : 'Almoxarifado Central',
+      data_emissao: new Date().toLocaleString('pt-BR'),
+      usuario_emissor: `${user.nome} (${user.login || user.email || user.perfil})`,
+      colunas: colunasDefinicao,
+      linhas: linhasBrutas,
+      grupos_render: gruposRender,
+      total_geral: totalGeral,
+      total_registros: linhasBrutas.length,
+      curva_abc: metadadosAbc,
+      avisos,
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: 'Erro ao processar relatório dinâmico: ' + err.message });
   }
 });
 

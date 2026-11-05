@@ -212,7 +212,7 @@ export const MODULOS_PADRAO_PERFIL: Record<PerfilUsuario, ModuloChave[]> = {
     'unidades-medida', 'relatorios', 'relatorios-outras-areas', 'perfil'
   ],
   requisitante: [
-    'requisicoes', 'perfil'
+    'requisicoes', 'relatorios', 'perfil'
   ],
 };
 

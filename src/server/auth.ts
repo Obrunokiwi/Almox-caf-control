@@ -48,7 +48,7 @@ export const MODULOS_PADRAO_SISTEMA: Record<string, string[]> = {
     'unidades-medida', 'relatorios', 'relatorios-outras-areas', 'perfil'
   ],
   requisitante: [
-    'requisicoes', 'perfil'
+    'requisicoes', 'relatorios', 'perfil'
   ],
 };
 
@@ -115,24 +115,27 @@ function attachUserModulesAndAreas(row: any, activeAreaSigla?: string) {
     let list = rows.map((r) => r.modulo_chave);
     if (list.length === 0) {
       const p = (row.cargo_nome || row.perfil) as string;
-      list = [...(MODULOS_PADRAO_SISTEMA[p] || ['requisicoes', 'perfil'])];
+      list = [...(MODULOS_PADRAO_SISTEMA[p] || ['requisicoes', 'relatorios', 'perfil'])];
     }
 
     // Regras restritivas de perfil
     if (row.perfil === 'requisitante') {
-      list = list.filter((m) => !['saldo-estoque', 'aprovacao-requisicoes', 'backup', 'importacao-cadastros', 'usuarios', 'areas', 'consumo', 'kardex', 'lista-compras'].includes(m));
+      list = list.filter((m) => !['saldo-estoque', 'aprovacao-requisicoes', 'backup', 'importacao-cadastros', 'usuarios', 'areas', 'consumo', 'kardex', 'lista-compras', 'unidades-medida', 'relatorios-outras-areas'].includes(m));
+      if (!list.includes('relatorios')) {
+        list.push('relatorios');
+      }
     }
     if (row.perfil !== 'admin' && row.perfil !== 'ti_dpo') {
       list = list.filter((m) => !['backup', 'importacao-cadastros', 'usuarios', 'areas'].includes(m));
     }
     if (row.perfil !== 'admin' && row.perfil !== 'ti_dpo' && row.perfil !== 'almoxarife') {
-      list = list.filter((m) => !['aprovacao-requisicoes', 'consumo', 'kardex', 'lista-compras'].includes(m));
+      list = list.filter((m) => !['aprovacao-requisicoes', 'consumo', 'kardex', 'lista-compras', 'unidades-medida'].includes(m));
     }
 
     row.modulos = list;
   } catch {
     const p = (row.cargo_nome || row.perfil) as string;
-    row.modulos = [...(MODULOS_PADRAO_SISTEMA[p] || ['requisicoes', 'perfil'])];
+    row.modulos = [...(MODULOS_PADRAO_SISTEMA[p] || ['requisicoes', 'relatorios', 'perfil'])];
   }
 }
 
