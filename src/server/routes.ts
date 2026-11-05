@@ -687,9 +687,9 @@ apiRouter.post('/consumos', (req, res) => {
           throw new Error(`Produto #${prodId} não encontrado no catálogo da área.`);
         }
 
-        // Se informou lote específico
-        let loteUsado: any;
-        if (it.lote_id) {
+        // Se informou lote específico ou FEFO
+        let loteUsado: any = null;
+        if (it.lote_id && Number(it.lote_id) > 0) {
           loteUsado = db.prepare('SELECT * FROM lotes_estoque WHERE id = ? AND produto_id = ?').get(Number(it.lote_id), prodId) as any;
           if (!loteUsado) {
             throw new Error(`Lote #${it.lote_id} não encontrado para o produto "${prod.nome}".`);
@@ -704,9 +704,16 @@ apiRouter.post('/consumos', (req, res) => {
           }
           db.prepare('UPDATE lotes_estoque SET quantidade_atual = quantidade_atual - ? WHERE id = ?').run(qtd, loteUsado.id);
         } else {
-          // FEFO automático
+          // Tenta FEFO automático se houver lotes com saldo
           const lotesConsumidos = consumirLotesValidosFEFO(prodId, qtd);
-          loteUsado = lotesConsumidos[0];
+          if (lotesConsumidos.length > 0) {
+            loteUsado = lotesConsumidos[0];
+          } else {
+            // Produto sem lote: valida estoque geral do produto
+            if (Number(prod.quantidade_atual) < qtd) {
+              throw new Error(`Estoque insuficiente para o produto "${prod.nome}". Disponível: ${prod.quantidade_atual}, Solicitado: ${qtd}.`);
+            }
+          }
         }
 
         // Atualiza quantidade_atual do produto
@@ -717,16 +724,16 @@ apiRouter.post('/consumos', (req, res) => {
         insItem.run(
           consumoId,
           prodId,
-          loteUsado.id || loteUsado.lote_id,
-          loteUsado.numero_lote,
-          loteUsado.data_validade || null,
+          loteUsado ? (loteUsado.id || loteUsado.lote_id) : null,
+          loteUsado ? loteUsado.numero_lote : null,
+          loteUsado ? (loteUsado.data_validade || null) : null,
           qtd,
           custoUnit
         );
 
         insMov.run(
           prodId,
-          loteUsado.id || loteUsado.lote_id,
+          loteUsado ? (loteUsado.id || loteUsado.lote_id) : null,
           qtd,
           Number(centro_custo_id),
           ccNome,
@@ -735,8 +742,8 @@ apiRouter.post('/consumos', (req, res) => {
           user.id,
           user.nome,
           numero_consumo,
-          loteUsado.numero_lote,
-          loteUsado.data_validade || null,
+          loteUsado ? loteUsado.numero_lote : null,
+          loteUsado ? (loteUsado.data_validade || null) : null,
           custoUnit,
           `Entrega para ${responsavel_recebimento} (${ccNome || 'Setor'})`
         );

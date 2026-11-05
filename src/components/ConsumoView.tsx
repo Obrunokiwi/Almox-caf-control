@@ -169,37 +169,51 @@ export const ConsumoView: React.FC<ConsumoViewProps> = ({
       alert('Selecione um produto.');
       return;
     }
-    if (!loteSelectId) {
-      alert('Selecione um lote com saldo disponível.');
-      return;
-    }
     if (itemQuantidade <= 0) {
       alert('A quantidade deve ser maior que zero.');
       return;
     }
 
     const prod = produtos.find((p) => p.id === prodSelectId);
-    const lote = lotesProduto.find((l) => l.id === loteSelectId);
+    if (!prod) return;
 
-    if (!prod || !lote) return;
+    let lote: LoteEstoque | undefined;
+    if (loteSelectId > 0) {
+      lote = lotesProduto.find((l) => l.id === loteSelectId);
+      if (!lote) {
+        alert('Lote selecionado inválido.');
+        return;
+      }
+      // Bloqueia lote vencido
+      const hojeStr = new Date().toISOString().slice(0, 10);
+      if (lote.data_validade && lote.data_validade.slice(0, 10) < hojeStr) {
+        alert(`O lote "${lote.numero_lote}" está VENCIDO (${lote.data_validade}) e não pode ser dispensado para consumo.`);
+        return;
+      }
 
-    // Bloqueia lote vencido
-    const hojeStr = new Date().toISOString().slice(0, 10);
-    if (lote.data_validade && lote.data_validade.slice(0, 10) < hojeStr) {
-      alert(`O lote "${lote.numero_lote}" está VENCIDO (${lote.data_validade}) e não pode ser dispensado para consumo.`);
-      return;
-    }
+      // Valida saldo disponível no lote
+      const jaAdicionado = itensNovoConsumo
+        .filter((i) => i.lote_id === lote!.id)
+        .reduce((acc, curr) => acc + curr.quantidade, 0);
 
-    // Valida saldo disponível
-    const jaAdicionado = itensNovoConsumo
-      .filter((i) => i.lote_id === lote.id)
-      .reduce((acc, curr) => acc + curr.quantidade, 0);
+      const saldoReal = Number(lote.quantidade_atual) - jaAdicionado;
 
-    const saldoReal = Number(lote.quantidade_atual) - jaAdicionado;
+      if (itemQuantidade > saldoReal) {
+        alert(`Saldo insuficiente neste lote. Disponível: ${saldoReal}, Solicitado: ${itemQuantidade}`);
+        return;
+      }
+    } else {
+      // Sem lote específico: valida estoque geral do produto
+      const jaAdicionado = itensNovoConsumo
+        .filter((i) => i.produto_id === prod.id && (!i.lote_id || i.lote_id === 0))
+        .reduce((acc, curr) => acc + curr.quantidade, 0);
 
-    if (itemQuantidade > saldoReal) {
-      alert(`Saldo insuficiente neste lote. Disponível: ${saldoReal}, Solicitado: ${itemQuantidade}`);
-      return;
+      const saldoReal = Number(prod.quantidade_atual || 0) - jaAdicionado;
+
+      if (itemQuantidade > saldoReal) {
+        alert(`Saldo insuficiente no estoque geral do produto. Disponível: ${saldoReal}, Solicitado: ${itemQuantidade}`);
+        return;
+      }
     }
 
     const newItem: NewConsumoItem = {
@@ -207,10 +221,10 @@ export const ConsumoView: React.FC<ConsumoViewProps> = ({
       produto_codigo: prod.codigo,
       produto_nome: prod.nome,
       unidade_medida: prod.unidade_medida,
-      lote_id: lote.id,
-      numero_lote: lote.numero_lote,
-      data_validade: lote.data_validade || null,
-      saldo_disponivel: Number(lote.quantidade_atual),
+      lote_id: lote ? lote.id : 0,
+      numero_lote: lote ? lote.numero_lote : '',
+      data_validade: lote ? (lote.data_validade || null) : null,
+      saldo_disponivel: lote ? Number(lote.quantidade_atual) : Number(prod.quantidade_atual || 0),
       quantidade: itemQuantidade,
       custo_unitario: Number(prod.valor_unitario || prod.custo_unitario || 0),
     };
@@ -709,20 +723,17 @@ export const ConsumoView: React.FC<ConsumoViewProps> = ({
                     <select
                       value={loteSelectId}
                       onChange={(e) => setLoteSelectId(Number(e.target.value))}
-                      disabled={loadingLotes || lotesProduto.length === 0}
+                      disabled={loadingLotes}
                       className="w-full px-2.5 py-1.5 bg-white border border-slate-300 rounded text-xs focus:outline-none focus:border-[#00237D]"
                     >
-                      {loadingLotes ? (
-                        <option>Carregando lotes...</option>
-                      ) : lotesProduto.length === 0 ? (
-                        <option value="0">Nenhum lote com saldo</option>
-                      ) : (
-                        lotesProduto.map((l) => (
-                          <option key={l.id} value={l.id}>
-                            Lote: {l.numero_lote} | Val: {l.data_validade || 'S/V'} | Saldo: {l.quantidade_atual}
-                          </option>
-                        ))
-                      )}
+                      <option value="0">
+                        {lotesProduto.length === 0 ? 'Sem Lote / Baixa Geral no Estoque' : '— Selecionar Lote (Opcional / FEFO) —'}
+                      </option>
+                      {lotesProduto.map((l) => (
+                        <option key={l.id} value={l.id}>
+                          Lote: {l.numero_lote} | Val: {l.data_validade || 'S/V'} | Saldo: {l.quantidade_atual}
+                        </option>
+                      ))}
                     </select>
                   </div>
 
