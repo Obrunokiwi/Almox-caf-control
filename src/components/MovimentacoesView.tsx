@@ -106,7 +106,7 @@ export const MovimentacoesView: React.FC<MovimentacoesViewProps> = ({
   const [isSavingDiversa, setIsSavingDiversa] = useState<boolean>(false);
 
   // Estados específicos para "Devolução de Setor" (Centro de Custo e Requisição de Origem)
-  const [divCentroCustoId, setDivCentroCustoId] = useState<number | ''>(centrosCusto[0]?.id || '');
+  const [divCentroCustoId, setDivCentroCustoId] = useState<number | ''>('');
   const [divRequisicaoOrigemId, setDivRequisicaoOrigemId] = useState<number | ''>('');
   const [requisicoesAtendidasDoSetor, setRequisicoesAtendidasDoSetor] = useState<any[]>([]);
   const [isLoadingRequisicoesAtendidas, setIsLoadingRequisicoesAtendidas] = useState(false);
@@ -283,9 +283,8 @@ export const MovimentacoesView: React.FC<MovimentacoesViewProps> = ({
     setDivDataValidade(nat === 'entrada' ? '2027-12-31' : firstLote?.data_validade || '');
     setDivQuantidade(1);
     setDivEntidadeId(0);
-    const ccPadrao = currentUser?.centro_custo_id || centrosCusto[0]?.id || '';
-    setDivCentroCustoId(ccPadrao);
-    if (ccPadrao) carregarRequisicoesAtendidas(Number(ccPadrao));
+    setDivCentroCustoId('');
+    setRequisicoesAtendidasDoSetor([]);
     setDivRequisicaoOrigemId('');
     setDivResponsavel(currentUser?.nome || '');
     setDivDocumento('');
@@ -826,7 +825,7 @@ export const MovimentacoesView: React.FC<MovimentacoesViewProps> = ({
                         if (nextCc) carregarRequisicoesAtendidas(Number(nextCc));
                       }}
                       placeholder="Selecione o Setor / Centro de Custo..."
-                      allowClear={false}
+                      allowClear={true}
                     />
                   </div>
 

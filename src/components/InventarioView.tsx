@@ -227,9 +227,8 @@ export const InventarioView: React.FC<InventarioViewProps> = ({
     setFormEmpresaId(activeUnidade?.id || currentUser.empresa_id || 1);
     setFormEmpresaNome(activeUnidade ? `${activeUnidade.codigo} - ${activeUnidade.nome}` : '001 - Almoxarifado Central');
 
-    // Seleciona o primeiro Centro de Custo disponível ou o do usuário
-    const defaultCc = currentUser.centro_custo_id || centrosCusto[0]?.id || '';
-    setFormCentroCustoId(defaultCc);
+    // Centro de Custo deve começar sempre em branco para forçar a escolha consciente do usuário
+    setFormCentroCustoId('');
 
     setFormZeraPorLote(false);
     setFormZeraNaoListados(false);

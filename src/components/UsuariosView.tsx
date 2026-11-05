@@ -165,7 +165,7 @@ export const UsuariosView: React.FC<UsuariosViewProps> = ({
   const [formCcId, setFormCcId] = useState<number | ''>('');
   const [formEmpresaId, setFormEmpresaId] = useState<number>(1);
   const [formAtivo, setFormAtivo] = useState<number>(1);
-  const [formAreaIds, setFormAreaIds] = useState<number[]>([1, 2]);
+  const [formAreaIds, setFormAreaIds] = useState<number[]>([]);
   const [formHistoricoCriacao, setFormHistoricoCriacao] = useState('');
   const [formHistoricoAcesso, setFormHistoricoAcesso] = useState('');
 
@@ -434,10 +434,10 @@ export const UsuariosView: React.FC<UsuariosViewProps> = ({
     setFormCpf('');
     setFormEmail('');
     setFormPerfil('requisitante');
-    setFormCcId(centrosCusto[0]?.id || '');
+    setFormCcId('');
     setFormEmpresaId(unidades[0]?.id || 1);
     setFormAtivo(1);
-    setFormAreaIds([1, 2]);
+    setFormAreaIds([]);
     setFormHistoricoCriacao(new Date().toLocaleString('pt-BR'));
     setFormHistoricoAcesso('Primeiro acesso pendente');
     setFormModulos([...(MODULOS_PADRAO_POR_PERFIL['requisitante'] || ['requisicoes', 'perfil'])]);
@@ -514,6 +514,14 @@ export const UsuariosView: React.FC<UsuariosViewProps> = ({
       const msg = 'Centro de Custo é obrigatório para usuários Requisitantes.';
       setErrorMsg(msg);
       toast.error('Centro de Custo Obrigatório', msg);
+      setActiveFormTab('identificacao');
+      return;
+    }
+
+    if (!formAreaIds || formAreaIds.length === 0) {
+      const msg = 'Selecione ao menos uma Área Operacional (Almoxarifado e/ou CAF) com permissão de acesso para o usuário.';
+      setErrorMsg(msg);
+      toast.error('Área Operacional Obrigatória', msg);
       setActiveFormTab('identificacao');
       return;
     }
@@ -941,7 +949,7 @@ export const UsuariosView: React.FC<UsuariosViewProps> = ({
                               : 'bg-white border border-slate-300 text-slate-600 hover:bg-slate-50'
                           }`}
                         >
-                          Ambas as Áreas (Padrão)
+                          Selecionar Ambas
                         </button>
                         <button
                           type="button"
@@ -965,9 +973,27 @@ export const UsuariosView: React.FC<UsuariosViewProps> = ({
                         >
                           Somente CAF
                         </button>
+                        <button
+                          type="button"
+                          onClick={() => setFormAreaIds([])}
+                          className={`px-2.5 py-1 text-[11px] font-bold rounded cursor-pointer transition-all ${
+                            formAreaIds.length === 0
+                              ? 'bg-slate-700 text-white shadow-xs'
+                              : 'bg-white border border-slate-300 text-slate-500 hover:bg-slate-50'
+                          }`}
+                        >
+                          Limpar Seleção
+                        </button>
                       </div>
                     )}
                   </div>
+
+                  {formAreaIds.length === 0 && (
+                    <div className="p-2.5 mb-2 rounded bg-amber-50 border border-amber-300 text-amber-900 text-xs flex items-center gap-1.5">
+                      <AlertTriangle className="w-4 h-4 text-amber-700 shrink-0" />
+                      <span><strong>Nenhuma área selecionada:</strong> Marque abaixo ao menos uma área operacional (Almoxarifado ou CAF) que o usuário poderá acessar.</span>
+                    </div>
+                  )}
 
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mt-3">
                     <label
@@ -985,10 +1011,6 @@ export const UsuariosView: React.FC<UsuariosViewProps> = ({
                           if (e.target.checked) {
                             setFormAreaIds((prev) => Array.from(new Set([...prev, 1])));
                           } else {
-                            if (formAreaIds.length === 1 && formAreaIds.includes(1)) {
-                              toast.warning('Atenção', 'O usuário precisa ter acesso a pelo menos uma área.');
-                              return;
-                            }
                             setFormAreaIds((prev) => prev.filter((id) => id !== 1));
                           }
                         }}
@@ -1020,10 +1042,6 @@ export const UsuariosView: React.FC<UsuariosViewProps> = ({
                           if (e.target.checked) {
                             setFormAreaIds((prev) => Array.from(new Set([...prev, 2])));
                           } else {
-                            if (formAreaIds.length === 1 && formAreaIds.includes(2)) {
-                              toast.warning('Atenção', 'O usuário precisa ter acesso a pelo menos uma área.');
-                              return;
-                            }
                             setFormAreaIds((prev) => prev.filter((id) => id !== 2));
                           }
                         }}

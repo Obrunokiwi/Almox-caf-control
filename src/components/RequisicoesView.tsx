@@ -122,9 +122,9 @@ export const RequisicoesView: React.FC<RequisicoesViewProps> = ({
   const [isFormOpen, setIsFormOpen] = useState(isCreateModalOpen);
   const [activeFormTab, setActiveFormTab] = useState<'cabecalho' | 'itens'>('cabecalho');
 
-  // Campos do Cabeçalho da Requisição
-  const [formCcId, setFormCcId] = useState<number>(
-    currentUser?.centro_custo_id || centrosCusto[0]?.id || 1
+  // Campos do Cabeçalho da Requisição (sempre em branco por padrão para evitar lançamentos errôneos)
+  const [formCcId, setFormCcId] = useState<number | ''>(
+    currentUser?.perfil === 'requisitante' ? (currentUser.centro_custo_id || '') : ''
   );
   const [formPrioridade, setFormPrioridade] = useState<PrioridadeRequisicao>('normal');
   const [formObservacao, setFormObservacao] = useState('');
@@ -145,7 +145,7 @@ export const RequisicoesView: React.FC<RequisicoesViewProps> = ({
 
   // Rascunho automático e manual vinculado ao usuário e módulo
   interface RequisicaoDraftData {
-    formCcId: number;
+    formCcId: number | '';
     formPrioridade: PrioridadeRequisicao;
     formObservacao: string;
     itensAdicionados: Array<{
@@ -165,7 +165,7 @@ export const RequisicoesView: React.FC<RequisicoesViewProps> = ({
     modulo: 'requisicoes',
     isOpen: isFormOpen,
     onRestore: (data) => {
-      if (data.formCcId) setFormCcId(data.formCcId);
+      if (data.formCcId !== undefined) setFormCcId(data.formCcId);
       if (data.formPrioridade) setFormPrioridade(data.formPrioridade);
       if (typeof data.formObservacao === 'string') setFormObservacao(data.formObservacao);
       if (Array.isArray(data.itensAdicionados)) setItensAdicionados(data.itensAdicionados);
@@ -481,7 +481,7 @@ export const RequisicoesView: React.FC<RequisicoesViewProps> = ({
   };
 
   const abrirFormularioNovaRequisicao = () => {
-    setFormCcId(currentUser?.centro_custo_id || centrosCusto[0]?.id || 1);
+    setFormCcId(currentUser?.perfil === 'requisitante' ? (currentUser.centro_custo_id || '') : '');
     setFormPrioridade('normal');
     setFormObservacao('');
     setItensAdicionados([]);
@@ -490,7 +490,7 @@ export const RequisicoesView: React.FC<RequisicoesViewProps> = ({
     setActiveFormTab('cabecalho');
     setActionError(null);
     setIsFormOpen(true);
-    if (setIsCreateModalOpen) setIsCreateModalOpen(true);
+    if (setIsCreateModalOpen) setIsCreateModalOpen(false);
   };
 
   // Adicionar item à cesta da requisição com retorno do foco para o produto
@@ -541,6 +541,14 @@ export const RequisicoesView: React.FC<RequisicoesViewProps> = ({
   // Enviar requisição para o almoxarifado
   const handleSubmitRequisicao = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (!formCcId) {
+      const msg = 'Selecione o Centro de Custo Solicitante da requisição.';
+      setActionError(msg);
+      toast.error('Centro de Custo Obrigatório', msg);
+      setActiveFormTab('cabecalho');
+      return;
+    }
+
     if (itensAdicionados.length === 0) {
       const msg = 'A requisição deve conter pelo menos 1 item consumível adicionado.';
       setActionError(msg);
@@ -557,7 +565,7 @@ export const RequisicoesView: React.FC<RequisicoesViewProps> = ({
         method: 'POST',
         headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify({
-          centro_custo_id: formCcId,
+          centro_custo_id: Number(formCcId),
           prioridade: formPrioridade,
           observacao: formObservacao ? formObservacao.trim() : null,
           itens: itensAdicionados.map((it) => ({
@@ -1234,10 +1242,11 @@ export const RequisicoesView: React.FC<RequisicoesViewProps> = ({
                     <SearchableSelect
                       options={centrosCustoOptions}
                       value={formCcId}
-                      onChange={(val) => setFormCcId(Number(val))}
+                      onChange={(val) => setFormCcId(val ? Number(val) : '')}
                       disabled={currentUser?.perfil === 'requisitante'}
-                      placeholder="Pesquise por código ou nome do Centro de Custo..."
+                      placeholder="Selecione o Centro de Custo solicitante..."
                       emptyMessage="Nenhum Centro de Custo encontrado com esse nome ou código."
+                      allowClear={currentUser?.perfil !== 'requisitante'}
                     />
                     {currentUser?.perfil === 'requisitante' && (
                       <p className="text-[10px] text-slate-500 mt-1">Vinculado automaticamente ao seu setor hospitalar.</p>
