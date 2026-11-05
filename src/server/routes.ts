@@ -5025,7 +5025,7 @@ apiRouter.post('/requisicoes/:id/aprovar', (req, res) => {
       if (!reqRow) {
         throw new Error('Requisição não encontrada');
       }
-      if (reqRow.status !== 'pendente' && reqRow.status !== 'aguardando_atendimento') {
+      if (reqRow.status !== 'pendente' && reqRow.status !== 'aguardando_atendimento' && reqRow.status !== 'em_separacao') {
         throw new Error(`Esta requisição não pode ser analisada pois seu status atual é "${reqRow.status}"`);
       }
 
@@ -5424,7 +5424,7 @@ apiRouter.post('/requisicoes/:id/rejeitar', (req, res) => {
       res.status(404).json({ error: 'Requisição não encontrada' });
       return;
     }
-    if (reqRow.status !== 'pendente' && reqRow.status !== 'aguardando_atendimento') {
+    if (reqRow.status !== 'pendente' && reqRow.status !== 'aguardando_atendimento' && reqRow.status !== 'em_separacao') {
       res.status(400).json({ error: `Esta requisição não pode ser rejeitada pois seu status atual é "${reqRow.status}"` });
       return;
     }
@@ -5786,8 +5786,8 @@ apiRouter.post('/requisicoes/:id/salvar-rascunho', (req, res) => {
       if (!reqRow) {
         throw new Error('Requisição não encontrada');
       }
-      if (reqRow.status !== 'pendente') {
-        throw new Error('Apenas requisições pendentes podem ter rascunho de conferência salvo');
+      if (reqRow.status !== 'pendente' && reqRow.status !== 'aguardando_atendimento' && reqRow.status !== 'em_separacao') {
+        throw new Error('Apenas requisições abertas ou em separação podem ter rascunho de conferência salvo');
       }
 
       if (prioridade === 'normal' || prioridade === 'urgente') {

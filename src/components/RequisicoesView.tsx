@@ -33,7 +33,9 @@ import {
   Tag,
   Star,
   Save,
-  Unlock
+  Unlock,
+  Calendar,
+  SlidersHorizontal
 } from 'lucide-react';
 import type {
   Requisicao,
@@ -97,7 +99,18 @@ export const RequisicoesView: React.FC<RequisicoesViewProps> = ({
   const [filtroStatus, setFiltroStatus] = useState<string>('trabalho_pendente');
   const [filtroPrioridade, setFiltroPrioridade] = useState<string>('todas');
   const [filtroSolicitante, setFiltroSolicitante] = useState<string>('');
+  const [filtroDataInicio, setFiltroDataInicio] = useState<string>('');
+  const [filtroDataFim, setFiltroDataFim] = useState<string>('');
   const [isFilterOpen, setIsFilterOpen] = useState(false);
+
+  // Auxiliares de status de requisição
+  const isReqEmAberto = (status?: string): boolean => {
+    return status === 'aguardando_atendimento' || status === 'pendente' || status === 'em_separacao';
+  };
+
+  const isReqFinalizada = (status?: string): boolean => {
+    return status === 'atendida' || status === 'aprovada_atendida' || status === 'nao_atendida' || status === 'rejeitada' || status === 'cancelada';
+  };
 
   const activeFiltersCount = useMemo(() => {
     let count = 0;
@@ -106,8 +119,10 @@ export const RequisicoesView: React.FC<RequisicoesViewProps> = ({
     if (filtroStatus !== 'trabalho_pendente') count++;
     if (filtroPrioridade !== 'todas') count++;
     if (filtroSolicitante.trim()) count++;
+    if (filtroDataInicio) count++;
+    if (filtroDataFim) count++;
     return count;
-  }, [filtroNumero, filtroCcId, filtroStatus, filtroPrioridade, filtroSolicitante]);
+  }, [filtroNumero, filtroCcId, filtroStatus, filtroPrioridade, filtroSolicitante, filtroDataInicio, filtroDataFim]);
 
   const handleLimparFiltros = () => {
     setFiltroNumero('');
@@ -115,6 +130,8 @@ export const RequisicoesView: React.FC<RequisicoesViewProps> = ({
     setFiltroStatus('trabalho_pendente');
     setFiltroPrioridade('todas');
     setFiltroSolicitante('');
+    setFiltroDataInicio('');
+    setFiltroDataFim('');
     setCurrentPage(1);
   };
 
@@ -252,6 +269,9 @@ export const RequisicoesView: React.FC<RequisicoesViewProps> = ({
   const [deletingRequisicao, setDeletingRequisicao] = useState<Requisicao | null>(null);
   const [isReopenModalOpen, setIsReopenModalOpen] = useState(false);
   const [motivoReabertura, setMotivoReabertura] = useState('');
+  const [isStatusModalOpen, setIsStatusModalOpen] = useState(false);
+  const [targetStatusToChange, setTargetStatusToChange] = useState<string>('em_separacao');
+  const [justificativaStatusChange, setJustificativaStatusChange] = useState<string>('');
 
   const { toast } = useToast();
 
@@ -372,7 +392,7 @@ export const RequisicoesView: React.FC<RequisicoesViewProps> = ({
     });
   }, [produtosConsumiveis, isRequisitante]);
 
-  // Opções para autocompletar de Centros de Custo
+  // Opções para autocompletar de Centros de Custo (no formulário de abertura)
   const centrosCustoOptions = useMemo(() => {
     return centrosCusto.map((cc) => ({
       value: cc.id,
@@ -381,6 +401,27 @@ export const RequisicoesView: React.FC<RequisicoesViewProps> = ({
       keywords: `${cc.codigo} ${cc.nome} ${cc.departamento || ''}`,
     }));
   }, [centrosCusto]);
+
+  // Opções completas de Centros de Custo para o Filtro de Requisições (Garante todos os centros cadastrados e das requisições)
+  const todosCentrosCustoFiltro = useMemo(() => {
+    const map = new Map<string, { value: string; label: string; secondaryLabel?: string }>();
+    for (const cc of centrosCusto) {
+      map.set(String(cc.id), {
+        value: String(cc.id),
+        label: `${cc.codigo} - ${cc.nome}`,
+        secondaryLabel: cc.departamento ? `(${cc.departamento})` : undefined,
+      });
+    }
+    for (const r of requisicoes) {
+      if (r.centro_custo_id && !map.has(String(r.centro_custo_id))) {
+        map.set(String(r.centro_custo_id), {
+          value: String(r.centro_custo_id),
+          label: `${r.centro_custo_codigo || 'CC'} - ${r.centro_custo_nome || 'Centro de Custo'}`,
+        });
+      }
+    }
+    return Array.from(map.values()).sort((a, b) => a.label.localeCompare(b.label));
+  }, [centrosCusto, requisicoes]);
 
   // Contadores de Requisições por Etapa
   const statusCounts = useMemo(() => {
@@ -416,6 +457,11 @@ export const RequisicoesView: React.FC<RequisicoesViewProps> = ({
       if (filtroNumero && !r.numero_requisicao.toLowerCase().includes(filtroNumero.toLowerCase())) return false;
       if (filtroCcId && String(r.centro_custo_id) !== filtroCcId) return false;
 
+      // Filtro por Data (Período: Inicial e Final)
+      const reqData = String(r.data_solicitacao || (r as any).criado_em || '').slice(0, 10);
+      if (filtroDataInicio && reqData && reqData < filtroDataInicio) return false;
+      if (filtroDataFim && reqData && reqData > filtroDataFim) return false;
+
       // Filtro de Status
       if (filtroStatus === 'trabalho_pendente') {
         // Oculta requisições atendidas por padrão; mostra requisições não finalizadas (inclusive de dias anteriores)
@@ -438,7 +484,7 @@ export const RequisicoesView: React.FC<RequisicoesViewProps> = ({
       if (filtroSolicitante && !r.solicitante_nome?.toLowerCase().includes(filtroSolicitante.toLowerCase())) return false;
       return true;
     });
-  }, [requisicoes, filtroNumero, filtroCcId, filtroStatus, filtroPrioridade, filtroSolicitante]);
+  }, [requisicoes, filtroNumero, filtroCcId, filtroStatus, filtroPrioridade, filtroSolicitante, filtroDataInicio, filtroDataFim]);
 
   const totalPages = Math.ceil(filteredRequisicoes.length / pageSize) || 1;
   const paginatedRequisicoes = useMemo(() => {
@@ -632,9 +678,40 @@ export const RequisicoesView: React.FC<RequisicoesViewProps> = ({
             const lotes = it.lotes_disponiveis || [];
             const dist: Record<number, number> = {};
 
-            if (lotes.length > 0) {
+            // Se o item já possui lotes atendidos salvos, restaura-os
+            let jaTemLotesSalvos = false;
+            if (it.lotes_atendidos) {
+              try {
+                const parsedLotes = typeof it.lotes_atendidos === 'string' ? JSON.parse(it.lotes_atendidos) : it.lotes_atendidos;
+                if (Array.isArray(parsedLotes) && parsedLotes.length > 0) {
+                  for (const pl of parsedLotes) {
+                    if (pl.lote_id) {
+                      dist[pl.lote_id] = pl.quantidade || 0;
+                      jaTemLotesSalvos = true;
+                    }
+                  }
+                }
+              } catch {}
+            }
+
+            if (jaTemLotesSalvos) {
+              const soma = Object.values(dist).reduce((a, b) => a + b, 0);
+              initMap[it.id] = {
+                decisao: it.status_item === 'negado' ? 'negado' : 'aprovado',
+                quantidade_atendida: it.quantidade_atendida ?? soma,
+                motivo_decisao: it.motivo_decisao || (it.status_item === 'negado' ? 'Item negado' : 'Item conferido e dispensado pelo almoxarifado.'),
+                lotes_distribuicao: dist,
+              };
+            } else if (it.status_item === 'negado') {
+              initMap[it.id] = {
+                decisao: 'negado',
+                quantidade_atendida: 0,
+                motivo_decisao: it.motivo_decisao || 'Item negado na análise técnica.',
+                lotes_distribuicao: {},
+              };
+            } else if (lotes.length > 0) {
               // Distribuição sugerida automática (FEFO: o que vence primeiro)
-              let restante = it.quantidade_solicitada;
+              let restante = it.quantidade_atendida && it.quantidade_atendida > 0 ? it.quantidade_atendida : it.quantidade_solicitada;
               for (const l of lotes) {
                 if (restante <= 0) {
                   dist[l.id] = 0;
@@ -646,21 +723,23 @@ export const RequisicoesView: React.FC<RequisicoesViewProps> = ({
               }
               const soma = Object.values(dist).reduce((a, b) => a + b, 0);
               initMap[it.id] = {
-                decisao: soma > 0 ? 'aprovado' : 'negado',
+                decisao: soma > 0 ? 'aprovado' : (String(it.status_item) === 'negado' ? 'negado' : 'aprovado'),
                 quantidade_atendida: soma > 0 ? soma : it.quantidade_solicitada,
-                motivo_decisao: soma > 0
+                motivo_decisao: it.motivo_decisao || (soma > 0
                   ? 'Item conferido, aprovado e dispensado pelo almoxarifado.'
-                  : `Saldo físico insuficiente em estoque (Disponível: ${saldo} ${it.unidade_medida || ''}).`,
+                  : `Saldo físico insuficiente em estoque (Disponível: ${saldo} ${it.unidade_medida || ''}).`),
                 lotes_distribuicao: dist,
               };
             } else {
+              const qtdAtend = it.quantidade_atendida !== undefined && it.quantidade_atendida !== null ? it.quantidade_atendida : it.quantidade_solicitada;
               const temSaldo = saldo >= it.quantidade_solicitada;
+              const isNeg = String(it.status_item) === 'negado';
               initMap[it.id] = {
-                decisao: temSaldo ? 'aprovado' : 'negado',
-                quantidade_atendida: temSaldo ? it.quantidade_solicitada : 0,
-                motivo_decisao: temSaldo
+                decisao: isNeg ? 'negado' : (temSaldo || qtdAtend > 0 ? 'aprovado' : 'negado'),
+                quantidade_atendida: isNeg ? 0 : (qtdAtend > 0 ? qtdAtend : (temSaldo ? it.quantidade_solicitada : 0)),
+                motivo_decisao: it.motivo_decisao || (temSaldo
                   ? 'Item conferido, aprovado e dispensado pelo almoxarifado.'
-                  : `Saldo físico insuficiente em estoque (Disponível: ${saldo} ${it.unidade_medida || ''}).`,
+                  : `Saldo físico insuficiente em estoque (Disponível: ${saldo} ${it.unidade_medida || ''}).`),
                 lotes_distribuicao: {},
               };
             }
@@ -939,7 +1018,7 @@ export const RequisicoesView: React.FC<RequisicoesViewProps> = ({
 
       const updatedReq = {
         ...selectedReq,
-        status: 'pendente' as const,
+        status: 'aguardando_atendimento' as any,
         data_atendimento: null,
       };
       setSelectedReq(updatedReq);
@@ -949,6 +1028,78 @@ export const RequisicoesView: React.FC<RequisicoesViewProps> = ({
       const msg = err.message || 'Falha ao reabrir requisição.';
       setActionError(msg);
       toast.error('Erro ao Reabrir Requisição', msg);
+    } finally {
+      setIsProcessing(false);
+    }
+  };
+
+  // Ação Almoxarife: Alterar status manualmente para qualquer etapa do fluxo
+  const handleAlterarStatus = async (novoStatus: string, justificativa: string = '') => {
+    if (!selectedReq) return;
+    setIsProcessing(true);
+    setActionError(null);
+    try {
+      const res = await fetch(`/api/requisicoes/${selectedReq.id}/alterar-status`, {
+        method: 'POST',
+        headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
+        body: JSON.stringify({
+          novo_status: novoStatus,
+          justificativa: justificativa.trim() || undefined,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || 'Erro ao alterar etapa da requisição.');
+      }
+      toast.success('Etapa Atualizada com Sucesso', data.message || `Status alterado para ${novoStatus}`);
+      setIsStatusModalOpen(false);
+      const updatedReq = {
+        ...selectedReq,
+        status: novoStatus as any,
+      };
+      setSelectedReq(updatedReq);
+      await handleAbrirAnalise(updatedReq, activeDetailTab);
+      onRefresh();
+    } catch (err: any) {
+      const msg = err.message || 'Falha ao alterar status.';
+      setActionError(msg);
+      toast.error('Erro ao Alterar Etapa', msg);
+    } finally {
+      setIsProcessing(false);
+    }
+  };
+
+  // Ação Almoxarife: Confirmar Entrega do Material ao Solicitante (Transição para Atendida)
+  const handleConfirmarEntrega = async () => {
+    if (!selectedReq) return;
+    setIsProcessing(true);
+    setActionError(null);
+    try {
+      const res = await fetch(`/api/requisicoes/${selectedReq.id}/entregar`, {
+        method: 'POST',
+        headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
+        body: JSON.stringify({
+          responsavel_recebimento: selectedReq.solicitante_nome || '',
+          observacao_entrega: 'Material físico conferido e entregue ao solicitante. Requisição finalizada.',
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || 'Erro ao confirmar entrega.');
+      }
+      toast.success('Requisição Finalizada', 'Material entregue ao solicitante com sucesso! Requisição marcada como Atendida.');
+      const updatedReq = {
+        ...selectedReq,
+        status: 'atendida' as any,
+        data_atendimento: new Date().toISOString(),
+      };
+      setSelectedReq(updatedReq);
+      await handleAbrirAnalise(updatedReq, 'conferencia');
+      onRefresh();
+    } catch (err: any) {
+      const msg = err.message || 'Falha ao confirmar entrega.';
+      setActionError(msg);
+      toast.error('Erro ao Finalizar Entrega', msg);
     } finally {
       setIsProcessing(false);
     }
@@ -1032,41 +1183,51 @@ export const RequisicoesView: React.FC<RequisicoesViewProps> = ({
 
   const getStatusBadge = (status: string) => {
     switch (status) {
+      case 'aguardando_atendimento':
       case 'pendente':
         return (
-          <span className="inline-flex items-center gap-1 text-amber-800 font-bold bg-amber-50 px-2 py-0.5 rounded text-[10px] border border-amber-300">
+          <span className="inline-flex items-center gap-1 text-amber-800 font-bold bg-amber-50 px-2 py-0.5 rounded text-[10px] border border-amber-300 shadow-2xs">
             <Clock className="w-3 h-3 text-amber-600" />
-            <span>PENDENTE</span>
+            <span>AGUARDANDO ATENDIMENTO</span>
           </span>
         );
+      case 'em_separacao':
+        return (
+          <span className="inline-flex items-center gap-1 text-indigo-800 font-bold bg-indigo-50 px-2 py-0.5 rounded text-[10px] border border-indigo-300 shadow-2xs">
+            <Layers className="w-3 h-3 text-indigo-600" />
+            <span>EM SEPARAÇÃO</span>
+          </span>
+        );
+      case 'atendida':
+      case 'aprovada_atendida':
       case 'aprovada':
         return (
-          <span className="inline-flex items-center gap-1 text-blue-800 font-bold bg-blue-50 px-2 py-0.5 rounded text-[10px] border border-blue-300">
-            <CheckCircle2 className="w-3 h-3 text-blue-600" />
-            <span>APROVADA</span>
-          </span>
-        );
-      case 'aprovada_atendida':
-      case 'atendida':
-        return (
-          <span className="inline-flex items-center gap-1 text-emerald-800 font-bold bg-emerald-50 px-2 py-0.5 rounded text-[10px] border border-emerald-300">
+          <span className="inline-flex items-center gap-1 text-emerald-800 font-bold bg-emerald-50 px-2 py-0.5 rounded text-[10px] border border-emerald-300 shadow-2xs">
             <CheckCircle2 className="w-3 h-3 text-emerald-600" />
             <span>ATENDIDA</span>
           </span>
         );
+      case 'nao_atendida':
+      case 'rejeitada':
+      case 'negada':
+        return (
+          <span className="inline-flex items-center gap-1 text-rose-800 font-bold bg-rose-50 px-2 py-0.5 rounded text-[10px] border border-rose-300 shadow-2xs">
+            <XCircle className="w-3 h-3 text-rose-600" />
+            <span>NÃO ATENDIDA</span>
+          </span>
+        );
       case 'parcial':
         return (
-          <span className="inline-flex items-center gap-1 text-purple-800 font-bold bg-purple-50 px-2 py-0.5 rounded text-[10px] border border-purple-300">
+          <span className="inline-flex items-center gap-1 text-purple-800 font-bold bg-purple-50 px-2 py-0.5 rounded text-[10px] border border-purple-300 shadow-2xs">
             <CheckCircle2 className="w-3 h-3 text-purple-600" />
             <span>PARCIAL</span>
           </span>
         );
-      case 'rejeitada':
-      case 'negada':
+      case 'cancelada':
         return (
-          <span className="inline-flex items-center gap-1 text-rose-800 font-bold bg-rose-50 px-2 py-0.5 rounded text-[10px] border border-rose-300">
-            <XCircle className="w-3 h-3 text-rose-600" />
-            <span>NEGADA</span>
+          <span className="inline-flex items-center gap-1 text-slate-700 font-bold bg-slate-100 px-2 py-0.5 rounded text-[10px] border border-slate-300 shadow-2xs">
+            <XCircle className="w-3 h-3 text-slate-500" />
+            <span>CANCELADA</span>
           </span>
         );
       default:
@@ -1548,11 +1709,7 @@ export const RequisicoesView: React.FC<RequisicoesViewProps> = ({
               <SearchableSelect
                 options={[
                   { value: '', label: '(Todos os Centros de Custo)' },
-                  ...centrosCusto.map((cc) => ({
-                    value: String(cc.id),
-                    label: `${cc.codigo} - ${cc.nome}`,
-                    secondaryLabel: cc.departamento ? `(${cc.departamento})` : undefined,
-                  })),
+                  ...todosCentrosCustoFiltro,
                 ]}
                 value={filtroCcId}
                 onChange={(val) => {
@@ -1570,15 +1727,16 @@ export const RequisicoesView: React.FC<RequisicoesViewProps> = ({
               </label>
               <SearchableSelect
                 options={[
-                  { value: 'todas', label: 'TODAS AS SITUAÇÕES' },
-                  { value: 'pendente', label: 'Pendente (Em Análise)', badge: 'Pendente', badgeVariant: 'warning' },
-                  { value: 'aprovada_atendida', label: 'Aprovada e Atendida (Baixa Efetuada)', badge: 'Atendida', badgeVariant: 'regular' },
-                  { value: 'rejeitada', label: 'Rejeitada (Com Parecer)', badge: 'Rejeitada', badgeVariant: 'danger' },
-                  { value: 'cancelada', label: 'Cancelada', badge: 'Cancelada', badgeVariant: 'danger' },
+                  { value: 'trabalho_pendente', label: 'Trabalho Pendente (Aguardando + Em Separação)', badge: 'Trabalho Pendente', badgeVariant: 'warning' },
+                  { value: 'todas', label: 'TODAS AS REQUISIÇÕES (INCLUI FINALIZADAS)' },
+                  { value: 'aguardando_atendimento', label: 'Aguardando atendimento', badge: 'Aguardando', badgeVariant: 'warning' },
+                  { value: 'em_separacao', label: 'Em separação', badge: 'Em Separação', badgeVariant: 'regular' },
+                  { value: 'atendida', label: 'Atendida (Entregue)', badge: 'Atendida', badgeVariant: 'regular' },
+                  { value: 'nao_atendida', label: 'Não atendida (Negada)', badge: 'Não Atendida', badgeVariant: 'danger' },
                 ]}
                 value={filtroStatus}
                 onChange={(val) => {
-                  setFiltroStatus(String(val || 'todas'));
+                  setFiltroStatus(String(val || 'trabalho_pendente'));
                   setCurrentPage(1);
                 }}
                 placeholder="Filtrar por status..."
@@ -1587,7 +1745,31 @@ export const RequisicoesView: React.FC<RequisicoesViewProps> = ({
             </div>
           </div>
 
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-3 items-end">
+          <div className="grid grid-cols-1 md:grid-cols-4 gap-3 items-end">
+            <div>
+              <label className="block text-[11px] font-bold text-slate-500 uppercase tracking-wider mb-1">
+                Data Inicial (De)
+              </label>
+              <input
+                type="date"
+                value={filtroDataInicio}
+                onChange={(e) => { setFiltroDataInicio(e.target.value); setCurrentPage(1); }}
+                className="w-full px-3 py-2 bg-slate-50 border border-slate-300 rounded text-xs text-slate-800 focus:bg-white focus:border-teal-500 shadow-inner"
+              />
+            </div>
+
+            <div>
+              <label className="block text-[11px] font-bold text-slate-500 uppercase tracking-wider mb-1">
+                Data Final (Até)
+              </label>
+              <input
+                type="date"
+                value={filtroDataFim}
+                onChange={(e) => { setFiltroDataFim(e.target.value); setCurrentPage(1); }}
+                className="w-full px-3 py-2 bg-slate-50 border border-slate-300 rounded text-xs text-slate-800 focus:bg-white focus:border-teal-500 shadow-inner"
+              />
+            </div>
+
             <div>
               <label className="block text-[11px] font-bold text-slate-500 uppercase tracking-wider mb-1">
                 Prioridade
@@ -1616,7 +1798,7 @@ export const RequisicoesView: React.FC<RequisicoesViewProps> = ({
                 type="text"
                 value={filtroSolicitante}
                 onChange={(e) => { setFiltroSolicitante(e.target.value); setCurrentPage(1); }}
-                placeholder="Pesquisar por nome do solicitante..."
+                placeholder="Pesquisar por solicitante..."
                 className="w-full px-3 py-2 bg-slate-50 border border-slate-300 rounded text-xs text-slate-800 focus:bg-white focus:border-teal-500 shadow-inner"
               />
             </div>
@@ -1717,7 +1899,7 @@ export const RequisicoesView: React.FC<RequisicoesViewProps> = ({
                           className="px-2.5 py-1 rounded bg-teal-50 hover:bg-teal-100 text-teal-800 text-xs font-semibold flex items-center gap-1 transition-colors cursor-pointer"
                         >
                           <Eye className="w-3.5 h-3.5" />
-                          <span>{isAlmoxarifeOrAdmin && r.status === 'pendente' ? 'ANALISAR' : 'VER'}</span>
+                          <span>{isAlmoxarifeOrAdmin && isReqEmAberto(r.status) ? 'ATENDER / ANALISAR' : 'VER'}</span>
                         </button>
 
                         {r.status === 'aprovada_atendida' && (
@@ -1996,13 +2178,13 @@ export const RequisicoesView: React.FC<RequisicoesViewProps> = ({
                         Itens da Requisição — Conferência de Saldo e Decisão Individual por Item
                       </h4>
                       <p className="text-[11px] text-slate-500">
-                        {isAlmoxarifeOrAdmin && selectedReq.status === 'pendente'
+                        {isAlmoxarifeOrAdmin && isReqEmAberto(selectedReq.status)
                           ? 'Aprove ou negue cada item individualmente. Toda decisão fica registrada com seu usuário e data/hora no log de auditoria.'
                           : 'Demonstrativo auditado de cada item solicitado, decisão tomada e responsável pela análise.'}
                       </p>
                     </div>
 
-                    {isAlmoxarifeOrAdmin && selectedReq.status === 'pendente' && reqDetails?.itens && (
+                    {isAlmoxarifeOrAdmin && isReqEmAberto(selectedReq.status) && reqDetails?.itens && (
                       <div className="flex items-center gap-2 shrink-0">
                         <button
                           type="button"
@@ -2062,11 +2244,11 @@ export const RequisicoesView: React.FC<RequisicoesViewProps> = ({
                             motivo_decisao: '',
                             lotes_distribuicao: {},
                           };
-                          const suficiente = saldo >= (selectedReq.status === 'pendente' ? dec.quantidade_atendida : it.quantidade_solicitada);
+                          const suficiente = saldo >= (isReqEmAberto(selectedReq.status) ? dec.quantidade_atendida : it.quantidade_solicitada);
                           const statusAuditado = it.status_item || (
-                            selectedReq.status === 'aprovada_atendida'
+                            selectedReq.status === 'aprovada_atendida' || selectedReq.status === 'atendida'
                               ? 'aprovado'
-                              : selectedReq.status === 'rejeitada'
+                              : selectedReq.status === 'rejeitada' || selectedReq.status === 'nao_atendida'
                               ? 'negado'
                               : 'pendente'
                           );
@@ -2092,7 +2274,7 @@ export const RequisicoesView: React.FC<RequisicoesViewProps> = ({
                             <React.Fragment key={it.id}>
                               <tr
                                 className={
-                                  selectedReq.status === 'pendente' && isAlmoxarifeOrAdmin
+                                  isReqEmAberto(selectedReq.status) && isAlmoxarifeOrAdmin
                                     ? dec.decisao === 'negado'
                                       ? 'bg-rose-50/40'
                                       : 'bg-emerald-50/15'
@@ -2107,7 +2289,7 @@ export const RequisicoesView: React.FC<RequisicoesViewProps> = ({
                                   {!isRequisitante && (
                                     <>
                                       {/* Caso 1: Produto com lote único em análise */}
-                                      {selectedReq.status === 'pendente' && hasSingleLot && singleLot && (
+                                      {isReqEmAberto(selectedReq.status) && hasSingleLot && singleLot && (
                                         <div className="mt-1 flex flex-wrap items-center gap-1.5 text-[11px] font-medium text-emerald-800 bg-emerald-50 px-2 py-0.5 rounded border border-emerald-200">
                                           <Tag className="w-3 h-3 text-emerald-600 shrink-0" />
                                           <span>Lote único selecionado: <strong>{singleLot.numero_lote}</strong></span>
@@ -2119,7 +2301,7 @@ export const RequisicoesView: React.FC<RequisicoesViewProps> = ({
                                       )}
 
                                       {/* Caso 2: Produto com múltiplos lotes em análise */}
-                                      {selectedReq.status === 'pendente' && hasMultipleLots && (
+                                      {isReqEmAberto(selectedReq.status) && hasMultipleLots && (
                                         <div className="mt-1 flex items-center gap-1.5 text-[11px] font-medium text-teal-800 bg-teal-50 px-2 py-0.5 rounded border border-teal-200">
                                           <Layers className="w-3 h-3 text-teal-600 shrink-0" />
                                           <span>{lotes.length} lotes disponíveis com saldo (Sugestão FEFO ativa abaixo)</span>
@@ -2127,7 +2309,7 @@ export const RequisicoesView: React.FC<RequisicoesViewProps> = ({
                                       )}
 
                                       {/* Caso 3: Produto atendido com registro de lotes dispensados */}
-                                      {selectedReq.status === 'aprovada_atendida' && lotesAtendidosList.length > 0 && (
+                                      {(selectedReq.status === 'aprovada_atendida' || selectedReq.status === 'atendida' || selectedReq.status === 'em_separacao') && lotesAtendidosList.length > 0 && (
                                         <div className="mt-1 flex flex-wrap items-center gap-1.5">
                                           {lotesAtendidosList.map((la: any, laIdx: number) => (
                                             <div
@@ -2152,7 +2334,7 @@ export const RequisicoesView: React.FC<RequisicoesViewProps> = ({
                                 {!isRequisitante && (
                                   <td className="py-2.5 px-3 text-right font-mono font-bold text-slate-700">
                                     <div>{saldo}</div>
-                                    {selectedReq.status === 'pendente' && (
+                                    {isReqEmAberto(selectedReq.status) && (
                                       <span
                                         className={`text-[10px] font-semibold ${
                                           suficiente ? 'text-emerald-700' : 'text-rose-700'
@@ -2170,7 +2352,7 @@ export const RequisicoesView: React.FC<RequisicoesViewProps> = ({
 
                                 {/* Coluna Qtd Atendida com Stepper e Ponderação */}
                                 <td className="py-2.5 px-3 text-right font-mono font-bold">
-                                  {isAlmoxarifeOrAdmin && selectedReq.status === 'pendente' ? (
+                                  {isAlmoxarifeOrAdmin && isReqEmAberto(selectedReq.status) ? (
                                     dec.decisao === 'aprovado' ? (
                                       hasMultipleLots ? (
                                         /* Para múltiplos lotes: mostra a soma total dos lotes escolhidos */
@@ -2251,9 +2433,9 @@ export const RequisicoesView: React.FC<RequisicoesViewProps> = ({
                                   )}
                                 </td>
 
-                                {/* Coluna Decisão do Item */}
+                                 {/* Coluna Decisão do Item */}
                                 <td className="py-2.5 px-3 text-center">
-                                  {isAlmoxarifeOrAdmin && selectedReq.status === 'pendente' ? (
+                                  {isAlmoxarifeOrAdmin && isReqEmAberto(selectedReq.status) ? (
                                     <div className="inline-flex rounded border border-slate-300 overflow-hidden shadow-xs">
                                       <button
                                         type="button"
@@ -2339,7 +2521,7 @@ export const RequisicoesView: React.FC<RequisicoesViewProps> = ({
 
                                 {/* Coluna Auditoria / Justificativa do Item */}
                                 <td className="py-2.5 px-3">
-                                  {isAlmoxarifeOrAdmin && selectedReq.status === 'pendente' ? (
+                                  {isAlmoxarifeOrAdmin && isReqEmAberto(selectedReq.status) ? (
                                     dec.decisao === 'negado' ? (
                                       <div className="space-y-1.5 min-w-[220px]">
                                         <select
@@ -2439,7 +2621,7 @@ export const RequisicoesView: React.FC<RequisicoesViewProps> = ({
                               </tr>
 
                               {/* Linha de Sub-Tabela: Escolha de Lotes quando o produto tiver mais de 1 lote disponível */}
-                              {selectedReq.status === 'pendente' && isAlmoxarifeOrAdmin && dec.decisao === 'aprovado' && hasMultipleLots && (
+                              {isReqEmAberto(selectedReq.status) && isAlmoxarifeOrAdmin && dec.decisao === 'aprovado' && hasMultipleLots && (
                                 <tr className="bg-slate-50/80 border-b border-slate-200">
                                   <td colSpan={7} className="px-4 py-3">
                                     <div className="bg-white border border-teal-200 rounded-lg p-3 shadow-xs">
@@ -2894,7 +3076,22 @@ export const RequisicoesView: React.FC<RequisicoesViewProps> = ({
               </div>
 
               <div className="flex flex-wrap items-center gap-2.5">
-                {isAlmoxarifeOrAdmin && selectedReq.status === 'pendente' && (
+                {/* Botão de Transição Rápida: Entrega ao Solicitante quando o status for Em Separação */}
+                {isAlmoxarifeOrAdmin && selectedReq.status === 'em_separacao' && (
+                  <button
+                    type="button"
+                    onClick={handleConfirmarEntrega}
+                    disabled={isProcessing}
+                    className="bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800 text-white font-bold px-4 py-2 rounded text-xs flex items-center gap-1.5 transition-all shadow uppercase tracking-wide cursor-pointer disabled:opacity-50 border border-emerald-500"
+                    title="Marcar material como entregue ao solicitante e finalizar requisição como Atendida"
+                  >
+                    <CheckCircle2 className="w-4 h-4 text-emerald-100" />
+                    <span>ENTREGAR AO SOLICITANTE (MARCAR ATENDIDA)</span>
+                  </button>
+                )}
+
+                {/* Botões de Ação para Requisição em Aberto (Aguardando Atendimento, Pendente ou Em Separação) */}
+                {isAlmoxarifeOrAdmin && isReqEmAberto(selectedReq.status) && (
                   <>
                     <button
                       type="button"
@@ -2921,30 +3118,50 @@ export const RequisicoesView: React.FC<RequisicoesViewProps> = ({
                       type="button"
                       onClick={handleAprovar}
                       disabled={isProcessing}
-                      className="bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800 text-white font-medium px-5 py-2 rounded text-xs flex items-center gap-1.5 transition-all shadow uppercase tracking-wide cursor-pointer disabled:opacity-50"
+                      className="bg-teal-700 hover:bg-teal-800 active:bg-teal-900 text-white font-medium px-5 py-2 rounded text-xs flex items-center gap-1.5 transition-all shadow uppercase tracking-wide cursor-pointer disabled:opacity-50"
+                      title="Gravar conferência de itens, debitar lotes e colocar requisição em separação no estoque"
                     >
                       <CheckCircle2 className="w-4 h-4" />
                       <span>
                         {isProcessing
-                          ? 'PROCESSANDO BAIXA...'
+                          ? 'PROCESSANDO...'
                           : (() => {
                               const vals = Object.values(itemDecisoes);
                               const aprov = vals.filter((v) => v.decisao === 'aprovado').length;
                               const neg = vals.filter((v) => v.decisao === 'negado').length;
                               if (vals.length > 0 && neg > 0 && aprov > 0) {
-                                return `ATENDER (${aprov} APROV. / ${neg} NEG.)`;
+                                return `CONFIRMAR SEPARAÇÃO (${aprov} APROV. / ${neg} NEG.)`;
                               }
                               if (vals.length > 0 && aprov === 0 && neg > 0) {
                                 return `CONFIRMAR NEGAÇÃO DOS ITENS (${neg})`;
                               }
-                              return 'ATENDER E BAIXAR ESTOQUE';
+                              return 'CONFIRMAR SEPARAÇÃO E BAIXAR ESTOQUE';
                             })()}
                       </span>
                     </button>
                   </>
                 )}
 
-                {isAlmoxarifeOrAdmin && selectedReq.status !== 'pendente' && (
+                {/* Botão de Alteração Manual de Etapa / Status para Usuários Autorizados */}
+                {isAlmoxarifeOrAdmin && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setTargetStatusToChange(selectedReq.status === 'aguardando_atendimento' ? 'em_separacao' : selectedReq.status);
+                      setJustificativaStatusChange('');
+                      setIsStatusModalOpen(true);
+                    }}
+                    disabled={isProcessing}
+                    className="bg-indigo-700 hover:bg-indigo-800 active:bg-indigo-900 text-white font-semibold px-3.5 py-2 rounded text-xs flex items-center gap-1.5 transition-all shadow uppercase tracking-wide cursor-pointer disabled:opacity-50"
+                    title="Permite ao almoxarife/administrador alterar o status manualmente para qualquer etapa"
+                  >
+                    <SlidersHorizontal className="w-4 h-4 text-indigo-200" />
+                    <span>ALTERAR ETAPA / STATUS</span>
+                  </button>
+                )}
+
+                {/* Botão de Reabertura para Edição */}
+                {isAlmoxarifeOrAdmin && isReqFinalizada(selectedReq.status) && (
                   <button
                     type="button"
                     onClick={() => {
@@ -3092,6 +3309,107 @@ export const RequisicoesView: React.FC<RequisicoesViewProps> = ({
                 className="bg-rose-600 hover:bg-rose-700 text-white px-4 py-2 rounded text-xs font-bold uppercase tracking-wider disabled:opacity-50 cursor-pointer"
               >
                 {isProcessing ? 'CONFIRMANDO...' : 'CONFIRMAR REJEIÇÃO'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Modal de Alteração Manual de Etapa / Status da Requisição */}
+      {isStatusModalOpen && selectedReq && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm p-4 animate-fadeIn">
+          <div className="bg-white rounded-xl shadow-2xl border border-slate-300 w-full max-w-lg overflow-hidden p-6 space-y-4">
+            <div className="flex items-center gap-2 text-indigo-900 font-bold text-base">
+              <SlidersHorizontal className="w-5 h-5 text-indigo-700" />
+              <span>Alterar Etapa do Atendimento — {selectedReq.numero_requisicao}</span>
+            </div>
+
+            <p className="text-xs text-slate-600">
+              Altere a etapa atual do atendimento da requisição conforme a evolução do trabalho no almoxarifado.
+            </p>
+
+            <div className="space-y-3">
+              <div>
+                <label className="block text-[11px] font-bold text-slate-700 uppercase tracking-wider mb-1">
+                  Selecione a Nova Etapa *
+                </label>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                  {[
+                    {
+                      status: 'aguardando_atendimento',
+                      label: 'Aguardando atendimento',
+                      desc: 'Requisição enviada, sem ação do almoxarifado.',
+                      badge: 'bg-amber-50 text-amber-800 border-amber-300',
+                    },
+                    {
+                      status: 'em_separacao',
+                      label: 'Em separação',
+                      desc: 'Item separado e baixado, aguardando entrega.',
+                      badge: 'bg-indigo-50 text-indigo-800 border-indigo-300',
+                    },
+                    {
+                      status: 'atendida',
+                      label: 'Atendida',
+                      desc: 'Material entregue e requisição finalizada.',
+                      badge: 'bg-emerald-50 text-emerald-800 border-emerald-300',
+                    },
+                    {
+                      status: 'nao_atendida',
+                      label: 'Não atendida',
+                      desc: 'Requisição negada ou cancelada.',
+                      badge: 'bg-rose-50 text-rose-800 border-rose-300',
+                    },
+                  ].map((st) => (
+                    <button
+                      key={st.status}
+                      type="button"
+                      onClick={() => setTargetStatusToChange(st.status)}
+                      className={`p-3 rounded-lg border text-left cursor-pointer transition-all ${
+                        targetStatusToChange === st.status
+                          ? 'border-indigo-600 bg-indigo-50/60 ring-2 ring-indigo-500/20'
+                          : 'border-slate-200 bg-white hover:bg-slate-50'
+                      }`}
+                    >
+                      <div className="font-bold text-xs text-slate-800 flex items-center justify-between">
+                        <span>{st.label}</span>
+                        {targetStatusToChange === st.status && <Check className="w-4 h-4 text-indigo-700" />}
+                      </div>
+                      <div className="text-[10px] text-slate-500 mt-1">{st.desc}</div>
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-[11px] font-bold text-slate-700 uppercase tracking-wider mb-1">
+                  Justificativa / Motivo da Alteração (Auditado)
+                </label>
+                <textarea
+                  rows={3}
+                  value={justificativaStatusChange}
+                  onChange={(e) => setJustificativaStatusChange(e.target.value)}
+                  placeholder="Informe o motivo ou contexto desta mudança de status para o registro na trilha de auditoria..."
+                  className="w-full px-3 py-2 bg-slate-50 border border-slate-300 rounded text-xs text-slate-800 focus:bg-white focus:border-indigo-500 shadow-inner"
+                />
+              </div>
+            </div>
+
+            <div className="flex justify-end gap-3 pt-2 border-t border-slate-100">
+              <button
+                type="button"
+                onClick={() => setIsStatusModalOpen(false)}
+                className="px-4 py-2 border border-slate-300 text-slate-700 hover:bg-slate-100 rounded text-xs font-semibold cursor-pointer"
+              >
+                CANCELAR
+              </button>
+
+              <button
+                type="button"
+                onClick={() => handleAlterarStatus(targetStatusToChange, justificativaStatusChange)}
+                disabled={isProcessing}
+                className="bg-indigo-700 hover:bg-indigo-800 text-white px-4 py-2 rounded text-xs font-bold uppercase tracking-wider disabled:opacity-50 cursor-pointer shadow-sm"
+              >
+                {isProcessing ? 'SALVANDO...' : 'CONFIRMAR ALTERAÇÃO DE ETAPA'}
               </button>
             </div>
           </div>
