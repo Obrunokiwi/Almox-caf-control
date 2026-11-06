@@ -5924,11 +5924,14 @@ apiRouter.post('/requisicoes/:id/entregar', (req, res) => {
 
       db.prepare(`
         UPDATE requisicoes 
-        SET status = 'atendida', almoxarife_id = COALESCE(almoxarife_id, ?), data_atendimento = CURRENT_TIMESTAMP
+        SET status = 'atendida',
+            almoxarife_id = COALESCE(almoxarife_id, ?),
+            data_atendimento = CURRENT_TIMESTAMP,
+            avaliacao_status = COALESCE(avaliacao_status, 'pendente')
         WHERE id = ?
       `).run(user.id, id);
 
-      const detalhes = `Material entregue ao solicitante e requisição FINALIZADA por ${user.nome} (${user.perfil.toUpperCase()}).${responsavel_recebimento ? ` Recebido por: ${responsavel_recebimento}.` : ''}`;
+      const detalhes = `Material entregue e requisição ENCERRADA por ${user.nome} (${user.perfil.toUpperCase()}). Avaliação de atendimento mantida em aberto para o solicitante.${responsavel_recebimento ? ` Recebido por: ${responsavel_recebimento}.` : ''}`;
 
       db.prepare(`
         INSERT INTO historico_requisicoes (
@@ -5948,11 +5951,12 @@ apiRouter.post('/requisicoes/:id/entregar', (req, res) => {
         id: Number(id),
         numero_requisicao: reqRow.numero_requisicao,
         status: 'atendida',
+        avaliacao_status: reqRow.avaliacao_status || 'pendente',
       };
     });
 
     res.json({
-      message: `Requisição ${result.numero_requisicao} finalizada com sucesso! Material entregue ao solicitante.`,
+      message: `Requisição ${result.numero_requisicao} encerrada e entregue com sucesso! A avaliação ficará em aberto para o solicitante.`,
       data: result,
     });
   } catch (err: any) {
@@ -6013,9 +6017,10 @@ apiRouter.post('/requisicoes/:id/alterar-status', (req, res) => {
         UPDATE requisicoes 
         SET status = ?, almoxarife_id = COALESCE(almoxarife_id, ?),
             data_atendimento = CASE WHEN ? = 'atendida' OR ? = 'em_separacao' THEN CURRENT_TIMESTAMP ELSE data_atendimento END,
+            avaliacao_status = CASE WHEN ? = 'atendida' THEN COALESCE(avaliacao_status, 'pendente') ELSE avaliacao_status END,
             motivo_rejeicao = CASE WHEN ? = 'nao_atendida' THEN ? ELSE motivo_rejeicao END
         WHERE id = ?
-      `).run(novo_status, user.id, novo_status, novo_status, novo_status, justificativa || null, id);
+      `).run(novo_status, user.id, novo_status, novo_status, novo_status, novo_status, justificativa || null, id);
 
       const statusNomes: Record<string, string> = {
         aguardando_atendimento: 'Aguardando atendimento',
@@ -6046,11 +6051,15 @@ apiRouter.post('/requisicoes/:id/alterar-status', (req, res) => {
         id: Number(id),
         numero_requisicao: reqRow.numero_requisicao,
         status: novo_status,
+        avaliacao_status: novo_status === 'atendida' ? (reqRow.avaliacao_status || 'pendente') : reqRow.avaliacao_status,
       };
     });
 
     res.json({
-      message: `Status da requisição atualizado para "${result.status}".`,
+      message:
+        result.status === 'atendida'
+          ? `Requisição ${result.numero_requisicao} encerrada como Atendida! A avaliação ficará em aberto para o solicitante.`
+          : `Status da requisição atualizado para "${result.status}".`,
       data: result,
     });
   } catch (err: any) {
