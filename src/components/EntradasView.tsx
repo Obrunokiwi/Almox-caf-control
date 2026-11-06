@@ -161,6 +161,9 @@ export const EntradasView: React.FC<EntradasViewProps> = ({
   const [isLoadingDetalhe, setIsLoadingDetalhe] = useState(false);
   const [isEditingNota, setIsEditingNota] = useState(false);
   const [isConfirmingImpacto, setIsConfirmingImpacto] = useState(false);
+  const [isConfirmingFechar, setIsConfirmingFechar] = useState(false);
+  const [isConfirmingReabrir, setIsConfirmingReabrir] = useState(false);
+  const [motivoReabertura, setMotivoReabertura] = useState('');
   const [impactoSummary, setImpactoSummary] = useState<string[]>([]);
   const [validationError, setValidationError] = useState<string | null>(null);
 
@@ -319,7 +322,7 @@ export const EntradasView: React.FC<EntradasViewProps> = ({
   }, [carregarNotas]);
 
   // Carrega os detalhes completos de uma nota específica (A.2)
-  const carregarDetalheNota = async (notaId: number) => {
+  const carregarDetalheNota = async (notaId: number, autoPromptReopen = false) => {
     setIsLoadingDetalhe(true);
     setValidationError(null);
     try {
@@ -337,6 +340,9 @@ export const EntradasView: React.FC<EntradasViewProps> = ({
       setSelectedNotaId(notaId);
       setIsEditingNota(false);
       setIsConfirmingImpacto(false);
+      setIsConfirmingFechar(false);
+      setIsConfirmingReabrir(autoPromptReopen && data.nota?.situacao === 'FECHADA');
+      setMotivoReabertura('');
     } catch (err: any) {
       toast.error('Erro ao Abrir Nota', err.message);
     } finally {
@@ -666,11 +672,6 @@ export const EntradasView: React.FC<EntradasViewProps> = ({
   const handleFecharNota = async () => {
     if (!detalheNota) return;
 
-    const confirmou = window.confirm(
-      'Após fechar, a nota não poderá mais ser alterada. Deseja fechar?'
-    );
-    if (!confirmou) return;
-
     setIsProcessingAction(true);
     try {
       const res = await fetch(`/api/notas-fiscais/${detalheNota.id}/fechar`, {
@@ -685,16 +686,56 @@ export const EntradasView: React.FC<EntradasViewProps> = ({
 
       toast.success(
         'Nota Fiscal FECHADA',
-        `Nota ${detalheNota.numero_documento} fechada em definitivo. Todos os campos foram travados como somente leitura.`
+        `Nota ${detalheNota.numero_documento} fechada. Caso necessário, ela poderá ser reaberta com registro na auditoria.`
       );
 
       setIsEditingNota(false);
       setIsConfirmingImpacto(false);
+      setIsConfirmingFechar(false);
       onRefresh();
       carregarNotas();
       carregarDetalheNota(detalheNota.id);
     } catch (err: any) {
       toast.error('Erro ao Fechar Nota', err.message);
+    } finally {
+      setIsProcessingAction(false);
+    }
+  };
+
+  // Reabertura de Nota Fiscal Fechada
+  const handleReabrirNota = async (abrirEmModoEdicao = true) => {
+    if (!detalheNota) return;
+
+    setIsProcessingAction(true);
+    try {
+      const res = await fetch(`/api/notas-fiscais/${detalheNota.id}/reabrir`, {
+        method: 'POST',
+        headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
+        body: JSON.stringify({
+          motivo: motivoReabertura.trim() || undefined,
+        }),
+      });
+
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || 'Erro ao reabrir nota fiscal.');
+      }
+
+      toast.success(
+        'Nota Fiscal REABERTA',
+        `Nota ${detalheNota.numero_documento} foi reaberta e liberada para conferência/edição.`
+      );
+
+      setIsConfirmingReabrir(false);
+      setMotivoReabertura('');
+      onRefresh();
+      carregarNotas();
+      await carregarDetalheNota(detalheNota.id);
+      if (abrirEmModoEdicao) {
+        setIsEditingNota(true);
+      }
+    } catch (err: any) {
+      toast.error('Erro ao Reabrir Nota', err.message);
     } finally {
       setIsProcessingAction(false);
     }
@@ -800,11 +841,11 @@ export const EntradasView: React.FC<EntradasViewProps> = ({
                   'Enquanto ABERTA, a nota permite correções de cabeçalho e de itens. Cada alteração que afete o saldo gera automaticamente um estorno do lançamento anterior e nova entrada. A redução abaixo do saldo consumido é sumariamente bloqueada.',
               },
               {
-                title: 'Fechamento Definitivo',
-                badge: 'A.4 Somente Leitura',
+                title: 'Fechamento e Reabertura Auditada',
+                badge: 'A.4 Controle e Auditoria',
                 tone: 'blue',
                 description:
-                  'Ao clicar em "FECHAR NOTA", a situação muda para FECHADA e todos os campos ficam bloqueados em modo somente leitura. Não há reabertura.',
+                  'Ao clicar em "FECHAR NOTA", a situação muda para FECHADA e os campos ficam bloqueados. Caso necessário corrigir posteriormente, Almoxarifes e Administradores podem clicar em "REABRIR NOTA FISCAL", ficando a reabertura registrada na trilha de auditoria.',
               },
             ]}
           />
@@ -1045,6 +1086,18 @@ export const EntradasView: React.FC<EntradasViewProps> = ({
                             <span>Detalhes</span>
                           </button>
 
+                          {isFechada && (
+                            <button
+                              type="button"
+                              onClick={() => carregarDetalheNota(nota.id, true)}
+                              className="px-2.5 py-1 text-[11px] font-semibold text-amber-800 bg-amber-50 hover:bg-amber-100 rounded border border-amber-300 inline-flex items-center gap-1 cursor-pointer transition-colors"
+                              title="Reabrir nota fiscal fechada para edição"
+                            >
+                              <Unlock className="w-3 h-3 text-amber-700" />
+                              <span>Reabrir</span>
+                            </button>
+                          )}
+
                           <button
                             type="button"
                             disabled={isGeneratingPdf}
@@ -1131,10 +1184,10 @@ export const EntradasView: React.FC<EntradasViewProps> = ({
       {/* MODAL DE DETALHE / EDIÇÃO DA NOTA FISCAL (A.2, A.3, A.4)                 */}
       {/* ========================================================================= */}
       {selectedNotaId && detalheNota && (
-        <div className="fixed inset-0 z-50 overflow-y-auto bg-slate-900/60 backdrop-blur-xs flex items-start justify-center p-3 sm:p-6 py-8 sm:py-12 animate-fadeIn">
-          <div className="bg-white rounded-2xl border border-slate-200 shadow-2xl w-full max-w-5xl my-0 overflow-visible flex flex-col">
+        <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-2 sm:p-4 animate-fadeIn">
+          <div className="bg-white rounded-2xl border border-slate-200 shadow-2xl w-full max-w-5xl max-h-[92vh] overflow-hidden flex flex-col">
             {/* Cabeçalho do Modal */}
-            <div className="px-6 py-4 bg-slate-50 border-b border-slate-200 flex items-center justify-between shrink-0">
+            <div className="px-5 py-3.5 bg-slate-50 border-b border-slate-200 flex items-center justify-between shrink-0">
               <div className="flex items-center gap-3">
                 <div
                   className={`p-2 rounded-lg ${
@@ -1187,7 +1240,7 @@ export const EntradasView: React.FC<EntradasViewProps> = ({
             </div>
 
             {/* Conteúdo com rolagem interna */}
-            <div className="p-6 space-y-6 overflow-y-auto flex-1 text-xs">
+            <div className="p-5 space-y-5 overflow-y-auto flex-1 min-h-0 text-xs">
               {validationError && (
                 <div className="p-3 bg-rose-50 border border-rose-300 rounded-lg text-rose-800 flex items-start gap-2">
                   <AlertCircle className="w-4 h-4 text-rose-600 shrink-0 mt-0.5" />
@@ -1197,13 +1250,102 @@ export const EntradasView: React.FC<EntradasViewProps> = ({
 
               {/* Banner de Fechamento se a Nota estiver FECHADA */}
               {detalheNota.situacao === 'FECHADA' && (
-                <div className="p-3.5 bg-emerald-50 border border-emerald-200 rounded-xl text-emerald-900 flex items-center gap-2.5">
-                  <CheckCircle2 className="w-4 h-4 text-emerald-700 shrink-0" />
-                  <span className="font-medium">
-                    Nota fechada em {formatBrasiliaDateTime(detalheNota.fechada_em)} por{' '}
-                    <strong>{detalheNota.fechada_por_nome || 'Almoxarife'}</strong>. Todos os campos estão em modo
-                    somente leitura.
-                  </span>
+                <div className="p-3.5 bg-emerald-50 border border-emerald-200 rounded-xl text-emerald-900 flex flex-wrap items-center justify-between gap-3">
+                  <div className="flex items-center gap-2.5">
+                    <CheckCircle2 className="w-4 h-4 text-emerald-700 shrink-0" />
+                    <span className="font-medium">
+                      Nota fechada em {formatBrasiliaDateTime(detalheNota.fechada_em)} por{' '}
+                      <strong>{detalheNota.fechada_por_nome || 'Almoxarife'}</strong>. Todos os campos estão em modo
+                      somente leitura.
+                    </span>
+                  </div>
+                  {!isConfirmingReabrir && (
+                    <button
+                      type="button"
+                      onClick={() => setIsConfirmingReabrir(true)}
+                      className="px-3 py-1.5 bg-amber-600 hover:bg-amber-700 text-white font-bold rounded-lg text-xs inline-flex items-center gap-1.5 shadow-2xs cursor-pointer shrink-0"
+                    >
+                      <Unlock className="w-3.5 h-3.5" />
+                      <span>Reabrir Nota Fiscal</span>
+                    </button>
+                  )}
+                </div>
+              )}
+
+              {/* Caixa de Confirmação de Reabertura */}
+              {detalheNota.situacao === 'FECHADA' && isConfirmingReabrir && (
+                <div className="p-4 bg-amber-50 border border-amber-300 rounded-xl space-y-3 animate-fadeIn">
+                  <div className="flex items-center gap-2 text-amber-900 font-bold">
+                    <Unlock className="w-4 h-4 text-amber-700" />
+                    <span>Reabrir Nota Fiscal {detalheNota.numero_documento}</span>
+                  </div>
+                  <p className="text-xs text-amber-800">
+                    Ao reabrir esta Nota Fiscal, ela voltará para a situação <strong>ABERTA</strong>, permitindo editar cabeçalho, lotes, validades, quantidades ou custos (com estorno automático e auditoria).
+                  </p>
+                  <div>
+                    <label className="block text-[10px] font-bold text-amber-900 uppercase tracking-wider mb-1">
+                      Motivo / Justificativa da Reabertura (Opcional — registrado no histórico)
+                    </label>
+                    <input
+                      type="text"
+                      value={motivoReabertura}
+                      onChange={(e) => setMotivoReabertura(e.target.value)}
+                      placeholder="Ex: Correção de lote, ajuste de quantidade ou custo unitário..."
+                      className="w-full px-3 py-1.5 bg-white border border-amber-300 rounded text-xs text-slate-800"
+                    />
+                  </div>
+                  <div className="flex items-center justify-end gap-2 pt-1">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setIsConfirmingReabrir(false);
+                        setMotivoReabertura('');
+                      }}
+                      className="px-3 py-1.5 bg-white border border-slate-300 rounded text-xs font-semibold text-slate-700 hover:bg-slate-100 cursor-pointer"
+                    >
+                      Cancelar
+                    </button>
+                    <button
+                      type="button"
+                      disabled={isProcessingAction}
+                      onClick={() => handleReabrirNota(true)}
+                      className="px-4 py-1.5 bg-amber-600 hover:bg-amber-700 text-white rounded text-xs font-bold shadow inline-flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
+                    >
+                      <Unlock className="w-3.5 h-3.5" />
+                      <span>{isProcessingAction ? 'Reabrindo...' : 'Confirmar Reabertura e Liberar Edição'}</span>
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {/* Caixa de Confirmação de Fechamento */}
+              {detalheNota.situacao === 'ABERTA' && isConfirmingFechar && (
+                <div className="p-4 bg-rose-50 border border-rose-300 rounded-xl space-y-3 animate-fadeIn">
+                  <div className="flex items-center gap-2 text-rose-900 font-bold">
+                    <Lock className="w-4 h-4 text-rose-700" />
+                    <span>Confirmar Fechamento da Nota Fiscal {detalheNota.numero_documento}</span>
+                  </div>
+                  <p className="text-xs text-rose-800">
+                    Ao fechar a nota, todos os campos ficarão bloqueados como somente leitura para evitar alterações acidentais. Caso precise corrigir algum dado depois, você poderá reabri-la.
+                  </p>
+                  <div className="flex items-center justify-end gap-2 pt-1">
+                    <button
+                      type="button"
+                      onClick={() => setIsConfirmingFechar(false)}
+                      className="px-3 py-1.5 bg-white border border-slate-300 rounded text-xs font-semibold text-slate-700 hover:bg-slate-100 cursor-pointer"
+                    >
+                      Cancelar
+                    </button>
+                    <button
+                      type="button"
+                      disabled={isProcessingAction}
+                      onClick={handleFecharNota}
+                      className="px-4 py-1.5 bg-rose-600 hover:bg-rose-700 text-white rounded text-xs font-bold shadow inline-flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
+                    >
+                      <Lock className="w-3.5 h-3.5" />
+                      <span>{isProcessingAction ? 'Fechando...' : 'Confirmar e Fechar Nota'}</span>
+                    </button>
+                  </div>
                 </div>
               )}
 
@@ -1598,17 +1740,27 @@ export const EntradasView: React.FC<EntradasViewProps> = ({
             </div>
 
             {/* Rodapé com Botões de Ação do Detalhe (A.4) */}
-            <div className="px-6 py-3.5 bg-slate-50 border-t border-slate-200 flex flex-wrap items-center justify-between gap-3 shrink-0">
-              <div>
-                {detalheNota.situacao === 'ABERTA' && (
+            <div className="px-5 py-3 bg-slate-50 border-t border-slate-200 flex flex-wrap items-center justify-between gap-3 shrink-0">
+              <div className="flex items-center gap-2">
+                {detalheNota.situacao === 'ABERTA' ? (
                   <button
                     type="button"
                     disabled={isProcessingAction}
-                    onClick={handleFecharNota}
+                    onClick={() => setIsConfirmingFechar(true)}
                     className="px-4 py-2 bg-rose-600 hover:bg-rose-700 active:bg-rose-800 text-white font-bold rounded text-xs flex items-center gap-1.5 shadow uppercase tracking-wide cursor-pointer disabled:opacity-50"
                   >
                     <Lock className="w-4 h-4" />
                     <span>FECHAR NOTA FISCAL</span>
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    disabled={isProcessingAction}
+                    onClick={() => setIsConfirmingReabrir(true)}
+                    className="px-4 py-2 bg-amber-600 hover:bg-amber-700 active:bg-amber-800 text-white font-bold rounded text-xs flex items-center gap-1.5 shadow uppercase tracking-wide cursor-pointer disabled:opacity-50"
+                  >
+                    <Unlock className="w-4 h-4" />
+                    <span>REABRIR NOTA FISCAL</span>
                   </button>
                 )}
               </div>
@@ -1656,9 +1808,9 @@ export const EntradasView: React.FC<EntradasViewProps> = ({
       {/* MODAL DE CRIAÇÃO DE NOVA NOTA FISCAL (COM MÚLTIPLOS ITENS E AUTOCOMPLETE) */}
       {/* ========================================================================= */}
       {isNewNotaOpen && (
-        <div className="fixed inset-0 z-50 overflow-hidden bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-3 sm:p-6 animate-fadeIn">
-          <div className="bg-white rounded-2xl border border-slate-200 shadow-2xl w-full max-w-4xl max-h-[90vh] overflow-hidden flex flex-col">
-            <div className="px-6 py-4 bg-slate-50 border-b border-slate-200 flex items-center justify-between shrink-0">
+        <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-2 sm:p-4 animate-fadeIn">
+          <div className="bg-white rounded-2xl border border-slate-200 shadow-2xl w-full max-w-5xl max-h-[92vh] overflow-hidden flex flex-col">
+            <div className="px-5 py-3.5 bg-slate-50 border-b border-slate-200 flex items-center justify-between shrink-0">
               <div className="flex items-center gap-2.5">
                 <div className="p-2 bg-teal-100 text-teal-800 rounded-lg">
                   <PackagePlus className="w-5 h-5" />
@@ -1683,7 +1835,8 @@ export const EntradasView: React.FC<EntradasViewProps> = ({
               </button>
             </div>
 
-            <form onSubmit={handleSalvarNovaNota} className="flex-1 overflow-y-auto p-6 space-y-5 text-xs">
+            <form onSubmit={handleSalvarNovaNota} className="flex-1 min-h-0 flex flex-col overflow-hidden text-xs">
+              <div className="flex-1 min-h-0 overflow-y-auto p-4 sm:p-5 space-y-4">
               {/* Banner de Rascunho Detectado */}
               <FormDraftResumeBanner
                 hasDraft={draft.hasDraft}
@@ -2037,9 +2190,10 @@ export const EntradasView: React.FC<EntradasViewProps> = ({
                   </div>
                 </div>
               </div>
+              </div>
 
-              {/* Botões do Formulário de Criação com Rascunho */}
-              <div className="pt-3 border-t border-slate-200 flex flex-wrap items-center justify-between gap-2 shrink-0">
+              {/* Botões do Formulário de Criação com Rascunho (Fixo no Rodapé do Modal) */}
+              <div className="px-5 py-3 bg-slate-50 border-t border-slate-200 flex flex-wrap items-center justify-between gap-2 shrink-0">
                 <div className="flex items-center gap-2">
                   <FormDraftStatusIndicator
                     status={draft.draftStatus}

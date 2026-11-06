@@ -600,7 +600,7 @@ export default function App() {
               </button>
             </div>
           ) : (
-            <div key={currentTab} className="animate-slide-right" style={{ height: '678px' }}>
+            <div key={currentTab} className="animate-slide-right">
               {currentTab === 'requisicoes' && (
                 <RequisicoesView
                   requisicoes={requisicoes}

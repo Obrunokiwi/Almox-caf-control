@@ -113,7 +113,7 @@ export const ConsumoView: React.FC<ConsumoViewProps> = ({
       if (searchTerm) url += `busca=${encodeURIComponent(searchTerm)}&`;
 
       const res = await fetch(url, {
-        headers: getAuthHeaders(),
+        headers: getAuthHeaders({ 'X-Area-Sigla': activeAreaSigla }),
       });
       if (!res.ok) throw new Error('Falha ao carregar registros de consumo.');
       const data = await res.json();
@@ -129,6 +129,28 @@ export const ConsumoView: React.FC<ConsumoViewProps> = ({
     fetchConsumos();
   }, [activeAreaSigla, filtroCcId, dataInicio, dataFim]);
 
+  const filterRealLotes = (rawLotes: LoteEstoque[] | undefined | null): LoteEstoque[] => {
+    if (!Array.isArray(rawLotes)) return [];
+    // Filtra registros reais de lote (ignora placeholders 'SEM LOTE' sem validade criados na importação de itens sem lote)
+    const reais = rawLotes.filter((l) => {
+      const num = String(l.numero_lote || '').trim().toUpperCase();
+      const hasRealNum = num !== '' && num !== 'SEM LOTE' && num !== 'S/L' && num !== 'N/A';
+      const hasValidade = Boolean(l.data_validade && String(l.data_validade).trim() !== '');
+      return hasRealNum || hasValidade;
+    });
+    return reais;
+  };
+
+  const formatValidadeShort = (val?: string | null): string => {
+    if (!val) return 'S/V';
+    const clean = String(val).trim().slice(0, 10);
+    if (/^\d{4}-\d{2}-\d{2}$/.test(clean)) {
+      const [y, m, d] = clean.split('-');
+      return `${d}/${m}/${y}`;
+    }
+    return clean;
+  };
+
   // Carrega lotes válidos ao selecionar um produto no formulário
   useEffect(() => {
     if (!prodSelectId) {
@@ -137,80 +159,122 @@ export const ConsumoView: React.FC<ConsumoViewProps> = ({
       return;
     }
 
+    const hojeStr = new Date().toISOString().slice(0, 10);
+    const prodLocal = produtos.find((p) => Number(p.id) === Number(prodSelectId));
+    const lotesLocais = filterRealLotes(prodLocal?.lotes);
+
+    if (lotesLocais.length > 0) {
+      setLotesProduto(lotesLocais);
+      const primeiroValido =
+        lotesLocais.find(
+          (l) =>
+            parseDecimal(l.quantidade_atual, 0) > 0 &&
+            (!l.data_validade || String(l.data_validade).slice(0, 10) >= hojeStr)
+        ) ||
+        lotesLocais.find((l) => !l.data_validade || String(l.data_validade).slice(0, 10) >= hojeStr) ||
+        lotesLocais[0];
+      setLoteSelectId(primeiroValido ? Number(primeiroValido.id) : 0);
+    }
+
+    let cancelled = false;
     const loadLotes = async () => {
       setLoadingLotes(true);
       try {
-        const res = await fetch(`/api/produtos/${prodSelectId}/lotes`, {
-          headers: getAuthHeaders(),
+        let res = await fetch(`/api/produtos/${prodSelectId}/lotes`, {
+          headers: getAuthHeaders({ 'X-Area-Sigla': activeAreaSigla }),
         });
-        if (res.ok) {
+        if (!res.ok) {
+          res = await fetch(`/api/lotes?produto_id=${prodSelectId}&apenas_com_saldo=false`, {
+            headers: getAuthHeaders({ 'X-Area-Sigla': activeAreaSigla }),
+          });
+        }
+        if (res.ok && !cancelled) {
           const data: LoteEstoque[] = await res.json();
-          // Filtra lotes com saldo positivo
-          const comSaldo = data.filter((l) => Number(l.quantidade_atual) > 0);
-          setLotesProduto(comSaldo);
-          if (comSaldo.length > 0) {
-            // Sugere o primeiro lote (ordenação FEFO vem do backend)
-            setLoteSelectId(comSaldo[0].id);
+          const reais = filterRealLotes(data);
+          setLotesProduto(reais);
+          if (reais.length > 0) {
+            const primeiroValido =
+              reais.find(
+                (l) =>
+                  parseDecimal(l.quantidade_atual, 0) > 0 &&
+                  (!l.data_validade || String(l.data_validade).slice(0, 10) >= hojeStr)
+              ) ||
+              reais.find((l) => !l.data_validade || String(l.data_validade).slice(0, 10) >= hojeStr) ||
+              reais[0];
+            setLoteSelectId(primeiroValido ? Number(primeiroValido.id) : 0);
           } else {
             setLoteSelectId(0);
           }
         }
       } catch {
-        setLotesProduto([]);
+        if (!cancelled && lotesLocais.length === 0) {
+          setLotesProduto([]);
+          setLoteSelectId(0);
+        }
       } finally {
-        setLoadingLotes(false);
+        if (!cancelled) {
+          setLoadingLotes(false);
+        }
       }
     };
 
     loadLotes();
-  }, [prodSelectId, activeAreaSigla]);
+    return () => {
+      cancelled = true;
+    };
+  }, [prodSelectId, activeAreaSigla, produtos]);
 
   const handleAddItem = () => {
+    setErrorMsg(null);
     if (!prodSelectId) {
-      alert('Selecione um produto.');
+      setErrorMsg('Selecione um produto.');
       return;
     }
     if (itemQuantidade <= 0) {
-      alert('A quantidade deve ser maior que zero.');
+      setErrorMsg('A quantidade deve ser maior que zero.');
       return;
     }
 
-    const prod = produtos.find((p) => p.id === prodSelectId);
+    const prod = produtos.find((p) => Number(p.id) === Number(prodSelectId));
     if (!prod) return;
 
     let lote: LoteEstoque | undefined;
     if (loteSelectId > 0) {
-      lote = lotesProduto.find((l) => l.id === loteSelectId);
+      lote = lotesProduto.find((l) => Number(l.id) === Number(loteSelectId));
       if (!lote) {
-        alert('Lote selecionado inválido.');
+        setErrorMsg('Lote selecionado inválido.');
         return;
       }
       // Bloqueia lote vencido
       const hojeStr = new Date().toISOString().slice(0, 10);
       if (lote.data_validade && lote.data_validade.slice(0, 10) < hojeStr) {
-        alert(`O lote "${lote.numero_lote}" está VENCIDO (${lote.data_validade}) e não pode ser dispensado para consumo.`);
+        setErrorMsg(`O lote "${lote.numero_lote}" está VENCIDO (${formatValidadeShort(lote.data_validade)}) e não pode ser dispensado para consumo.`);
         return;
       }
 
-      // Valida saldo disponível no lote (com tolerância de 4 casas decimais)
+      // Valida saldo disponível no lote (ou no estoque geral se o lote foi cadastrado sem saldo individualizado)
       const jaAdicionado = round4(
         itensNovoConsumo
-          .filter((i) => i.lote_id === lote!.id)
+          .filter((i) => Number(i.lote_id) === Number(lote!.id))
           .reduce((acc, curr) => acc + curr.quantidade, 0)
       );
 
-      const saldoReal = round4(parseDecimal(lote.quantidade_atual, 0) - jaAdicionado);
+      const baseSaldo =
+        parseDecimal(lote.quantidade_atual, 0) > 0
+          ? parseDecimal(lote.quantidade_atual, 0)
+          : parseDecimal(prod.quantidade_atual, 0);
+      const saldoReal = round4(baseSaldo - jaAdicionado);
       const qtdNorm = round4(parseDecimal(itemQuantidade, 0));
 
       if (!hasSufficientStock(saldoReal, qtdNorm)) {
-        alert(`Saldo insuficiente neste lote. Disponível: ${saldoReal}, Solicitado: ${qtdNorm}`);
+        setErrorMsg(`Saldo insuficiente neste lote (${lote.numero_lote}). Disponível: ${saldoReal}, Solicitado: ${qtdNorm}`);
         return;
       }
     } else {
       // Sem lote específico: valida estoque geral do produto (com tolerância de 4 casas decimais)
       const jaAdicionado = round4(
         itensNovoConsumo
-          .filter((i) => i.produto_id === prod.id && (!i.lote_id || i.lote_id === 0))
+          .filter((i) => Number(i.produto_id) === Number(prod.id) && (!i.lote_id || i.lote_id === 0))
           .reduce((acc, curr) => acc + curr.quantidade, 0)
       );
 
@@ -218,7 +282,7 @@ export const ConsumoView: React.FC<ConsumoViewProps> = ({
       const qtdNorm = round4(parseDecimal(itemQuantidade, 0));
 
       if (!hasSufficientStock(saldoReal, qtdNorm)) {
-        alert(`Saldo insuficiente no estoque geral do produto. Disponível: ${saldoReal}, Solicitado: ${qtdNorm}`);
+        setErrorMsg(`Saldo insuficiente no estoque geral do produto. Disponível: ${saldoReal}, Solicitado: ${qtdNorm}`);
         return;
       }
     }
@@ -229,9 +293,12 @@ export const ConsumoView: React.FC<ConsumoViewProps> = ({
       produto_nome: prod.nome,
       unidade_medida: prod.unidade_medida,
       lote_id: lote ? lote.id : 0,
-      numero_lote: lote ? lote.numero_lote : '',
+      numero_lote: lote ? lote.numero_lote : 'SEM LOTE',
       data_validade: lote ? (lote.data_validade || null) : null,
-      saldo_disponivel: lote ? round4(lote.quantidade_atual) : round4(prod.quantidade_atual || 0),
+      saldo_disponivel:
+        lote && parseDecimal(lote.quantidade_atual, 0) > 0
+          ? round4(lote.quantidade_atual)
+          : round4(prod.quantidade_atual || 0),
       quantidade: round4(parseDecimal(itemQuantidade, 0)),
       custo_unitario: round4(prod.valor_unitario || prod.custo_unitario || 0),
     };
@@ -268,7 +335,10 @@ export const ConsumoView: React.FC<ConsumoViewProps> = ({
     try {
       const res = await fetch('/api/consumos', {
         method: 'POST',
-        headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
+        headers: getAuthHeaders({
+          'Content-Type': 'application/json',
+          'X-Area-Sigla': activeAreaSigla,
+        }),
         body: JSON.stringify({
           centro_custo_id: novoCentroCustoId,
           responsavel_recebimento: novoResponsavel.trim(),
@@ -373,11 +443,16 @@ export const ConsumoView: React.FC<ConsumoViewProps> = ({
 
   const productOptions: SearchableOption[] = produtos
     .filter((p) => p.ativo)
-    .map((p) => ({
-      value: p.id,
-      label: `${p.codigo} - ${p.nome}`,
-      secondaryLabel: `Saldo: ${p.quantidade_atual} ${p.unidade_medida}`,
-    }));
+    .map((p) => {
+      const lotesReais = filterRealLotes(p.lotes);
+      return {
+        value: p.id,
+        label: `${p.codigo} - ${p.nome}`,
+        secondaryLabel: `Saldo: ${round4(p.quantidade_atual)} ${p.unidade_medida}${
+          lotesReais.length > 0 ? ` • ${lotesReais.length} lote(s)` : ''
+        }`,
+      };
+    });
 
   const ccOptions: SearchableOption[] = centrosCusto
     .filter((cc) => cc.ativo)
@@ -724,8 +799,17 @@ export const ConsumoView: React.FC<ConsumoViewProps> = ({
                   </div>
 
                   <div className="md:col-span-4">
-                    <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-1">
-                      Lote (FEFO)
+                    <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-1 flex items-center justify-between">
+                      <span>Lote (FEFO)</span>
+                      {prodSelectId > 0 && (
+                        <span className="text-[10px] font-semibold text-[#00237D]">
+                          {loadingLotes
+                            ? 'Carregando lotes...'
+                            : lotesProduto.length > 0
+                            ? `${lotesProduto.length} lote(s) disponível(is)`
+                            : 'Produto sem lote'}
+                        </span>
+                      )}
                     </label>
                     <select
                       value={loteSelectId}
@@ -733,14 +817,23 @@ export const ConsumoView: React.FC<ConsumoViewProps> = ({
                       disabled={loadingLotes}
                       className="w-full px-2.5 py-1.5 bg-white border border-slate-300 rounded text-xs focus:outline-none focus:border-[#00237D]"
                     >
+                      {lotesProduto.map((l) => {
+                        const prodAtual = produtos.find((p) => Number(p.id) === Number(prodSelectId));
+                        const saldoExibido =
+                          parseDecimal(l.quantidade_atual, 0) > 0
+                            ? round4(l.quantidade_atual)
+                            : round4(prodAtual?.quantidade_atual || 0);
+                        return (
+                          <option key={l.id} value={l.id}>
+                            Lote: {l.numero_lote} | Val: {formatValidadeShort(l.data_validade)} | Saldo: {saldoExibido}
+                          </option>
+                        );
+                      })}
                       <option value="0">
-                        {lotesProduto.length === 0 ? 'Sem Lote / Baixa Geral no Estoque' : '— Selecionar Lote (Opcional / FEFO) —'}
+                        {lotesProduto.length === 0
+                          ? 'Sem Lote / Baixa Geral no Estoque'
+                          : '— Baixa Geral / FEFO Automático —'}
                       </option>
-                      {lotesProduto.map((l) => (
-                        <option key={l.id} value={l.id}>
-                          Lote: {l.numero_lote} | Val: {l.data_validade || 'S/V'} | Saldo: {l.quantidade_atual}
-                        </option>
-                      ))}
                     </select>
                   </div>
 

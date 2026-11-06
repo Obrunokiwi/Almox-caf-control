@@ -717,11 +717,17 @@ apiRouter.post('/consumos', (req, res) => {
               `BLOQUEIO DE VENCIMENTO: O lote "${loteUsado.numero_lote}" do item "${prod.nome}" está VENCIDO (${loteUsado.data_validade}) e não pode ser dispensado para consumo.`
             );
           }
-          if (!hasSufficientStock(loteUsado.quantidade_atual, qtd)) {
-            throw new Error(`Saldo insuficiente no lote "${loteUsado.numero_lote}" (${prod.nome}). Disponível: ${round4(loteUsado.quantidade_atual)}, Solicitado: ${qtd}.`);
+          if (parseDecimal(loteUsado.quantidade_atual, 0) > 0) {
+            if (!hasSufficientStock(loteUsado.quantidade_atual, qtd)) {
+              throw new Error(`Saldo insuficiente no lote "${loteUsado.numero_lote}" (${prod.nome}). Disponível: ${round4(loteUsado.quantidade_atual)}, Solicitado: ${qtd}.`);
+            }
+            const novoSaldoLote = safeSubtractStock(loteUsado.quantidade_atual, qtd);
+            db.prepare('UPDATE lotes_estoque SET quantidade_atual = ? WHERE id = ?').run(novoSaldoLote, loteUsado.id);
+          } else {
+            if (!hasSufficientStock(prod.quantidade_atual, qtd)) {
+              throw new Error(`Estoque insuficiente para o produto "${prod.nome}" (Lote ${loteUsado.numero_lote}). Disponível: ${round4(prod.quantidade_atual)}, Solicitado: ${qtd}.`);
+            }
           }
-          const novoSaldoLote = safeSubtractStock(loteUsado.quantidade_atual, qtd);
-          db.prepare('UPDATE lotes_estoque SET quantidade_atual = ? WHERE id = ?').run(novoSaldoLote, loteUsado.id);
         } else {
           // Tenta FEFO automático se houver lotes com saldo
           const lotesConsumidos = consumirLotesValidosFEFO(prodId, qtd);
@@ -2763,6 +2769,88 @@ apiRouter.get('/lotes', (req, res) => {
   res.json(enriched);
 });
 
+apiRouter.get('/produtos/:id/lotes', (req, res) => {
+  const user = authenticateRequest(req);
+  if (user && user.perfil === 'requisitante') {
+    res.status(403).json({ error: 'Acesso negado: Requisitantes não possuem autorização para consultar lotes e saldos de estoque.' });
+    return;
+  }
+
+  const prodId = Number(req.params.id);
+  if (!prodId) {
+    res.json([]);
+    return;
+  }
+
+  try {
+    // Caso existam lotes registrados em movimentações que ainda não estejam na tabela lotes_estoque, sincroniza automaticamente
+    try {
+      const movLotes = db.prepare(`
+        SELECT DISTINCT TRIM(numero_lote) as numero_lote, data_validade
+        FROM movimentacoes
+        WHERE produto_id = ?
+          AND numero_lote IS NOT NULL
+          AND TRIM(numero_lote) != ''
+          AND UPPER(TRIM(numero_lote)) NOT IN ('SEM LOTE', 'S/L', 'N/A')
+      `).all(prodId) as any[];
+
+      for (const ml of movLotes) {
+        const exists = db.prepare(`
+          SELECT id FROM lotes_estoque
+          WHERE produto_id = ? AND UPPER(TRIM(numero_lote)) = UPPER(TRIM(?))
+          LIMIT 1
+        `).get(prodId, ml.numero_lote);
+        if (!exists) {
+          const prodRow = db.prepare('SELECT quantidade_atual FROM produtos WHERE id = ?').get(prodId) as any;
+          const saldoProd = parseDecimal(prodRow?.quantidade_atual, 0);
+          db.prepare(`
+            INSERT INTO lotes_estoque (produto_id, numero_lote, data_validade, quantidade_inicial, quantidade_atual, documento_referencia)
+            VALUES (?, ?, ?, ?, ?, 'SINCRONIZADO-MOV')
+          `).run(prodId, ml.numero_lote, ml.data_validade || null, saldoProd, saldoProd);
+        }
+      }
+    } catch {}
+
+    const rows = db.prepare(`
+      SELECT 
+        le.*,
+        p.codigo as produto_codigo,
+        p.nome as produto_nome,
+        p.unidade_medida,
+        p.quantidade_atual as produto_saldo_atual,
+        COALESCE(f.nome_fantasia, f.razao_social) as fornecedor_nome
+      FROM lotes_estoque le
+      JOIN produtos p ON le.produto_id = p.id
+      LEFT JOIN fornecedores f ON le.fornecedor_id = f.id
+      WHERE le.produto_id = ?
+        AND (
+          le.quantidade_atual > 0
+          OR UPPER(TRIM(COALESCE(le.numero_lote, ''))) NOT IN ('', 'SEM LOTE', 'S/L', 'N/A')
+        )
+      ORDER BY
+        CASE WHEN le.quantidade_atual > 0 THEN 0 ELSE 1 END ASC,
+        CASE WHEN le.data_validade IS NULL OR le.data_validade = '' THEN 1 ELSE 0 END ASC,
+        le.data_validade ASC,
+        le.id ASC
+    `).all(prodId) as any[];
+
+    const enriched = rows.map((l) => {
+      const info = classifyLoteValidade(l.data_validade);
+      return {
+        ...l,
+        quantidade_atual: round4(l.quantidade_atual),
+        quantidade_inicial: round4(l.quantidade_inicial),
+        dias_para_vencer: info.dias_para_vencer,
+        status_validade: info.status_validade,
+      };
+    });
+
+    res.json(enriched);
+  } catch (err: any) {
+    res.status(500).json({ error: 'Erro ao carregar lotes do produto: ' + err.message });
+  }
+});
+
 // ============================================================================
 // GRUPOS DE PRODUTOS & SUGESTÃO DE CÓDIGO
 // ============================================================================
@@ -3188,7 +3276,12 @@ apiRouter.get('/produtos', (req, res) => {
       LEFT JOIN centros_custo cc ON le.centro_custo_id = cc.id
       LEFT JOIN fornecedores f ON le.fornecedor_id = f.id
       WHERE le.quantidade_atual > 0
-      ORDER BY CASE WHEN le.data_validade IS NULL THEN 1 ELSE 0 END ASC, le.data_validade ASC, le.id ASC
+         OR UPPER(TRIM(COALESCE(le.numero_lote, ''))) NOT IN ('', 'SEM LOTE', 'S/L', 'N/A')
+      ORDER BY
+        CASE WHEN le.quantidade_atual > 0 THEN 0 ELSE 1 END ASC,
+        CASE WHEN le.data_validade IS NULL OR le.data_validade = '' THEN 1 ELSE 0 END ASC,
+        le.data_validade ASC,
+        le.id ASC
     `).all() as any[];
 
     const lotesByProd = new Map<number, any[]>();
@@ -4478,6 +4571,60 @@ apiRouter.post('/notas-fiscais/:id/fechar', (req, res) => {
     });
   } catch (err: any) {
     res.status(500).json({ error: 'Erro ao fechar nota fiscal: ' + err.message });
+  }
+});
+
+// Reabertura de Nota Fiscal Fechada (com registro de auditoria)
+apiRouter.post('/notas-fiscais/:id/reabrir', (req, res) => {
+  const user = authenticateRequest(req);
+  if (!user || (user.perfil !== 'admin' && user.perfil !== 'almoxarife')) {
+    res.status(403).json({ error: 'Apenas Almoxarifes e Administradores podem reabrir notas fiscais.' });
+    return;
+  }
+
+  const { id } = req.params;
+  const { motivo } = req.body || {};
+
+  try {
+    const nota = db.prepare('SELECT * FROM notas_fiscais WHERE id = ?').get(id) as any;
+    if (!nota) {
+      res.status(404).json({ error: 'Nota fiscal não encontrada.' });
+      return;
+    }
+
+    if (nota.situacao !== 'FECHADA') {
+      res.status(400).json({ error: 'Esta nota fiscal já se encontra ABERTA.' });
+      return;
+    }
+
+    const agora = new Date().toISOString();
+    db.prepare(`
+      UPDATE notas_fiscais
+      SET situacao = 'ABERTA', fechada_em = NULL, fechada_por = NULL
+      WHERE id = ?
+    `).run(id);
+
+    const motivoTexto = motivo && String(motivo).trim()
+      ? ` Motivo informado: ${String(motivo).trim()}`
+      : '';
+
+    db.prepare(`
+      INSERT INTO historico_notas_fiscais (nota_fiscal_id, usuario_id, acao, detalhes, data_registro)
+      VALUES (?, ?, 'reabertura', ?, ?)
+    `).run(
+      id,
+      user.id,
+      `Nota fiscal reaberta para conferência/edição por ${user.nome}.${motivoTexto}`,
+      agora
+    );
+
+    const notaAtualizada = db.prepare('SELECT * FROM notas_fiscais WHERE id = ?').get(id);
+    res.json({
+      message: 'Nota fiscal REABERTA com sucesso. Os campos estão novamente liberados para edição e conferência.',
+      nota: notaAtualizada,
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: 'Erro ao reabrir nota fiscal: ' + err.message });
   }
 });
 
