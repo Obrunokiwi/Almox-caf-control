@@ -4518,25 +4518,19 @@ apiRouter.get('/requisicoes/pendente-avaliacao', (req, res) => {
   }
 
   try {
-    let query = `
+    const query = `
       SELECT 
-        r.id, r.numero_requisicao, r.data_atendimento, r.centro_custo_nome, r.solicitante_nome,
+        r.id, r.numero_requisicao, r.data_atendimento, r.centro_custo_nome, r.solicitante_nome, r.solicitante_id,
         r.status, r.avaliacao_status, r.avaliacao_agilidade, r.avaliacao_qualidade, r.avaliacao_entrega,
         r.avaliacao_media, r.avaliacao_sugestao, r.avaliacao_data
       FROM requisicoes r
       WHERE r.status IN ('aprovada_atendida', 'atendida', 'parcial')
         AND (r.avaliacao_status IS NULL OR r.avaliacao_status = 'pendente')
+        AND r.solicitante_id = ?
+      ORDER BY r.id DESC LIMIT 1
     `;
-    const params: any[] = [];
 
-    if (user.perfil === 'requisitante') {
-      query += ' AND r.solicitante_id = ?';
-      params.push(user.id);
-    }
-
-    query += ' ORDER BY r.id DESC LIMIT 1';
-
-    const pendingRow = db.prepare(query).get(...params) as any;
+    const pendingRow = db.prepare(query).get(user.id) as any;
     res.json(pendingRow || null);
   } catch (err: any) {
     res.status(500).json({ error: 'Erro ao verificar requisição pendente de avaliação: ' + err.message });
@@ -4558,20 +4552,20 @@ apiRouter.post('/requisicoes/:id/avaliar', (req, res) => {
     horario_previsto,
     conforme_solicitado,
     funcionario_educado,
+    pergunta_horario,
+    pergunta_conforme,
+    pergunta_educado,
     sugestao,
-    encerrar_requisicao,
-    responsavel_recebimento,
-    observacao_entrega,
   } = req.body || {};
 
-  const nAgilidade = parseAvaliacaoConceitoToScore(horario_previsto ?? agilidade);
-  const nQualidade = parseAvaliacaoConceitoToScore(conforme_solicitado ?? qualidade);
-  const nEntrega = parseAvaliacaoConceitoToScore(funcionario_educado ?? entrega);
+  const nEntrega = parseAvaliacaoConceitoToScore(pergunta_horario ?? horario_previsto ?? entrega);
+  const nQualidade = parseAvaliacaoConceitoToScore(pergunta_conforme ?? conforme_solicitado ?? qualidade);
+  const nAgilidade = parseAvaliacaoConceitoToScore(pergunta_educado ?? funcionario_educado ?? agilidade);
 
   if (!nAgilidade || !nQualidade || !nEntrega) {
     res.status(400).json({
       error:
-        'Para concluir e encerrar a requisição, responda as 3 perguntas obrigatórias (Ótimo, Bom ou Ruim): ' +
+        'Responda as 3 perguntas obrigatórias (Ótimo, Bom ou Ruim): ' +
         '1. Foi entregue no horário previsto? ' +
         '2. O pedido foi entregue conforme solicitado? ' +
         '3. O funcionário foi educado?',
@@ -4583,9 +4577,9 @@ apiRouter.post('/requisicoes/:id/avaliar', (req, res) => {
   const media = round4((nAgilidade + nQualidade + nEntrega) / 3, 2);
   const agora = new Date().toISOString();
 
-  const labelP1 = scoreToAvaliacaoConceitoLabel(nAgilidade);
+  const labelP1 = scoreToAvaliacaoConceitoLabel(nEntrega);
   const labelP2 = scoreToAvaliacaoConceitoLabel(nQualidade);
-  const labelP3 = scoreToAvaliacaoConceitoLabel(nEntrega);
+  const labelP3 = scoreToAvaliacaoConceitoLabel(nAgilidade);
 
   try {
     const reqRow = db.prepare('SELECT * FROM requisicoes WHERE id = ?').get(id) as any;
@@ -4594,81 +4588,44 @@ apiRouter.post('/requisicoes/:id/avaliar', (req, res) => {
       return;
     }
 
-    // Requisitante só pode avaliar suas próprias requisições
-    if (user.perfil === 'requisitante' && Number(reqRow.solicitante_id) !== Number(user.id)) {
-      res.status(403).json({ error: 'Requisitantes só podem avaliar suas próprias requisições.' });
+    // Somente a pessoa que fez a requisição pode avaliá-la
+    if (Number(reqRow.solicitante_id) !== Number(user.id)) {
+      res.status(403).json({ error: 'A avaliação deve ser feita somente pela pessoa que fez a requisição.' });
+      return;
+    }
+
+    // A avaliação só pode ocorrer após a requisição estar com a etapa ATENDIDA
+    if (
+      reqRow.status !== 'atendida' &&
+      reqRow.status !== 'aprovada_atendida' &&
+      reqRow.status !== 'parcial'
+    ) {
+      res.status(400).json({
+        error: 'A avaliação só pode ser realizada após a requisição estar com a etapa Atendida.',
+      });
       return;
     }
 
     runInTransaction(() => {
-      const statusAnterior = reqRow.status;
-      const deveEncerrar =
-        Boolean(encerrar_requisicao) ||
-        reqRow.status === 'em_separacao' ||
-        reqRow.status === 'aguardando_atendimento' ||
-        reqRow.status === 'pendente';
-
-      if (deveEncerrar && reqRow.status !== 'atendida' && reqRow.status !== 'aprovada_atendida') {
-        db.prepare(`
-          UPDATE requisicoes
-          SET status = 'atendida',
-              almoxarife_id = COALESCE(almoxarife_id, ?),
-              data_atendimento = COALESCE(data_atendimento, CURRENT_TIMESTAMP),
-              avaliacao_agilidade = ?,
-              avaliacao_qualidade = ?,
-              avaliacao_entrega = ?,
-              avaliacao_media = ?,
-              avaliacao_sugestao = ?,
-              avaliacao_data = ?,
-              avaliacao_status = 'avaliado'
-          WHERE id = ?
-        `).run(
-          user.id,
-          nAgilidade,
-          nQualidade,
-          nEntrega,
-          media,
-          textoSugestao || null,
-          agora,
-          id
-        );
-
-        const detalhesEntrega = `Material entregue ao solicitante e requisição ENCERRADA por ${user.nome} (${user.perfil.toUpperCase()}).${responsavel_recebimento ? ` Recebido por: ${responsavel_recebimento}.` : ''}`;
-        db.prepare(`
-          INSERT INTO historico_requisicoes (
-            requisicao_id, item_requisicao_id, produto_id, usuario_id, acao,
-            status_anterior, status_novo, quantidade_solicitada, quantidade_atendida,
-            detalhes, justificativa, data_registro
-          ) VALUES (?, NULL, NULL, ?, 'entrega_material', ?, 'atendida', NULL, NULL, ?, ?, ?)
-        `).run(
-          id,
-          user.id,
-          statusAnterior,
-          detalhesEntrega,
-          observacao_entrega ? String(observacao_entrega).trim() : null,
-          agora
-        );
-      } else {
-        db.prepare(`
-          UPDATE requisicoes
-          SET avaliacao_agilidade = ?,
-              avaliacao_qualidade = ?,
-              avaliacao_entrega = ?,
-              avaliacao_media = ?,
-              avaliacao_sugestao = ?,
-              avaliacao_data = ?,
-              avaliacao_status = 'avaliado'
-          WHERE id = ?
-        `).run(
-          nAgilidade,
-          nQualidade,
-          nEntrega,
-          media,
-          textoSugestao || null,
-          agora,
-          id
-        );
-      }
+      db.prepare(`
+        UPDATE requisicoes
+        SET avaliacao_agilidade = ?,
+            avaliacao_qualidade = ?,
+            avaliacao_entrega = ?,
+            avaliacao_media = ?,
+            avaliacao_sugestao = ?,
+            avaliacao_data = ?,
+            avaliacao_status = 'avaliado'
+        WHERE id = ?
+      `).run(
+        nAgilidade,
+        nQualidade,
+        nEntrega,
+        media,
+        textoSugestao || null,
+        agora,
+        id
+      );
 
       // Registra no histórico de auditoria
       db.prepare(`
@@ -4678,7 +4635,7 @@ apiRouter.post('/requisicoes/:id/avaliar', (req, res) => {
       `).run(
         id,
         user.id,
-        `Questionário de qualidade respondido no encerramento por ${user.nome}: ` +
+        `Questionário de qualidade respondido pelo solicitante ${user.nome}: ` +
         `1. Entregue no horário previsto: ${labelP1} | ` +
         `2. Entregue conforme solicitado: ${labelP2} | ` +
         `3. Funcionário educado: ${labelP3} ` +
@@ -4688,7 +4645,7 @@ apiRouter.post('/requisicoes/:id/avaliar', (req, res) => {
     });
 
     res.json({
-      message: 'Questionário de avaliação concluído e requisição encerrada com sucesso!',
+      message: 'Avaliação registrada com sucesso pelo solicitante!',
       avaliacao: {
         agilidade: nAgilidade,
         qualidade: nQualidade,
@@ -4698,7 +4655,7 @@ apiRouter.post('/requisicoes/:id/avaliar', (req, res) => {
         funcionario_educado_conceito: labelP3,
         media,
         sugestao: textoSugestao,
-        status_requisicao: 'atendida',
+        status_requisicao: reqRow.status,
         avaliacao_status: 'avaliado',
       },
     });

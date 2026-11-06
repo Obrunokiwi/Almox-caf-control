@@ -1048,14 +1048,6 @@ export const RequisicoesView: React.FC<RequisicoesViewProps> = ({
   // Ação Almoxarife: Alterar status manualmente para qualquer etapa do fluxo
   const handleAlterarStatus = async (novoStatus: string, justificativa: string = '') => {
     if (!selectedReq) return;
-    // Ao encerrar a requisição como 'atendida', abre o questionário das 3 perguntas para concluir e alimentar indicadores
-    if (novoStatus === 'atendida' && (selectedReq as any).avaliacao_status !== 'avaliado') {
-      setIsStatusModalOpen(false);
-      setPendingReqToRate(reqDetails?.requisicao || selectedReq);
-      setRatingOrigin('encerrar');
-      setIsRatingModalOpen(true);
-      return;
-    }
 
     setIsProcessing(true);
     setActionError(null);
@@ -1090,12 +1082,46 @@ export const RequisicoesView: React.FC<RequisicoesViewProps> = ({
     }
   };
 
-  // Ação Almoxarife: Confirmar Entrega e Encerrar Requisição com Avaliação das 3 Perguntas
-  const handleConfirmarEntrega = async () => {
-    if (!selectedReq) return;
-    setPendingReqToRate(reqDetails?.requisicao || selectedReq);
-    setRatingOrigin('encerrar');
-    setIsRatingModalOpen(true);
+  // Ação Almoxarife: Confirmar Entrega e Marcar Requisição como Atendida (sem avaliação pelo almoxarife)
+  const handleConfirmarEntrega = async (reqAlvo?: Requisicao) => {
+    const targetReq = reqAlvo || selectedReq;
+    if (!targetReq) return;
+
+    setIsProcessing(true);
+    setActionError(null);
+    try {
+      const res = await fetch(`/api/requisicoes/${targetReq.id}/entregar`, {
+        method: 'POST',
+        headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
+        body: JSON.stringify({}),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || 'Erro ao confirmar entrega da requisição.');
+      }
+
+      toast.success(
+        'Requisição Atendida com Sucesso',
+        data.message || `Requisição ${targetReq.numero_requisicao} marcada como Atendida!`
+      );
+
+      if (selectedReq && selectedReq.id === targetReq.id) {
+        const updatedReq = {
+          ...selectedReq,
+          status: 'atendida' as any,
+          data_atendimento: new Date().toISOString(),
+        };
+        setSelectedReq(updatedReq);
+        await handleAbrirAnalise(updatedReq, activeDetailTab);
+      }
+      onRefresh();
+    } catch (err: any) {
+      const msg = err.message || 'Falha ao confirmar entrega da requisição.';
+      setActionError(msg);
+      toast.error('Erro ao Concluir Entrega', msg);
+    } finally {
+      setIsProcessing(false);
+    }
   };
 
   // Ação Almoxarife: Rejeitar com parecer
@@ -1917,49 +1943,58 @@ export const RequisicoesView: React.FC<RequisicoesViewProps> = ({
 
                         {(r.status === 'atendida' || r.status === 'aprovada_atendida' || String(r.status) === 'parcial') && (
                           (r as any).avaliacao_status === 'avaliado' ? (
-                            <button
-                              type="button"
-                              onClick={() => {
-                                setPendingReqToRate(r as any);
-                                setRatingOrigin('avaliar');
-                                setIsRatingModalOpen(true);
-                              }}
-                              title={`Avaliação concluída (${Number((r as any).avaliacao_media || 5).toFixed(1)} / 5.0). Clique para visualizar ou atualizar.`}
-                              className="px-2 py-1 rounded bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-300 text-xs font-bold flex items-center gap-1 font-mono shrink-0 cursor-pointer"
-                            >
-                              <Star className="w-3.5 h-3.5 fill-amber-400 text-amber-500" />
-                              <span>AVALIADA ({Number((r as any).avaliacao_media || 5).toFixed(1)})</span>
-                            </button>
+                            Number(r.solicitante_id) === Number(currentUser?.id) ? (
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setPendingReqToRate(r as any);
+                                  setRatingOrigin('avaliar');
+                                  setIsRatingModalOpen(true);
+                                }}
+                                title={`Avaliação concluída (${Number((r as any).avaliacao_media || 5).toFixed(1)} / 5.0). Clique para visualizar ou atualizar sua avaliação.`}
+                                className="px-2 py-1 rounded bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-300 text-xs font-bold flex items-center gap-1 font-mono shrink-0 cursor-pointer"
+                              >
+                                <Star className="w-3.5 h-3.5 fill-amber-400 text-amber-500" />
+                                <span>AVALIADA ({Number((r as any).avaliacao_media || 5).toFixed(1)})</span>
+                              </button>
+                            ) : (
+                              <span
+                                title={`Avaliada pelo solicitante (${Number((r as any).avaliacao_media || 5).toFixed(1)} / 5.0)`}
+                                className="px-2 py-1 rounded bg-emerald-50 text-emerald-800 border border-emerald-200 text-xs font-bold flex items-center gap-1 font-mono shrink-0"
+                              >
+                                <Star className="w-3.5 h-3.5 fill-amber-400 text-amber-500" />
+                                <span>AVALIADA ({Number((r as any).avaliacao_media || 5).toFixed(1)})</span>
+                              </span>
+                            )
                           ) : (
-                            <button
-                              type="button"
-                              onClick={() => {
-                                setPendingReqToRate(r as any);
-                                setRatingOrigin('avaliar');
-                                setIsRatingModalOpen(true);
-                              }}
-                              title="Responder às 3 perguntas de avaliação do atendimento desta requisição"
-                              className="px-2.5 py-1 rounded bg-amber-100 hover:bg-amber-200 text-amber-900 border border-amber-300 text-xs font-bold flex items-center gap-1 cursor-pointer shrink-0"
-                            >
-                              <Star className="w-3.5 h-3.5 fill-amber-400 text-amber-600" />
-                              <span>AVALIAR</span>
-                            </button>
+                            Number(r.solicitante_id) === Number(currentUser?.id) && (
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setPendingReqToRate(r as any);
+                                  setRatingOrigin('avaliar');
+                                  setIsRatingModalOpen(true);
+                                }}
+                                title="Responder às 3 perguntas de avaliação do atendimento desta requisição"
+                                className="px-2.5 py-1 rounded bg-amber-100 hover:bg-amber-200 text-amber-900 border border-amber-300 text-xs font-bold flex items-center gap-1 cursor-pointer shrink-0"
+                              >
+                                <Star className="w-3.5 h-3.5 fill-amber-400 text-amber-600" />
+                                <span>AVALIAR</span>
+                              </button>
+                            )
                           )
                         )}
 
                         {isAlmoxarifeOrAdmin && r.status === 'em_separacao' && (
                           <button
                             type="button"
-                            onClick={() => {
-                              setPendingReqToRate(r as any);
-                              setRatingOrigin('encerrar');
-                              setIsRatingModalOpen(true);
-                            }}
-                            title="Encerrar requisição respondendo às 3 perguntas de qualidade"
-                            className="px-2.5 py-1 rounded bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold flex items-center gap-1 cursor-pointer shrink-0 shadow-xs"
+                            onClick={() => handleConfirmarEntrega(r)}
+                            disabled={isProcessing}
+                            title="Confirmar entrega do material ao solicitante e marcar requisição como Atendida"
+                            className="px-2.5 py-1 rounded bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold flex items-center gap-1 cursor-pointer shrink-0 shadow-xs disabled:opacity-50"
                           >
                             <CheckCircle2 className="w-3.5 h-3.5" />
-                            <span>ENCERRAR / AVALIAR</span>
+                            <span>CONCLUIR ENTREGA</span>
                           </button>
                         )}
 
@@ -2206,19 +2241,21 @@ export const RequisicoesView: React.FC<RequisicoesViewProps> = ({
                   <div className="flex flex-wrap items-center justify-between gap-2">
                     <div className="font-bold text-amber-950 flex items-center gap-1.5">
                       <Star className="w-4 h-4 fill-amber-400 text-amber-600" />
-                      <span>Avaliação de Qualidade Registrada no Encerramento</span>
+                      <span>Avaliação de Qualidade Registrada pelo Solicitante</span>
                     </div>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setPendingReqToRate((reqDetails?.requisicao || selectedReq) as any);
-                        setRatingOrigin('avaliar');
-                        setIsRatingModalOpen(true);
-                      }}
-                      className="px-2.5 py-1 rounded bg-white hover:bg-amber-100 text-amber-900 border border-amber-300 text-[11px] font-bold cursor-pointer"
-                    >
-                      Editar Avaliação
-                    </button>
+                    {Number((reqDetails?.requisicao || selectedReq)?.solicitante_id) === Number(currentUser?.id) && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setPendingReqToRate((reqDetails?.requisicao || selectedReq) as any);
+                          setRatingOrigin('avaliar');
+                          setIsRatingModalOpen(true);
+                        }}
+                        className="px-2.5 py-1 rounded bg-white hover:bg-amber-100 text-amber-900 border border-amber-300 text-[11px] font-bold cursor-pointer"
+                      >
+                        Editar Avaliação
+                      </button>
+                    )}
                   </div>
                   {(() => {
                     const rq: any = reqDetails?.requisicao || selectedReq;
@@ -3161,24 +3198,25 @@ export const RequisicoesView: React.FC<RequisicoesViewProps> = ({
               </div>
 
               <div className="flex flex-wrap items-center gap-2.5">
-                {/* Botão de Encerramento e Avaliação: quando o status for Em Separação */}
+                {/* Botão de Conclusão de Entrega: quando o status for Em Separação */}
                 {isAlmoxarifeOrAdmin && selectedReq.status === 'em_separacao' && (
                   <button
                     type="button"
-                    onClick={handleConfirmarEntrega}
+                    onClick={() => handleConfirmarEntrega()}
                     disabled={isProcessing}
                     className="bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800 text-white font-bold px-4 py-2 rounded text-xs flex items-center gap-1.5 transition-all shadow uppercase tracking-wide cursor-pointer disabled:opacity-50 border border-emerald-500"
-                    title="Responder às 3 perguntas de qualidade, confirmar entrega ao solicitante e encerrar requisição como Atendida"
+                    title="Confirmar entrega ao solicitante e marcar requisição como Atendida"
                   >
                     <CheckCircle2 className="w-4 h-4 text-emerald-100" />
-                    <span>ENCERRAR E AVALIAR REQUISIÇÃO (MARCAR ATENDIDA)</span>
+                    <span>CONCLUIR ENTREGA (MARCAR ATENDIDA)</span>
                   </button>
                 )}
 
-                {/* Botão de Avaliação quando já Atendida mas ainda pendente de avaliação */}
+                {/* Botão de Avaliação quando já Atendida mas ainda pendente de avaliação (Exclusivo para o solicitante que fez a requisição) */}
                 {(selectedReq.status === 'atendida' ||
                   selectedReq.status === 'aprovada_atendida' ||
                   String(selectedReq.status) === 'parcial') &&
+                  Number((reqDetails?.requisicao || selectedReq)?.solicitante_id) === Number(currentUser?.id) &&
                   (reqDetails?.requisicao as any)?.avaliacao_status !== 'avaliado' &&
                   (selectedReq as any)?.avaliacao_status !== 'avaliado' && (
                     <button
