@@ -23,11 +23,20 @@ import {
   ShieldCheck,
   Eye,
   ArrowLeft,
+  Award,
 } from 'lucide-react';
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
 import * as XLSX from 'xlsx';
 import { CentroCusto, Produto, Movimentacao, DashboardStats, Usuario } from '../types';
+import { IndicadoresPerformanceView } from './IndicadoresPerformanceView.tsx';
+import {
+  round4,
+  parseDecimal,
+  parseDecimalNullable,
+  formatDecimal4,
+  formatCurrency4,
+} from '../utils/numberUtils.ts';
 
 export interface RelatoriosViewProps {
   centrosCusto: CentroCusto[];
@@ -268,7 +277,7 @@ const TODAS_COLUNAS_CONSTRUTOR: ColunaConfig[] = [
   { id: 'entradas', label: 'Entradas', tipo: 'numero', basesCompativeis: ['saldo_estoque', 'movimentacoes', 'consumo_saidas'] },
   { id: 'saidas', label: 'Saídas', tipo: 'numero', basesCompativeis: ['saldo_estoque', 'movimentacoes', 'consumo_saidas'] },
   { id: 'saldo_final', label: 'Saldo Final', tipo: 'numero', basesCompativeis: ['saldo_estoque', 'movimentacoes', 'consumo_saidas'] },
-  { id: 'quantidade_consumida', label: 'Quantidade Consumida', tipo: 'numero', basesCompativeis: ['consumo_saidas', 'movimentacoes'] },
+  { id: 'quantidade_consumida', label: 'Quantidade Consumida', tipo: 'numero', basesCompativeis: ['saldo_estoque', 'consumo_saidas', 'movimentacoes'] },
   { id: 'custo_unitario', label: 'Custo Unitário', tipo: 'moeda', requerCusto: true, basesCompativeis: ['saldo_estoque', 'movimentacoes', 'consumo_saidas'] },
   { id: 'valor_total', label: 'Valor Total', tipo: 'moeda', requerCusto: true, basesCompativeis: ['saldo_estoque', 'movimentacoes', 'consumo_saidas'] },
   { id: 'classe_abc', label: 'Classe ABC', tipo: 'classe_abc', requerAbc: true, basesCompativeis: ['saldo_estoque', 'movimentacoes', 'consumo_saidas'] },
@@ -325,6 +334,7 @@ export const RelatoriosView: React.FC<RelatoriosViewProps> = ({
   const [loadingMeta, setLoadingMeta] = useState(true);
   const [metaError, setMetaError] = useState<string | null>(null);
   const [metadados, setMetadados] = useState<any>(null);
+  const [abaRelatorio, setAbaRelatorio] = useState<'construtor' | 'indicadores_qualidade'>('construtor');
 
   // Blocos recolhíveis do Construtor Dinâmico
   const [openBlocks, setOpenBlocks] = useState<Record<string, boolean>>({
@@ -494,23 +504,19 @@ export const RelatoriosView: React.FC<RelatoriosViewProps> = ({
     };
   }, [getAuthHeaders]);
 
-  // Ajustar padrões compatíveis ao trocar a base de análise
+  // Ajustar padrões compatíveis ao trocar a base de análise (preservando indicador ABC e escolhas do usuário)
   const handleChangeBase = (novaBase: 'saldo_estoque' | 'movimentacoes' | 'consumo_saidas') => {
     setBase(novaBase);
     if (novaBase === 'saldo_estoque') {
       if (detalhamento === 'movimentacao') setDetalhamento('produto');
       if (agrupamento === 'centro_custo') setAgrupamento('nenhum');
       setGrandezaQuantidade('saldo_final');
-      if (indicadorAbc === 'quantidade_consumida' || indicadorAbc === 'valor_consumo') {
-        setIndicadorAbc(exibirCustos ? 'valor_estoque' : 'quantidade_estoque');
-      }
       setColunasMarcadas((prev) => {
         const next = new Set(prev);
         next.add('codigo');
         next.add('descricao');
         next.add('unidade');
         next.add('saldo_final');
-        next.delete('quantidade_consumida');
         next.delete('documento');
         next.delete('saldo_inicial');
         return next;
@@ -534,9 +540,6 @@ export const RelatoriosView: React.FC<RelatoriosViewProps> = ({
     } else if (novaBase === 'consumo_saidas') {
       if (detalhamento === 'movimentacao') setDetalhamento('produto');
       setGrandezaQuantidade('quantidade_consumida');
-      if (indicadorAbc === 'quantidade_estoque' || indicadorAbc === 'valor_estoque') {
-        setIndicadorAbc(exibirCustos ? 'valor_consumo' : 'quantidade_consumida');
-      }
       setColunasMarcadas((prev) => {
         const next = new Set(prev);
         next.add('codigo');
@@ -553,14 +556,16 @@ export const RelatoriosView: React.FC<RelatoriosViewProps> = ({
   const handleToggleCalcularAbc = (checked: boolean) => {
     setCalcularAbc(checked);
     setOpenBlocks((prev) => ({ ...prev, curva_abc: checked || prev.curva_abc }));
+    if (checked) {
+      setOrdenacaoColuna('participacao_abc');
+      setOrdenacaoSentido('desc');
+    }
     setColunasMarcadas((prev) => {
       const next = new Set(prev);
       if (checked) {
         next.add('classe_abc');
         next.add('participacao_abc');
         next.add('acumulado_abc');
-        setOrdenacaoColuna('participacao_abc');
-        setOrdenacaoSentido('desc');
       } else {
         next.delete('classe_abc');
         next.delete('participacao_abc');
@@ -629,12 +634,12 @@ export const RelatoriosView: React.FC<RelatoriosViewProps> = ({
     });
   }, [metadados?.lotes, produtosDisponiveis, filtroProdutos]);
 
-  // Validação da soma de percentuais da Curva ABC
+  // Validação da soma de percentuais da Curva ABC (suporta vírgula ou ponto e até 4 casas decimais)
   const validacaoAbcPct = useMemo(() => {
-    const a = Number(pctA || 0);
-    const b = Number(pctB || 0);
-    const c = Number(pctC || 0);
-    const soma = Math.round((a + b + c) * 100) / 100;
+    const a = parseDecimal(pctA, 0);
+    const b = parseDecimal(pctB, 0);
+    const c = parseDecimal(pctC, 0);
+    const soma = round4(a + b + c);
     const valido = a > 0 && b >= 0 && c >= 0 && Math.abs(soma - 100) <= 0.01;
     return {
       a,
@@ -642,9 +647,9 @@ export const RelatoriosView: React.FC<RelatoriosViewProps> = ({
       c,
       soma,
       valido,
-      faixaA: `0% até ${a}%`,
-      faixaB: `>${a}% até ${Math.round((a + b) * 100) / 100}%`,
-      faixaC: `>${Math.round((a + b) * 100) / 100}% até 100%`,
+      faixaA: `0% até ${formatDecimal4(a)}%`,
+      faixaB: `>${formatDecimal4(a)}% até ${formatDecimal4(round4(a + b))}%`,
+      faixaC: `>${formatDecimal4(round4(a + b))}% até 100%`,
     };
   }, [pctA, pctB, pctC]);
 
@@ -862,19 +867,19 @@ export const RelatoriosView: React.FC<RelatoriosViewProps> = ({
       return s;
     }
     if (tipo === 'numero') {
-      const n = Number(valor);
-      if (Number.isNaN(n)) return String(valor);
-      return n.toLocaleString('pt-BR', { maximumFractionDigits: 4 });
+      const n = parseDecimalNullable(valor);
+      if (n === null) return String(valor);
+      return formatDecimal4(n);
     }
     if (tipo === 'moeda') {
-      const n = Number(valor);
-      if (Number.isNaN(n)) return String(valor);
-      return n.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL', minimumFractionDigits: 2, maximumFractionDigits: 4 });
+      const n = parseDecimalNullable(valor);
+      if (n === null) return String(valor);
+      return formatCurrency4(n);
     }
     if (tipo === 'percentual') {
-      const n = Number(valor);
-      if (Number.isNaN(n)) return '-';
-      return `${n.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}%`;
+      const n = parseDecimalNullable(valor);
+      if (n === null) return '-';
+      return `${formatDecimal4(n, 2, 4)}%`;
     }
     return String(valor);
   };
@@ -941,19 +946,19 @@ export const RelatoriosView: React.FC<RelatoriosViewProps> = ({
             validade_inicio: validadeInicio || null,
             validade_fim: validadeFim || null,
             grandeza_quantidade: grandezaQuantidade,
-            qtd_min: qtdMin !== '' ? Number(qtdMin) : null,
-            qtd_max: qtdMax !== '' ? Number(qtdMax) : null,
+            qtd_min: parseDecimalNullable(qtdMin),
+            qtd_max: parseDecimalNullable(qtdMax),
             grandeza_valor: grandezaValor,
-            valor_min: valorMin !== '' ? Number(valorMin) : null,
-            valor_max: valorMax !== '' ? Number(valorMax) : null,
+            valor_min: parseDecimalNullable(valorMin),
+            valor_max: parseDecimalNullable(valorMax),
             incluir_zeros: incluirZeros,
           },
           curva_abc: {
             calcular_abc: calcularAbc,
             indicador: indicadorAbc,
-            pct_a: Number(pctA || 80),
-            pct_b: Number(pctB || 15),
-            pct_c: Number(pctC || 5),
+            pct_a: parseDecimal(pctA, 80),
+            pct_b: parseDecimal(pctB, 15),
+            pct_c: parseDecimal(pctC, 5),
             abrangencia: abrangenciaAbc,
             regra_fronteira: regraFronteiraAbc,
             regra_empate: regraEmpateAbc,
@@ -982,10 +987,10 @@ export const RelatoriosView: React.FC<RelatoriosViewProps> = ({
   };
 
   // ==========================================================================
-  // IMPRESSÃO / EXPORTAÇÃO EM PDF (COM CABEÇALHO REPETIDO POR PÁGINA)
+  // IMPRESSÃO / EXPORTAÇÃO EM PDF (SEMPRE EXECUTA A MESMA CONSULTA ATUALIZADA)
   // ==========================================================================
   const gerarPdfRelatorio = async (modo: 'download' | 'print') => {
-    const dadosRel = resultado || (await executarConsulta());
+    const dadosRel = await executarConsulta();
     if (!dadosRel) return;
 
     const cols: { id: string; label: string; tipo: string }[] = dadosRel.colunas || [];
@@ -1046,6 +1051,20 @@ export const RelatoriosView: React.FC<RelatoriosViewProps> = ({
       for (const r of dadosRel.linhas || []) {
         tableBody.push(cols.map((c) => formatarCelula(r[c.id], c.tipo)));
       }
+    }
+
+    if (tableBody.length === 0) {
+      const causaVazia =
+        Array.isArray(dadosRel.avisos) && dadosRel.avisos.length > 0
+          ? dadosRel.avisos.join(' | ')
+          : 'Nenhum registro encontrado para os critérios selecionados.';
+      tableBody.push([
+        {
+          content: causaVazia,
+          colSpan: Math.max(cols.length, 1),
+          styles: { fillColor: [254, 243, 199], textColor: [146, 64, 14], fontStyle: 'bold' },
+        },
+      ]);
     }
 
     if (dadosRel.total_geral && !dadosRel.restrito_requisitante) {
@@ -1165,14 +1184,19 @@ export const RelatoriosView: React.FC<RelatoriosViewProps> = ({
   };
 
   // ==========================================================================
-  // EXPORTAÇÃO DE PLANILHA (XLSX E CSV) PRESERVANDO ZEROS À ESQUERDA E PRECISÃO
+  // EXPORTAÇÃO DE PLANILHA (XLSX E CSV) PRESERVANDO ZEROS À ESQUERDA E 4 CASAS
   // ==========================================================================
   const exportarPlanilha = async (formato: 'xlsx' | 'csv') => {
-    const dadosRel = resultado || (await executarConsulta());
+    const dadosRel = await executarConsulta();
     if (!dadosRel) return;
 
     const cols: { id: string; label: string; tipo: string }[] = dadosRel.colunas || [];
     const COLUNAS_TEXTO_PRESERVADO = new Set(['codigo', 'lote', 'produto_codigo', 'numero_requisicao', 'documento']);
+
+    const avisosHeader =
+      Array.isArray(dadosRel.avisos) && dadosRel.avisos.length > 0
+        ? dadosRel.avisos.map((av: string) => [`AVISO / DIAGNÓSTICO: ${av}`])
+        : [];
 
     // Cabeçalho de metadados na planilha
     const aoa: any[][] = [
@@ -1181,6 +1205,7 @@ export const RelatoriosView: React.FC<RelatoriosViewProps> = ({
       [`DATA/HORA DE EMISSÃO: ${dadosRel.data_emissao}`],
       [`USUÁRIO EMISSOR: ${dadosRel.usuario_emissor}`],
       ...resumoConfiguracoes.map((item) => [item]),
+      ...avisosHeader,
       [],
       cols.map((c) => c.label),
     ];
@@ -1193,8 +1218,8 @@ export const RelatoriosView: React.FC<RelatoriosViewProps> = ({
         return String(val);
       }
       if (col.tipo === 'numero' || col.tipo === 'moeda' || col.tipo === 'percentual') {
-        const n = Number(val);
-        return Number.isNaN(n) ? String(val) : n;
+        const n = parseDecimalNullable(val);
+        return n === null ? String(val) : round4(n);
       }
       if (col.tipo === 'data') {
         return formatarCelula(val, 'data');
@@ -1706,80 +1731,117 @@ export const RelatoriosView: React.FC<RelatoriosViewProps> = ({
   return (
     <div className="space-y-5 pb-14">
       {/* Barra Superior do Construtor Dinâmico */}
-      <div className="bg-white border border-slate-200 rounded-xl p-5 shadow-sm flex flex-wrap items-center justify-between gap-4">
-        <div className="flex items-center gap-3">
-          {onVoltar && (
-            <button
-              type="button"
-              onClick={onVoltar}
-              className="p-2 rounded-lg border border-slate-200 hover:bg-slate-50 text-slate-600"
-              title="Voltar"
-            >
-              <ArrowLeft className="w-4 h-4" />
-            </button>
-          )}
-          <div>
-            <div className="flex items-center gap-2.5">
-              <h1 className="text-lg font-bold text-slate-900">Construtor Dinâmico de Relatórios</h1>
-              <span className="px-2.5 py-0.5 text-xs font-bold rounded bg-blue-50 text-blue-700 border border-blue-200">
-                Área Ativa: {areaSigla}
-              </span>
+      <div className="bg-white border border-slate-200 rounded-xl p-5 shadow-sm space-y-4">
+        <div className="flex flex-wrap items-center justify-between gap-4">
+          <div className="flex items-center gap-3">
+            {onVoltar && (
+              <button
+                type="button"
+                onClick={onVoltar}
+                className="p-2 rounded-lg border border-slate-200 hover:bg-slate-50 text-slate-600"
+                title="Voltar"
+              >
+                <ArrowLeft className="w-4 h-4" />
+              </button>
+            )}
+            <div>
+              <div className="flex items-center gap-2.5">
+                <h1 className="text-lg font-bold text-slate-900">Construtor Dinâmico de Relatórios & Qualidade</h1>
+                <span className="px-2.5 py-0.5 text-xs font-bold rounded bg-blue-50 text-blue-700 border border-blue-200">
+                  Área Ativa: {areaSigla}
+                </span>
+              </div>
+              <p className="text-xs text-slate-500 mt-0.5">
+                Configure relatórios dinâmicos, Curva ABC e consulte os indicadores de avaliação das requisições.
+              </p>
             </div>
-            <p className="text-xs text-slate-500 mt-0.5">
-              Configure a base de análise, datas, filtros combináveis, colunas, agrupamentos e parâmetros da Curva ABC.
-            </p>
           </div>
+
+          {/* Botões de Ação Unificados (a partir da mesma consulta configurada) */}
+          {abaRelatorio === 'construtor' && (
+            <div className="flex flex-wrap items-center gap-2">
+              <button
+                type="button"
+                onClick={executarConsulta}
+                disabled={loadingRelatorio}
+                className="flex items-center gap-2 px-4 py-2 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold shadow-sm transition-colors disabled:opacity-50"
+              >
+                <Eye className="w-4 h-4" />
+                {loadingRelatorio ? 'Processando...' : 'Visualizar em Tela'}
+              </button>
+              <button
+                type="button"
+                onClick={() => gerarPdfRelatorio('print')}
+                disabled={loadingRelatorio}
+                className="flex items-center gap-1.5 px-3 py-2 rounded-lg bg-slate-800 hover:bg-slate-900 text-white text-xs font-semibold transition-colors"
+              >
+                <Printer className="w-4 h-4" />
+                Imprimir PDF
+              </button>
+              <button
+                type="button"
+                onClick={() => gerarPdfRelatorio('download')}
+                disabled={loadingRelatorio}
+                className="flex items-center gap-1.5 px-3 py-2 rounded-lg border border-slate-300 bg-white hover:bg-slate-50 text-slate-700 text-xs font-semibold transition-colors"
+              >
+                <Download className="w-4 h-4" />
+                Salvar PDF
+              </button>
+              <button
+                type="button"
+                onClick={() => exportarPlanilha('xlsx')}
+                disabled={loadingRelatorio}
+                className="flex items-center gap-1.5 px-3 py-2 rounded-lg border border-emerald-300 bg-emerald-50 hover:bg-emerald-100 text-emerald-800 text-xs font-semibold transition-colors"
+              >
+                <FileSpreadsheet className="w-4 h-4" />
+                Exportar XLSX
+              </button>
+              <button
+                type="button"
+                onClick={() => exportarPlanilha('csv')}
+                disabled={loadingRelatorio}
+                className="flex items-center gap-1.5 px-3 py-2 rounded-lg border border-slate-300 bg-white hover:bg-slate-50 text-slate-700 text-xs font-semibold transition-colors"
+              >
+                <FileText className="w-4 h-4" />
+                Exportar CSV
+              </button>
+            </div>
+          )}
         </div>
 
-        {/* Botões de Ação Unificados (a partir da mesma consulta configurada) */}
-        <div className="flex flex-wrap items-center gap-2">
+        {/* Alternador entre Construtor Dinâmico e Indicadores de Qualidade */}
+        <div className="flex flex-wrap items-center gap-2 pt-3 border-t border-slate-100">
           <button
             type="button"
-            onClick={executarConsulta}
-            disabled={loadingRelatorio}
-            className="flex items-center gap-2 px-4 py-2 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold shadow-sm transition-colors disabled:opacity-50"
+            onClick={() => setAbaRelatorio('construtor')}
+            className={`px-3.5 py-2 rounded-lg text-xs font-bold flex items-center gap-2 transition-colors cursor-pointer ${
+              abaRelatorio === 'construtor'
+                ? 'bg-[#00237D] text-white shadow-xs'
+                : 'bg-slate-100 text-slate-700 hover:bg-slate-200'
+            }`}
           >
-            <Eye className="w-4 h-4" />
-            {loadingRelatorio ? 'Processando...' : 'Visualizar em Tela'}
+            <BarChart3 className="w-4 h-4" />
+            Construtor Dinâmico & Curva ABC
           </button>
           <button
             type="button"
-            onClick={() => gerarPdfRelatorio('print')}
-            disabled={loadingRelatorio}
-            className="flex items-center gap-1.5 px-3 py-2 rounded-lg bg-slate-800 hover:bg-slate-900 text-white text-xs font-semibold transition-colors"
+            onClick={() => setAbaRelatorio('indicadores_qualidade')}
+            className={`px-3.5 py-2 rounded-lg text-xs font-bold flex items-center gap-2 transition-colors cursor-pointer ${
+              abaRelatorio === 'indicadores_qualidade'
+                ? 'bg-[#00237D] text-white shadow-xs'
+                : 'bg-slate-100 text-slate-700 hover:bg-slate-200'
+            }`}
           >
-            <Printer className="w-4 h-4" />
-            Imprimir PDF
-          </button>
-          <button
-            type="button"
-            onClick={() => gerarPdfRelatorio('download')}
-            disabled={loadingRelatorio}
-            className="flex items-center gap-1.5 px-3 py-2 rounded-lg border border-slate-300 bg-white hover:bg-slate-50 text-slate-700 text-xs font-semibold transition-colors"
-          >
-            <Download className="w-4 h-4" />
-            Salvar PDF
-          </button>
-          <button
-            type="button"
-            onClick={() => exportarPlanilha('xlsx')}
-            disabled={loadingRelatorio}
-            className="flex items-center gap-1.5 px-3 py-2 rounded-lg border border-emerald-300 bg-emerald-50 hover:bg-emerald-100 text-emerald-800 text-xs font-semibold transition-colors"
-          >
-            <FileSpreadsheet className="w-4 h-4" />
-            Exportar XLSX
-          </button>
-          <button
-            type="button"
-            onClick={() => exportarPlanilha('csv')}
-            disabled={loadingRelatorio}
-            className="flex items-center gap-1.5 px-3 py-2 rounded-lg border border-slate-300 bg-white hover:bg-slate-50 text-slate-700 text-xs font-semibold transition-colors"
-          >
-            <FileText className="w-4 h-4" />
-            Exportar CSV
+            <Award className="w-4 h-4 text-amber-400" />
+            Indicadores de Qualidade (Avaliação de Requisições)
           </button>
         </div>
       </div>
+
+      {abaRelatorio === 'indicadores_qualidade' ? (
+        <IndicadoresPerformanceView currentUser={currentUser} />
+      ) : (
+        <>
 
       {/* ====================================================================
           BLOCO 1: ANÁLISE (Recolhível)
@@ -2293,24 +2355,24 @@ export const RelatoriosView: React.FC<RelatoriosViewProps> = ({
                   <div>
                     <label className="block text-[11px] font-medium text-slate-600 mb-1">Valor Mín. (R$)</label>
                     <input
-                      type="number"
-                      step="0.01"
+                      type="text"
+                      inputMode="decimal"
                       value={valorMin}
                       onChange={(e) => setValorMin(e.target.value)}
                       disabled={!exibirCustos}
-                      placeholder="Sem mín."
+                      placeholder="Sem mín. (até 4 casas)"
                       className="w-full px-2.5 py-1.5 text-xs border border-slate-300 rounded bg-white disabled:opacity-50"
                     />
                   </div>
                   <div>
                     <label className="block text-[11px] font-medium text-slate-600 mb-1">Valor Máx. (R$)</label>
                     <input
-                      type="number"
-                      step="0.01"
+                      type="text"
+                      inputMode="decimal"
                       value={valorMax}
                       onChange={(e) => setValorMax(e.target.value)}
                       disabled={!exibirCustos}
-                      placeholder="Sem máx."
+                      placeholder="Sem máx. (até 4 casas)"
                       className="w-full px-2.5 py-1.5 text-xs border border-slate-300 rounded bg-white disabled:opacity-50"
                     />
                   </div>
@@ -2643,31 +2705,27 @@ export const RelatoriosView: React.FC<RelatoriosViewProps> = ({
                       Consolidado sempre por Produto (lotes de um mesmo produto não são classificados separadamente).
                     </p>
 
-                    {base !== 'saldo_estoque' && (
-                      <>
-                        <label className="flex items-center gap-2 text-xs cursor-pointer">
-                          <input
-                            type="radio"
-                            name="indicador_abc"
-                            checked={indicadorAbc === 'quantidade_consumida'}
-                            onChange={() => setIndicadorAbc('quantidade_consumida')}
-                            className="text-blue-600"
-                          />
-                          Quantidade Consumida no Período Selecionado
-                        </label>
-                        <label className="flex items-center gap-2 text-xs cursor-pointer">
-                          <input
-                            type="radio"
-                            name="indicador_abc"
-                            checked={indicadorAbc === 'valor_consumo'}
-                            disabled={!exibirCustos}
-                            onChange={() => setIndicadorAbc('valor_consumo')}
-                            className="text-blue-600 disabled:opacity-50"
-                          />
-                          Valor Financeiro do Consumo (Quantidade Consumida × Custo Unitário)
-                        </label>
-                      </>
-                    )}
+                    <label className="flex items-center gap-2 text-xs cursor-pointer">
+                      <input
+                        type="radio"
+                        name="indicador_abc"
+                        checked={indicadorAbc === 'quantidade_consumida'}
+                        onChange={() => setIndicadorAbc('quantidade_consumida')}
+                        className="text-blue-600"
+                      />
+                      Quantidade Consumida no Período Selecionado
+                    </label>
+                    <label className="flex items-center gap-2 text-xs cursor-pointer">
+                      <input
+                        type="radio"
+                        name="indicador_abc"
+                        checked={indicadorAbc === 'valor_consumo'}
+                        disabled={!exibirCustos}
+                        onChange={() => setIndicadorAbc('valor_consumo')}
+                        className="text-blue-600 disabled:opacity-50"
+                      />
+                      Valor Financeiro do Consumo (Quantidade Consumida × Custo Unitário)
+                    </label>
 
                     <label className="flex items-center gap-2 text-xs cursor-pointer">
                       <input
@@ -2703,10 +2761,8 @@ export const RelatoriosView: React.FC<RelatoriosViewProps> = ({
                           Classe A (%)
                         </label>
                         <input
-                          type="number"
-                          step="0.01"
-                          min="0.01"
-                          max="100"
+                          type="text"
+                          inputMode="decimal"
                           value={pctA}
                           onChange={(e) => setPctA(e.target.value)}
                           className="w-full px-2.5 py-1.5 text-xs border border-slate-300 rounded font-bold"
@@ -2717,10 +2773,8 @@ export const RelatoriosView: React.FC<RelatoriosViewProps> = ({
                           Classe B (%)
                         </label>
                         <input
-                          type="number"
-                          step="0.01"
-                          min="0"
-                          max="100"
+                          type="text"
+                          inputMode="decimal"
                           value={pctB}
                           onChange={(e) => setPctB(e.target.value)}
                           className="w-full px-2.5 py-1.5 text-xs border border-slate-300 rounded font-bold"
@@ -2731,10 +2785,8 @@ export const RelatoriosView: React.FC<RelatoriosViewProps> = ({
                           Classe C (%)
                         </label>
                         <input
-                          type="number"
-                          step="0.01"
-                          min="0"
-                          max="100"
+                          type="text"
+                          inputMode="decimal"
                           value={pctC}
                           onChange={(e) => setPctC(e.target.value)}
                           className="w-full px-2.5 py-1.5 text-xs border border-slate-300 rounded font-bold"
@@ -2980,8 +3032,24 @@ export const RelatoriosView: React.FC<RelatoriosViewProps> = ({
                 {resultado.grupos_render && Array.isArray(resultado.grupos_render) ? (
                   resultado.grupos_render.length === 0 ? (
                     <tr>
-                      <td colSpan={(resultado.colunas || []).length || 1} className="py-8 text-center text-slate-400">
-                        Nenhum registro encontrado para os critérios selecionados.
+                      <td colSpan={(resultado.colunas || []).length || 1} className="py-8 px-6 text-center">
+                        <div className="max-w-2xl mx-auto p-4 rounded-xl bg-amber-50 border border-amber-200 text-amber-900 space-y-1.5">
+                          <div className="font-bold text-xs uppercase flex items-center justify-center gap-1.5">
+                            <AlertTriangle className="w-4 h-4 text-amber-600" />
+                            Nenhum registro retornado para a consulta
+                          </div>
+                          {Array.isArray(resultado.avisos) && resultado.avisos.length > 0 ? (
+                            resultado.avisos.map((av: string, i: number) => (
+                              <p key={i} className="text-xs leading-relaxed">
+                                {av}
+                              </p>
+                            ))
+                          ) : (
+                            <p className="text-xs">
+                              Os filtros aplicados eliminaram todos os registros ou não há lançamentos no período.
+                            </p>
+                          )}
+                        </div>
                       </td>
                     </tr>
                   ) : (
@@ -3067,8 +3135,24 @@ export const RelatoriosView: React.FC<RelatoriosViewProps> = ({
                   )
                 ) : (resultado.linhas || []).length === 0 ? (
                   <tr>
-                    <td colSpan={(resultado.colunas || []).length || 1} className="py-8 text-center text-slate-400">
-                      Nenhum registro encontrado para os critérios selecionados.
+                    <td colSpan={(resultado.colunas || []).length || 1} className="py-8 px-6 text-center">
+                      <div className="max-w-2xl mx-auto p-4 rounded-xl bg-amber-50 border border-amber-200 text-amber-900 space-y-1.5">
+                        <div className="font-bold text-xs uppercase flex items-center justify-center gap-1.5">
+                          <AlertTriangle className="w-4 h-4 text-amber-600" />
+                          Nenhum registro retornado para a consulta
+                        </div>
+                        {Array.isArray(resultado.avisos) && resultado.avisos.length > 0 ? (
+                          resultado.avisos.map((av: string, i: number) => (
+                            <p key={i} className="text-xs leading-relaxed">
+                              {av}
+                            </p>
+                          ))
+                        ) : (
+                          <p className="text-xs">
+                            Os filtros aplicados eliminaram todos os registros ou não há lançamentos no período.
+                          </p>
+                        )}
+                      </div>
                     </td>
                   </tr>
                 ) : (
@@ -3149,6 +3233,8 @@ export const RelatoriosView: React.FC<RelatoriosViewProps> = ({
             </table>
           </div>
         </div>
+      )}
+        </>
       )}
     </div>
   );

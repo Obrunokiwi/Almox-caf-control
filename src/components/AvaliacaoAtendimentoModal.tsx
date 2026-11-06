@@ -1,7 +1,9 @@
 import React, { useState, useEffect } from 'react';
-import { Star, MessageSquare, AlertCircle, CheckCircle2, ShieldCheck, X } from 'lucide-react';
+import { Star, MessageSquare, AlertCircle, CheckCircle2, ShieldCheck, X, ThumbsUp, Smile, Frown } from 'lucide-react';
 import { useToast } from '../context/ToastContext.tsx';
 import { getAuthHeaders } from '../utils/apiUtils.ts';
+
+export type OpcaoAvaliacao = 'otimo' | 'bom' | 'ruim';
 
 interface AvaliacaoAtendimentoModalProps {
   isOpen: boolean;
@@ -9,76 +11,134 @@ interface AvaliacaoAtendimentoModalProps {
     id: number;
     numero_requisicao: string;
     centro_custo_nome?: string;
+    solicitante_nome?: string;
+    status?: string;
     data_atendimento?: string | null;
+    avaliacao_status?: string | null;
+    avaliacao_agilidade?: number | null;
+    avaliacao_qualidade?: number | null;
+    avaliacao_entrega?: number | null;
+    avaliacao_sugestao?: string | null;
   } | null;
+  encerrarRequisicao?: boolean;
   onClose: () => void;
   onAvaliacaoConcluida: () => void;
 }
 
+const converterNotaParaOpcao = (nota?: number | null): OpcaoAvaliacao => {
+  if (nota === null || nota === undefined) return 'otimo';
+  const n = Number(nota);
+  if (n >= 4) return 'otimo';
+  if (n >= 2.5) return 'bom';
+  return 'ruim';
+};
+
+const converterOpcaoParaNota = (opcao: OpcaoAvaliacao): number => {
+  if (opcao === 'otimo') return 5;
+  if (opcao === 'bom') return 3;
+  return 1;
+};
+
 export const AvaliacaoAtendimentoModal: React.FC<AvaliacaoAtendimentoModalProps> = ({
   isOpen,
   requisicao,
+  encerrarRequisicao = false,
   onClose,
   onAvaliacaoConcluida,
 }) => {
   const { toast } = useToast();
 
-  const [agilidade, setAgilidade] = useState<number>(5);
-  const [qualidade, setQualidade] = useState<number>(5);
-  const [entrega, setEntrega] = useState<number>(5);
+  // 1. Foi entregue no horário previsto? -> coluna avaliacao_entrega
+  const [perguntaHorario, setPerguntaHorario] = useState<OpcaoAvaliacao>('otimo');
+  // 2. O pedido foi entregue conforme solicitado? -> coluna avaliacao_qualidade
+  const [perguntaConforme, setPerguntaConforme] = useState<OpcaoAvaliacao>('otimo');
+  // 3. O funcionário foi educado? -> coluna avaliacao_agilidade
+  const [perguntaEducado, setPerguntaEducado] = useState<OpcaoAvaliacao>('otimo');
+
   const [sugestao, setSugestao] = useState<string>('');
   const [isSubmitting, setIsSubmitting] = useState<boolean>(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
   useEffect(() => {
-    if (isOpen) {
-      setAgilidade(5);
-      setQualidade(5);
-      setEntrega(5);
-      setSugestao('');
+    if (isOpen && requisicao) {
+      setPerguntaHorario(converterNotaParaOpcao(requisicao.avaliacao_entrega));
+      setPerguntaConforme(converterNotaParaOpcao(requisicao.avaliacao_qualidade));
+      setPerguntaEducado(converterNotaParaOpcao(requisicao.avaliacao_agilidade));
+      setSugestao(requisicao.avaliacao_sugestao || '');
       setErrorMsg(null);
     }
   }, [isOpen, requisicao]);
 
   if (!isOpen || !requisicao) return null;
 
-  const possuiNotaBaixa = agilidade < 5 || qualidade < 5 || entrega < 5;
-  const media = parseFloat(((agilidade + qualidade + entrega) / 3).toFixed(1));
+  const notaHorario = converterOpcaoParaNota(perguntaHorario);
+  const notaConforme = converterOpcaoParaNota(perguntaConforme);
+  const notaEducado = converterOpcaoParaNota(perguntaEducado);
 
-  const renderStars = (
-    value: number,
-    onChange: (val: number) => void,
-    label: string,
-    description: string
+  const possuiRuim =
+    perguntaHorario === 'ruim' || perguntaConforme === 'ruim' || perguntaEducado === 'ruim';
+  const media = Number(((notaHorario + notaConforme + notaEducado) / 3).toFixed(2));
+
+  const renderPerguntaOpcoes = (
+    numero: number,
+    pergunta: string,
+    subtitulo: string,
+    valorAtual: OpcaoAvaliacao,
+    onChange: (val: OpcaoAvaliacao) => void
   ) => {
+    const opcoes: Array<{
+      id: OpcaoAvaliacao;
+      label: string;
+      activeClass: string;
+      idleClass: string;
+      icon: React.ReactNode;
+    }> = [
+      {
+        id: 'otimo',
+        label: 'Ótimo',
+        activeClass: 'bg-emerald-600 text-white border-emerald-700 shadow-sm ring-2 ring-emerald-200',
+        idleClass: 'bg-white text-emerald-800 border-emerald-200 hover:bg-emerald-50',
+        icon: <ThumbsUp className="w-4 h-4" />,
+      },
+      {
+        id: 'bom',
+        label: 'Bom',
+        activeClass: 'bg-blue-600 text-white border-blue-700 shadow-sm ring-2 ring-blue-200',
+        idleClass: 'bg-white text-blue-800 border-blue-200 hover:bg-blue-50',
+        icon: <Smile className="w-4 h-4" />,
+      },
+      {
+        id: 'ruim',
+        label: 'Ruim',
+        activeClass: 'bg-rose-600 text-white border-rose-700 shadow-sm ring-2 ring-rose-200',
+        idleClass: 'bg-white text-rose-800 border-rose-200 hover:bg-rose-50',
+        icon: <Frown className="w-4 h-4" />,
+      },
+    ];
+
     return (
-      <div className="bg-slate-50 p-3.5 rounded-xl border border-slate-200/80 space-y-2">
-        <div className="flex items-center justify-between">
-          <div>
-            <span className="text-xs font-bold text-slate-800">{label}</span>
-            <p className="text-[11px] text-slate-500">{description}</p>
-          </div>
-          <span className="font-mono text-xs font-bold text-amber-600 bg-amber-50 px-2 py-0.5 rounded border border-amber-200">
-            {value} de 5 ⭐
+      <div className="bg-slate-50 p-4 rounded-xl border border-slate-200/90 space-y-2.5">
+        <div>
+          <span className="text-xs font-bold text-slate-900">
+            {numero}. {pergunta}
           </span>
+          <p className="text-[11px] text-slate-500 mt-0.5">{subtitulo}</p>
         </div>
 
-        <div className="flex items-center gap-2 pt-1">
-          {[1, 2, 3, 4, 5].map((star) => {
-            const isFilled = star <= value;
+        <div className="grid grid-cols-3 gap-2.5 pt-1">
+          {opcoes.map((op) => {
+            const selecionado = valorAtual === op.id;
             return (
               <button
-                key={star}
+                key={op.id}
                 type="button"
-                onClick={() => onChange(star)}
-                className={`p-1.5 rounded-lg transition-all cursor-pointer ${
-                  isFilled
-                    ? 'text-amber-400 hover:scale-110'
-                    : 'text-slate-300 hover:text-amber-200'
+                onClick={() => onChange(op.id)}
+                className={`py-2.5 px-3 rounded-xl border text-xs font-bold flex items-center justify-center gap-2 transition-all cursor-pointer ${
+                  selecionado ? op.activeClass : op.idleClass
                 }`}
-                title={`Nota ${star} de 5`}
               >
-                <Star className={`w-6 h-6 ${isFilled ? 'fill-amber-400' : 'fill-slate-100'}`} />
+                {op.icon}
+                <span>{op.label}</span>
               </button>
             );
           })}
@@ -91,10 +151,11 @@ export const AvaliacaoAtendimentoModal: React.FC<AvaliacaoAtendimentoModalProps>
     e.preventDefault();
     setErrorMsg(null);
 
-    if (possuiNotaBaixa && (!sugestao.trim() || sugestao.trim().length < 3)) {
-      const msg = 'Por favor, informe no campo "O que podemos melhorar?" o motivo da nota e sua sugestão.';
+    if (possuiRuim && (!sugestao.trim() || sugestao.trim().length < 3)) {
+      const msg =
+        'Quando alguma resposta for "Ruim", informe uma breve observação no campo "Observações / O que podemos melhorar?".';
       setErrorMsg(msg);
-      toast.warning('Campo Obrigatório', msg);
+      toast.warning('Observação Obrigatória', msg);
       return;
     }
 
@@ -104,10 +165,14 @@ export const AvaliacaoAtendimentoModal: React.FC<AvaliacaoAtendimentoModalProps>
         method: 'POST',
         headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify({
-          agilidade,
-          qualidade,
-          entrega,
+          pergunta_horario: perguntaHorario,
+          pergunta_conforme: perguntaConforme,
+          pergunta_educado: perguntaEducado,
+          entrega: notaHorario,
+          qualidade: notaConforme,
+          agilidade: notaEducado,
           sugestao: sugestao.trim(),
+          encerrar_requisicao: encerrarRequisicao,
         }),
       });
 
@@ -117,8 +182,8 @@ export const AvaliacaoAtendimentoModal: React.FC<AvaliacaoAtendimentoModalProps>
       }
 
       toast.success(
-        'Avaliação Registrada',
-        data.message || 'Obrigado por contribuir para a melhoria contínua do atendimento!'
+        encerrarRequisicao ? 'Requisição Encerrada e Avaliada' : 'Avaliação Registrada',
+        data.message || 'Avaliação gravada com sucesso nos indicadores de qualidade!'
       );
       onAvaliacaoConcluida();
       onClose();
@@ -133,7 +198,7 @@ export const AvaliacaoAtendimentoModal: React.FC<AvaliacaoAtendimentoModalProps>
 
   return (
     <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4 z-50 animate-fadeIn select-none">
-      <div className="bg-white rounded-2xl shadow-2xl max-w-lg w-full overflow-hidden border border-slate-200 flex flex-col max-h-[90vh]">
+      <div className="bg-white rounded-2xl shadow-2xl max-w-lg w-full overflow-hidden border border-slate-200 flex flex-col max-h-[92vh]">
         {/* Cabeçalho */}
         <div className="bg-gradient-to-r from-[#00237D] to-[#001858] text-white p-5 flex items-center justify-between shrink-0">
           <div className="flex items-center gap-3">
@@ -142,10 +207,12 @@ export const AvaliacaoAtendimentoModal: React.FC<AvaliacaoAtendimentoModalProps>
             </div>
             <div>
               <span className="text-[10px] font-bold uppercase tracking-wider text-amber-300 bg-amber-400/20 px-2 py-0.5 rounded">
-                Indicadores de Performance
+                Indicadores de Qualidade do Atendimento
               </span>
               <h3 className="text-base font-bold tracking-tight mt-0.5">
-                Avaliação do Atendimento Anterior
+                {encerrarRequisicao
+                  ? 'Encerramento e Avaliação da Requisição'
+                  : 'Avaliação de Qualidade da Requisição'}
               </h3>
             </div>
           </div>
@@ -165,83 +232,91 @@ export const AvaliacaoAtendimentoModal: React.FC<AvaliacaoAtendimentoModalProps>
           {/* Informações da Requisição Avaliada */}
           <div className="p-3 bg-blue-50/70 rounded-xl border border-blue-200 text-xs space-y-1">
             <div className="flex items-center justify-between font-bold text-slate-800">
-              <span>Requisição: <strong className="text-[#00237D] font-mono">{requisicao.numero_requisicao}</strong></span>
-              <span className="text-[11px] text-slate-500 font-normal">
+              <span>
+                Requisição:{' '}
+                <strong className="text-[#00237D] font-mono">{requisicao.numero_requisicao}</strong>
+              </span>
+              <span className="text-[11px] text-slate-600 font-semibold">
                 {requisicao.centro_custo_nome || 'Setor Solicitante'}
               </span>
             </div>
             <p className="text-[11px] text-slate-600">
-              Para prosseguir e registrar uma nova solicitação, por favor avalie o desempenho do atendimento prestado.
+              {encerrarRequisicao
+                ? 'Para concluir e encerrar a requisição, responda às 3 perguntas de avaliação do atendimento abaixo.'
+                : 'Responda às 3 perguntas abaixo para registrar a avaliação e alimentar os indicadores de qualidade.'}
             </p>
           </div>
 
           {errorMsg && (
-            <div className="p-3 bg-rose-50 border border-rose-200 text-rose-800 text-xs rounded-xl flex items-center gap-2 animate-shake">
+            <div className="p-3 bg-rose-50 border border-rose-200 text-rose-800 text-xs rounded-xl flex items-center gap-2">
               <AlertCircle className="w-4 h-4 shrink-0 text-rose-600" />
               <span>{errorMsg}</span>
             </div>
           )}
 
-          {/* 1. Agilidade */}
-          {renderStars(
-            agilidade,
-            setAgilidade,
-            '1. Agilidade no Atendimento',
-            'Velocidade no tempo de resposta e separação dos insumos'
+          {/* Pergunta 1 */}
+          {renderPerguntaOpcoes(
+            1,
+            'Foi entregue no horário previsto?',
+            'Pontualidade e cumprimento do prazo previsto de entrega ao setor',
+            perguntaHorario,
+            setPerguntaHorario
           )}
 
-          {/* 2. Qualidade */}
-          {renderStars(
-            qualidade,
-            setQualidade,
-            '2. Qualidade dos Materiais e Separação',
-            'Conferência física, integridade da embalagem e ausência de divergências'
+          {/* Pergunta 2 */}
+          {renderPerguntaOpcoes(
+            2,
+            'O pedido foi entregue conforme solicitado?',
+            'Conformidade dos materiais, quantidades atendidas e integridade física',
+            perguntaConforme,
+            setPerguntaConforme
           )}
 
-          {/* 3. Entrega */}
-          {renderStars(
-            entrega,
-            setEntrega,
-            '3. Entrega e Cumprimento do Prazo',
-            'Pontualidade na entrega no setor e atendimento da janela'
+          {/* Pergunta 3 */}
+          {renderPerguntaOpcoes(
+            3,
+            'O funcionário foi educado?',
+            'Cordialidade, postura profissional e presteza no atendimento',
+            perguntaEducado,
+            setPerguntaEducado
           )}
 
-          {/* Campo Condicional "O que podemos melhorar?" */}
+          {/* Campo de Observações / Sugestões */}
           <div className="space-y-1 pt-1">
             <label className="block text-xs font-bold text-slate-800 flex items-center justify-between">
               <span className="flex items-center gap-1.5">
                 <MessageSquare className="w-4 h-4 text-[#00237D]" />
-                O que podemos melhorar?
-                {possuiNotaBaixa ? (
-                  <span className="text-rose-600 font-bold">* (Obrigatório)</span>
+                Observações / O que podemos melhorar?
+                {possuiRuim ? (
+                  <span className="text-rose-600 font-bold">* (Obrigatório para opção Ruim)</span>
                 ) : (
-                  <span className="text-slate-400 font-normal">(Opcional / Elogios)</span>
+                  <span className="text-slate-400 font-normal">(Opcional)</span>
                 )}
               </span>
-              <span className="font-mono text-[10px] text-slate-400">
-                Média Geral: {media} / 5.0
+              <span className="font-mono text-[10px] text-slate-500">
+                Índice: {media.toFixed(1)} / 5.0
               </span>
             </label>
 
             <textarea
-              required={possuiNotaBaixa}
-              rows={3}
+              required={possuiRuim}
+              rows={2}
               value={sugestao}
               onChange={(e) => setSugestao(e.target.value)}
               placeholder={
-                possuiNotaBaixa
-                  ? 'Descreva o que ocorreu de errado ou como nossa equipe do Almoxarifado/CAF pode melhorar o atendimento...'
-                  : 'Deixe um comentário, elogio ou sugestão de melhoria técnica (opcional)...'
+                possuiRuim
+                  ? 'Descreva o motivo da avaliação Ruim para registro nos indicadores de melhoria...'
+                  : 'Comentário, elogio ou observação adicional sobre o atendimento (opcional)...'
               }
               className={`w-full p-3 rounded-xl border text-xs text-slate-800 focus:outline-none transition-all ${
-                possuiNotaBaixa
+                possuiRuim
                   ? 'border-rose-300 focus:border-rose-600 bg-rose-50/20'
                   : 'border-slate-300 focus:border-[#00237D]'
               }`}
             />
           </div>
 
-          {/* Botão de Envio */}
+          {/* Botões de Ação */}
           <div className="pt-3 border-t border-slate-200 flex items-center justify-end gap-2 shrink-0">
             <button
               type="button"
@@ -255,8 +330,14 @@ export const AvaliacaoAtendimentoModal: React.FC<AvaliacaoAtendimentoModalProps>
               disabled={isSubmitting}
               className="px-5 py-2.5 bg-[#00237D] hover:bg-[#001c66] active:bg-[#00144d] text-white font-bold rounded-xl text-xs uppercase tracking-wider transition-all shadow-md flex items-center gap-2 cursor-pointer disabled:opacity-50"
             >
-              <ShieldCheck className="w-4 h-4 text-amber-300" />
-              <span>{isSubmitting ? 'Gravando...' : 'Confirmar Avaliação e Prosseguir'}</span>
+              <CheckCircle2 className="w-4 h-4 text-amber-300" />
+              <span>
+                {isSubmitting
+                  ? 'Gravando...'
+                  : encerrarRequisicao
+                  ? 'Concluir Avaliação e Encerrar Requisição'
+                  : 'Confirmar Avaliação'}
+              </span>
             </button>
           </div>
         </form>

@@ -1,15 +1,31 @@
 import React, { useState, useEffect, useMemo } from 'react';
-import { Star, RefreshCw, MessageSquare, Award, ThumbsUp, AlertCircle, Filter, Search, ShieldCheck } from 'lucide-react';
+import {
+  Star,
+  RefreshCw,
+  MessageSquare,
+  Award,
+  ThumbsUp,
+  Smile,
+  Frown,
+  Search,
+  ShieldCheck,
+  Clock,
+  CheckCircle2,
+  UserCheck,
+} from 'lucide-react';
 import { getAuthHeaders } from '../utils/apiUtils.ts';
 
 interface IndicadoresPerformanceViewProps {
   currentUser?: any;
 }
 
-export const IndicadoresPerformanceView: React.FC<IndicadoresPerformanceViewProps> = () => {
+export const IndicadoresPerformanceView: React.FC<IndicadoresPerformanceViewProps> = ({ currentUser }) => {
+  const isRequisitante = currentUser?.perfil === 'requisitante';
+
   const [data, setData] = useState<{
     stats: {
       total_avaliacoes: number;
+      total_pendentes?: number;
       media_agilidade: number;
       media_qualidade: number;
       media_entrega: number;
@@ -17,12 +33,18 @@ export const IndicadoresPerformanceView: React.FC<IndicadoresPerformanceViewProp
       total_excelentes: number;
       total_com_sugestao: number;
       percentual_excelencia: number;
+      perguntas?: {
+        horario_previsto: { otimo: number; bom: number; ruim: number };
+        conforme_solicitado: { otimo: number; bom: number; ruim: number };
+        funcionario_educado: { otimo: number; bom: number; ruim: number };
+      };
     };
     avaliacoes: Array<{
       id: number;
       numero_requisicao: string;
       centro_custo_nome: string;
       solicitante_nome: string;
+      status?: string;
       data_atendimento: string;
       avaliacao_agilidade: number;
       avaliacao_qualidade: number;
@@ -30,6 +52,9 @@ export const IndicadoresPerformanceView: React.FC<IndicadoresPerformanceViewProp
       avaliacao_media: number;
       avaliacao_sugestao: string | null;
       avaliacao_data: string;
+      resp_horario_previsto?: string;
+      resp_conforme_solicitado?: string;
+      resp_funcionario_educado?: string;
     }>;
   } | null>(null);
 
@@ -76,23 +101,38 @@ export const IndicadoresPerformanceView: React.FC<IndicadoresPerformanceViewProp
     });
   }, [data?.avaliacoes, filtroTexto, filtroApenasSugestao]);
 
-  const renderStarsBadge = (rating: number) => {
+  const classificarNota = (nota: number): { label: 'Ótimo' | 'Bom' | 'Ruim'; cls: string } => {
+    const n = Number(nota || 0);
+    if (n >= 4) {
+      return {
+        label: 'Ótimo',
+        cls: 'bg-emerald-100 text-emerald-900 border border-emerald-300',
+      };
+    }
+    if (n >= 2.5) {
+      return {
+        label: 'Bom',
+        cls: 'bg-blue-100 text-blue-900 border border-blue-300',
+      };
+    }
+    return {
+      label: 'Ruim',
+      cls: 'bg-rose-100 text-rose-900 border border-rose-300',
+    };
+  };
+
+  const renderConceitoBadge = (nota: number) => {
+    const c = classificarNota(nota);
     return (
-      <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-bold font-mono ${
-        rating >= 4.5
-          ? 'bg-amber-100 text-amber-900 border border-amber-300'
-          : rating >= 3.5
-          ? 'bg-blue-100 text-blue-900 border border-blue-300'
-          : 'bg-rose-100 text-rose-900 border border-rose-300'
-      }`}>
-        <Star className="w-3 h-3 fill-amber-400 text-amber-500" />
-        <span>{rating ? rating.toFixed(1) : '—'}</span>
+      <span className={`inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[11px] font-bold ${c.cls}`}>
+        <span>{c.label}</span>
       </span>
     );
   };
 
   const stats = data?.stats || {
     total_avaliacoes: 0,
+    total_pendentes: 0,
     media_agilidade: 0,
     media_qualidade: 0,
     media_entrega: 0,
@@ -100,7 +140,74 @@ export const IndicadoresPerformanceView: React.FC<IndicadoresPerformanceViewProp
     total_excelentes: 0,
     total_com_sugestao: 0,
     percentual_excelencia: 0,
+    perguntas: {
+      horario_previsto: { otimo: 0, bom: 0, ruim: 0 },
+      conforme_solicitado: { otimo: 0, bom: 0, ruim: 0 },
+      funcionario_educado: { otimo: 0, bom: 0, ruim: 0 },
+    },
   };
+
+  const perguntasStats = stats.perguntas || {
+    horario_previsto: { otimo: 0, bom: 0, ruim: 0 },
+    conforme_solicitado: { otimo: 0, bom: 0, ruim: 0 },
+    funcionario_educado: { otimo: 0, bom: 0, ruim: 0 },
+  };
+
+  const calcPct = (qtd: number) => {
+    if (!stats.total_avaliacoes) return 0;
+    return Math.round((qtd / stats.total_avaliacoes) * 100);
+  };
+
+  const renderCardPergunta = (
+    titulo: string,
+    subtitulo: string,
+    icone: React.ReactNode,
+    contagem: { otimo: number; bom: number; ruim: number },
+    mediaNota: number
+  ) => (
+    <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-xs space-y-3">
+      <div className="flex items-start justify-between gap-2">
+        <div>
+          <span className="text-xs font-bold text-slate-900 block">{titulo}</span>
+          <span className="text-[11px] text-slate-500">{subtitulo}</span>
+        </div>
+        <div className="p-2 rounded-lg bg-slate-100 text-slate-700 shrink-0">{icone}</div>
+      </div>
+
+      <div className="grid grid-cols-3 gap-2 pt-1">
+        <div className="p-2 rounded-lg bg-emerald-50 border border-emerald-200 text-center">
+          <div className="text-[10px] font-bold uppercase text-emerald-800 flex items-center justify-center gap-1">
+            <ThumbsUp className="w-3 h-3" /> Ótimo
+          </div>
+          <div className="text-base font-bold text-emerald-950 font-mono mt-0.5">{contagem.otimo}</div>
+          <div className="text-[10px] text-emerald-700">{calcPct(contagem.otimo)}%</div>
+        </div>
+
+        <div className="p-2 rounded-lg bg-blue-50 border border-blue-200 text-center">
+          <div className="text-[10px] font-bold uppercase text-blue-800 flex items-center justify-center gap-1">
+            <Smile className="w-3 h-3" /> Bom
+          </div>
+          <div className="text-base font-bold text-blue-950 font-mono mt-0.5">{contagem.bom}</div>
+          <div className="text-[10px] text-blue-700">{calcPct(contagem.bom)}%</div>
+        </div>
+
+        <div className="p-2 rounded-lg bg-rose-50 border border-rose-200 text-center">
+          <div className="text-[10px] font-bold uppercase text-rose-800 flex items-center justify-center gap-1">
+            <Frown className="w-3 h-3" /> Ruim
+          </div>
+          <div className="text-base font-bold text-rose-950 font-mono mt-0.5">{contagem.ruim}</div>
+          <div className="text-[10px] text-rose-700">{calcPct(contagem.ruim)}%</div>
+        </div>
+      </div>
+
+      <div className="pt-2 border-t border-slate-100 flex items-center justify-between text-[11px] text-slate-500">
+        <span>Nota Média Equivalente:</span>
+        <strong className="font-mono text-slate-800">
+          {mediaNota ? mediaNota.toFixed(1) : '—'} / 5.0
+        </strong>
+      </div>
+    </div>
+  );
 
   return (
     <div className="space-y-6">
@@ -110,11 +217,13 @@ export const IndicadoresPerformanceView: React.FC<IndicadoresPerformanceViewProp
           <div className="flex items-center gap-2">
             <Award className="w-5 h-5 text-amber-500" />
             <h2 className="text-base font-bold text-slate-800">
-              Indicadores de Avaliação de Performance do Atendimento
+              Indicadores de Qualidade — Avaliação no Encerramento das Requisições
             </h2>
           </div>
           <p className="text-xs text-slate-500 mt-1">
-            Métricas de satisfação dos requisitantes sobre Agilidade, Qualidade e Cumprimento de Prazos de Entrega
+            {isRequisitante
+              ? 'Resumo exclusivo das avaliações registradas nas suas próprias requisições.'
+              : 'Consolidado das respostas às 3 perguntas de qualidade no encerramento das requisições da área ativa.'}
           </p>
         </div>
 
@@ -129,83 +238,84 @@ export const IndicadoresPerformanceView: React.FC<IndicadoresPerformanceViewProp
         </button>
       </div>
 
-      {/* KPI Cards de Performance */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4">
-        {/* Agilidade */}
-        <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-xs">
-          <div className="flex items-center justify-between mb-2">
-            <span className="text-[11px] font-bold text-slate-500 uppercase tracking-wider">Agilidade</span>
+      {/* Cards das 3 Perguntas Obrigatórias (Ótimo / Bom / Ruim) */}
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+        {renderCardPergunta(
+          '1. Foi entregue no horário previsto?',
+          'Cumprimento do prazo previsto de entrega',
+          <Clock className="w-4 h-4 text-blue-600" />,
+          perguntasStats.horario_previsto,
+          stats.media_entrega
+        )}
+        {renderCardPergunta(
+          '2. O pedido foi entregue conforme solicitado?',
+          'Conformidade dos itens e quantidades entregues',
+          <CheckCircle2 className="w-4 h-4 text-emerald-600" />,
+          perguntasStats.conforme_solicitado,
+          stats.media_qualidade
+        )}
+        {renderCardPergunta(
+          '3. O funcionário foi educado?',
+          'Cordialidade e postura no atendimento',
+          <UserCheck className="w-4 h-4 text-indigo-600" />,
+          perguntasStats.funcionario_educado,
+          stats.media_agilidade
+        )}
+      </div>
+
+      {/* Resumo Geral */}
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+        <div className="bg-white p-4 rounded-xl border border-amber-300 bg-amber-50/30 shadow-xs">
+          <div className="flex items-center justify-between mb-1">
+            <span className="text-[11px] font-bold text-amber-900 uppercase tracking-wider">
+              Índice Geral de Qualidade
+            </span>
             <Star className="w-4 h-4 text-amber-500 fill-amber-400" />
           </div>
-          <div className="font-mono text-2xl font-bold text-slate-800">
-            {stats.media_agilidade ? stats.media_agilidade.toFixed(1) : '—'} <span className="text-xs font-normal text-slate-400">/ 5.0</span>
-          </div>
-          <p className="text-[11px] text-slate-500 mt-1">Tempo de separação e resposta</p>
-        </div>
-
-        {/* Qualidade */}
-        <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-xs">
-          <div className="flex items-center justify-between mb-2">
-            <span className="text-[11px] font-bold text-slate-500 uppercase tracking-wider">Qualidade</span>
-            <ShieldCheck className="w-4 h-4 text-emerald-600" />
-          </div>
-          <div className="font-mono text-2xl font-bold text-slate-800">
-            {stats.media_qualidade ? stats.media_qualidade.toFixed(1) : '—'} <span className="text-xs font-normal text-slate-400">/ 5.0</span>
-          </div>
-          <p className="text-[11px] text-slate-500 mt-1">Conferência e embalagem dos itens</p>
-        </div>
-
-        {/* Entrega */}
-        <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-xs">
-          <div className="flex items-center justify-between mb-2">
-            <span className="text-[11px] font-bold text-slate-500 uppercase tracking-wider">Entrega & Prazos</span>
-            <Award className="w-4 h-4 text-blue-600" />
-          </div>
-          <div className="font-mono text-2xl font-bold text-slate-800">
-            {stats.media_entrega ? stats.media_entrega.toFixed(1) : '—'} <span className="text-xs font-normal text-slate-400">/ 5.0</span>
-          </div>
-          <p className="text-[11px] text-slate-500 mt-1">Pontualidade no setor requisitante</p>
-        </div>
-
-        {/* Média Geral */}
-        <div className="bg-white p-4 rounded-xl border border-amber-300 bg-amber-50/30 shadow-xs">
-          <div className="flex items-center justify-between mb-2">
-            <span className="text-[11px] font-bold text-amber-900 uppercase tracking-wider">Média Geral (NPS)</span>
-            <ThumbsUp className="w-4 h-4 text-amber-600" />
-          </div>
           <div className="font-mono text-2xl font-bold text-amber-950">
-            {stats.media_geral ? stats.media_geral.toFixed(1) : '—'} ⭐
+            {stats.media_geral ? stats.media_geral.toFixed(1) : '—'}{' '}
+            <span className="text-xs font-normal text-amber-800">/ 5.0</span>
           </div>
           <p className="text-[11px] text-amber-800 mt-1">
-            Index: <strong className="text-amber-900">{stats.percentual_excelencia}% 5 Estrelas</strong>
+            Índice Ótimo: <strong>{stats.percentual_excelencia}%</strong> das avaliações
           </p>
         </div>
 
-        {/* Total de Avaliações */}
         <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-xs">
-          <div className="flex items-center justify-between mb-2">
-            <span className="text-[11px] font-bold text-slate-500 uppercase tracking-wider">Total Avaliadas</span>
+          <div className="flex items-center justify-between mb-1">
+            <span className="text-[11px] font-bold text-slate-500 uppercase tracking-wider">
+              Requisições Avaliadas
+            </span>
+            <ShieldCheck className="w-4 h-4 text-emerald-600" />
+          </div>
+          <div className="font-mono text-2xl font-bold text-slate-800">{stats.total_avaliacoes}</div>
+          <p className="text-[11px] text-slate-500 mt-1">
+            {stats.total_pendentes || 0} requisição(ões) aguardando avaliação
+          </p>
+        </div>
+
+        <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-xs">
+          <div className="flex items-center justify-between mb-1">
+            <span className="text-[11px] font-bold text-slate-500 uppercase tracking-wider">
+              Observações / Sugestões
+            </span>
             <MessageSquare className="w-4 h-4 text-purple-600" />
           </div>
-          <div className="font-mono text-2xl font-bold text-slate-800">
-            {stats.total_avaliacoes}
-          </div>
-          <p className="text-[11px] text-slate-500 mt-1">
-            {stats.total_com_sugestao} com sugestões de melhoria
-          </p>
+          <div className="font-mono text-2xl font-bold text-slate-800">{stats.total_com_sugestao}</div>
+          <p className="text-[11px] text-slate-500 mt-1">Registros com comentários ou oportunidades de melhoria</p>
         </div>
       </div>
 
-      {/* Lista de Avaliações e Sugestões "O que podemos melhorar?" */}
+      {/* Lista de Avaliações Registradas */}
       <div className="bg-white rounded-xl border border-slate-200 shadow-xs p-6 space-y-4">
         <div className="flex flex-col md:flex-row md:items-center justify-between gap-3 pb-3 border-b border-slate-200">
           <div>
             <h3 className="text-sm font-bold text-slate-800 uppercase tracking-wide flex items-center gap-2">
               <MessageSquare className="w-4 h-4 text-[#00237D]" />
-              Sugestões & Oportunidades de Melhoria (&ldquo;O que podemos melhorar?&rdquo;)
+              Histórico de Requisições Avaliadas
             </h3>
             <p className="text-xs text-slate-500">
-              Registros individuais de avaliação deixados pelos requisitantes no encerramento de seus pedidos
+              Respostas registradas no encerramento das requisições (preservando todo o histórico anterior)
             </p>
           </div>
 
@@ -216,7 +326,7 @@ export const IndicadoresPerformanceView: React.FC<IndicadoresPerformanceViewProp
                 type="text"
                 value={filtroTexto}
                 onChange={(e) => setFiltroTexto(e.target.value)}
-                placeholder="Buscar solicitação, setor..."
+                placeholder="Buscar requisição, setor..."
                 className="w-full pl-8 pr-3 py-1.5 border border-slate-300 rounded-lg text-xs text-slate-800 focus:outline-none focus:border-[#00237D]"
               />
             </div>
@@ -228,12 +338,11 @@ export const IndicadoresPerformanceView: React.FC<IndicadoresPerformanceViewProp
                 onChange={(e) => setFiltroApenasSugestao(e.target.checked)}
                 className="rounded text-[#00237D] focus:ring-[#00237D]"
               />
-              <span>Apenas com Comentário</span>
+              <span>Apenas com Observação</span>
             </label>
           </div>
         </div>
 
-        {/* Tabela de Avaliações */}
         <div className="overflow-x-auto">
           <table className="w-full text-xs text-left">
             <thead>
@@ -241,11 +350,10 @@ export const IndicadoresPerformanceView: React.FC<IndicadoresPerformanceViewProp
                 <th className="py-2.5 px-3">Data / Hora</th>
                 <th className="py-2.5 px-3">Requisição</th>
                 <th className="py-2.5 px-3">Setor / Solicitante</th>
-                <th className="py-2.5 px-3 text-center">Agilidade</th>
-                <th className="py-2.5 px-3 text-center">Qualidade</th>
-                <th className="py-2.5 px-3 text-center">Entrega</th>
-                <th className="py-2.5 px-3 text-center">Média Geral</th>
-                <th className="py-2.5 px-3">O que podemos melhorar? / Feedback</th>
+                <th className="py-2.5 px-3 text-center">1. Horário Previsto?</th>
+                <th className="py-2.5 px-3 text-center">2. Conforme Solicitado?</th>
+                <th className="py-2.5 px-3 text-center">3. Funcionário Educado?</th>
+                <th className="py-2.5 px-3">Observações / Feedback</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100">
@@ -262,36 +370,25 @@ export const IndicadoresPerformanceView: React.FC<IndicadoresPerformanceViewProp
                       <div className="font-bold text-slate-800">{a.centro_custo_nome || '—'}</div>
                       <div className="text-[11px] text-slate-500">{a.solicitante_nome}</div>
                     </td>
-                    <td className="py-2.5 px-3 text-center">
-                      {renderStarsBadge(a.avaliacao_agilidade)}
-                    </td>
-                    <td className="py-2.5 px-3 text-center">
-                      {renderStarsBadge(a.avaliacao_qualidade)}
-                    </td>
-                    <td className="py-2.5 px-3 text-center">
-                      {renderStarsBadge(a.avaliacao_entrega)}
-                    </td>
-                    <td className="py-2.5 px-3 text-center">
-                      <span className="font-mono font-bold text-amber-800 bg-amber-50 px-2 py-0.5 rounded border border-amber-200">
-                        {a.avaliacao_media ? a.avaliacao_media.toFixed(1) : '5.0'} ⭐
-                      </span>
-                    </td>
-                    <td className="py-2.5 px-3 text-slate-700 italic">
+                    <td className="py-2.5 px-3 text-center">{renderConceitoBadge(a.avaliacao_entrega)}</td>
+                    <td className="py-2.5 px-3 text-center">{renderConceitoBadge(a.avaliacao_qualidade)}</td>
+                    <td className="py-2.5 px-3 text-center">{renderConceitoBadge(a.avaliacao_agilidade)}</td>
+                    <td className="py-2.5 px-3 text-slate-700">
                       {a.avaliacao_sugestao ? (
-                        <div className="p-2 bg-amber-50/60 rounded border border-amber-200/80 text-amber-900 not-italic text-[11px] font-medium leading-relaxed">
+                        <div className="p-2 bg-amber-50/60 rounded border border-amber-200/80 text-amber-900 text-[11px] font-medium leading-relaxed">
                           &ldquo;{a.avaliacao_sugestao}&rdquo;
                         </div>
                       ) : (
-                        <span className="text-slate-400 text-[11px] not-italic">— Avaliado com 5 estrelas sem ressalvas —</span>
+                        <span className="text-slate-400 text-[11px]">Sem observações adicionais</span>
                       )}
                     </td>
                   </tr>
                 ))
               ) : (
                 <tr>
-                  <td colSpan={8} className="py-8 text-center text-slate-400">
+                  <td colSpan={7} className="py-8 text-center text-slate-400">
                     {loading
-                      ? 'Carregando indicadores de avaliação...'
+                      ? 'Carregando indicadores de qualidade...'
                       : 'Nenhuma avaliação encontrada com os filtros selecionados.'}
                   </td>
                 </tr>

@@ -57,6 +57,7 @@ import { PdfPrintModal } from './PdfPrintModal.tsx';
 import { HelpFloatingModal } from './HelpFloatingModal.tsx';
 import { CentroCustoAlertBanner } from './CentroCustoAlertBanner.tsx';
 import { AvaliacaoAtendimentoModal } from './AvaliacaoAtendimentoModal.tsx';
+import { IndicadoresPerformanceView } from './IndicadoresPerformanceView.tsx';
 import { useToast } from '../context/ToastContext.tsx';
 import { ConfirmDeleteModal } from './ConfirmDeleteModal.tsx';
 import { QuantityStepper } from './QuantityStepper.tsx';
@@ -492,14 +493,23 @@ export const RequisicoesView: React.FC<RequisicoesViewProps> = ({
     return filteredRequisicoes.slice(start, start + pageSize);
   }, [filteredRequisicoes, currentPage, pageSize]);
 
-  // Modal de Avaliação de Atendimento
+  // Modal de Avaliação de Atendimento e Painel de Indicadores
   const [pendingReqToRate, setPendingReqToRate] = useState<{
     id: number;
     numero_requisicao: string;
     centro_custo_nome?: string;
+    solicitante_nome?: string;
+    status?: string;
     data_atendimento?: string | null;
+    avaliacao_status?: string | null;
+    avaliacao_agilidade?: number | null;
+    avaliacao_qualidade?: number | null;
+    avaliacao_entrega?: number | null;
+    avaliacao_sugestao?: string | null;
   } | null>(null);
   const [isRatingModalOpen, setIsRatingModalOpen] = useState(false);
+  const [ratingOrigin, setRatingOrigin] = useState<'nova_requisicao' | 'encerrar' | 'avaliar'>('avaliar');
+  const [showIndicadoresQualidade, setShowIndicadoresQualidade] = useState(false);
 
   // Abre criação de nova requisição (verifica se há avaliação pendente antes)
   const handleAbrirCriacao = async () => {
@@ -509,12 +519,14 @@ export const RequisicoesView: React.FC<RequisicoesViewProps> = ({
       });
       if (res.ok) {
         const data = await res.json();
-        if (data.requisicao) {
-          setPendingReqToRate(data.requisicao);
+        const reqPendente = data?.requisicao || (data && data.id ? data : null);
+        if (reqPendente) {
+          setPendingReqToRate(reqPendente);
+          setRatingOrigin('nova_requisicao');
           setIsRatingModalOpen(true);
           toast.info(
             'Avaliação de Atendimento Pendente',
-            'Sua opinião é fundamental! Avalie o atendimento da requisição anterior para prosseguir com o novo pedido.'
+            'Avalie o atendimento da requisição anterior para prosseguir com o novo pedido.'
           );
           return;
         }
@@ -1036,6 +1048,15 @@ export const RequisicoesView: React.FC<RequisicoesViewProps> = ({
   // Ação Almoxarife: Alterar status manualmente para qualquer etapa do fluxo
   const handleAlterarStatus = async (novoStatus: string, justificativa: string = '') => {
     if (!selectedReq) return;
+    // Ao encerrar a requisição como 'atendida', abre o questionário das 3 perguntas para concluir e alimentar indicadores
+    if (novoStatus === 'atendida' && (selectedReq as any).avaliacao_status !== 'avaliado') {
+      setIsStatusModalOpen(false);
+      setPendingReqToRate(reqDetails?.requisicao || selectedReq);
+      setRatingOrigin('encerrar');
+      setIsRatingModalOpen(true);
+      return;
+    }
+
     setIsProcessing(true);
     setActionError(null);
     try {
@@ -1069,40 +1090,12 @@ export const RequisicoesView: React.FC<RequisicoesViewProps> = ({
     }
   };
 
-  // Ação Almoxarife: Confirmar Entrega do Material ao Solicitante (Transição para Atendida)
+  // Ação Almoxarife: Confirmar Entrega e Encerrar Requisição com Avaliação das 3 Perguntas
   const handleConfirmarEntrega = async () => {
     if (!selectedReq) return;
-    setIsProcessing(true);
-    setActionError(null);
-    try {
-      const res = await fetch(`/api/requisicoes/${selectedReq.id}/entregar`, {
-        method: 'POST',
-        headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
-        body: JSON.stringify({
-          responsavel_recebimento: selectedReq.solicitante_nome || '',
-          observacao_entrega: 'Material físico conferido e entregue ao solicitante. Requisição finalizada.',
-        }),
-      });
-      const data = await res.json();
-      if (!res.ok) {
-        throw new Error(data.error || 'Erro ao confirmar entrega.');
-      }
-      toast.success('Requisição Finalizada', 'Material entregue ao solicitante com sucesso! Requisição marcada como Atendida.');
-      const updatedReq = {
-        ...selectedReq,
-        status: 'atendida' as any,
-        data_atendimento: new Date().toISOString(),
-      };
-      setSelectedReq(updatedReq);
-      await handleAbrirAnalise(updatedReq, 'conferencia');
-      onRefresh();
-    } catch (err: any) {
-      const msg = err.message || 'Falha ao confirmar entrega.';
-      setActionError(msg);
-      toast.error('Erro ao Finalizar Entrega', msg);
-    } finally {
-      setIsProcessing(false);
-    }
+    setPendingReqToRate(reqDetails?.requisicao || selectedReq);
+    setRatingOrigin('encerrar');
+    setIsRatingModalOpen(true);
   };
 
   // Ação Almoxarife: Rejeitar com parecer
@@ -1665,6 +1658,20 @@ export const RequisicoesView: React.FC<RequisicoesViewProps> = ({
 
           <button
             type="button"
+            onClick={() => setShowIndicadoresQualidade((prev) => !prev)}
+            className={`font-medium px-3.5 py-2 rounded-lg text-xs flex items-center gap-1.5 transition-all shadow-xs uppercase tracking-wide cursor-pointer border ${
+              showIndicadoresQualidade
+                ? 'bg-amber-500 text-slate-950 border-amber-600 font-bold'
+                : 'bg-amber-50 hover:bg-amber-100 text-amber-900 border-amber-300'
+            }`}
+            title="Visualizar Indicadores de Qualidade das Avaliações de Requisições"
+          >
+            <Star className="w-4 h-4 fill-amber-400 text-amber-600" />
+            <span>{showIndicadoresQualidade ? 'OCULTAR INDICADORES' : 'INDICADORES DE QUALIDADE'}</span>
+          </button>
+
+          <button
+            type="button"
             onClick={handleAbrirCriacao}
             className="bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800 text-white font-medium px-4 py-2 rounded-lg text-xs flex items-center gap-1.5 transition-all shadow-sm uppercase tracking-wide cursor-pointer"
           >
@@ -1673,6 +1680,12 @@ export const RequisicoesView: React.FC<RequisicoesViewProps> = ({
           </button>
         </div>
       </div>
+
+      {showIndicadoresQualidade && (
+        <div className="animate-fadeIn">
+          <IndicadoresPerformanceView currentUser={currentUser} />
+        </div>
+      )}
 
       {/* Painel de Filtros Retrátil (Colapsável) */}
       {isFilterOpen && (
@@ -1902,29 +1915,52 @@ export const RequisicoesView: React.FC<RequisicoesViewProps> = ({
                           <span>{isAlmoxarifeOrAdmin && isReqEmAberto(r.status) ? 'ATENDER / ANALISAR' : 'VER'}</span>
                         </button>
 
-                        {r.status === 'aprovada_atendida' && (
+                        {(r.status === 'atendida' || r.status === 'aprovada_atendida' || String(r.status) === 'parcial') && (
                           (r as any).avaliacao_status === 'avaliado' ? (
-                            <span
-                              title={`Avaliação registrada: Média ${Number((r as any).avaliacao_media || 5).toFixed(1)} / 5.0 ⭐`}
-                              className="px-2 py-1 rounded bg-amber-50 text-amber-800 border border-amber-300 text-xs font-bold flex items-center gap-1 font-mono shrink-0"
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setPendingReqToRate(r as any);
+                                setRatingOrigin('avaliar');
+                                setIsRatingModalOpen(true);
+                              }}
+                              title={`Avaliação concluída (${Number((r as any).avaliacao_media || 5).toFixed(1)} / 5.0). Clique para visualizar ou atualizar.`}
+                              className="px-2 py-1 rounded bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-300 text-xs font-bold flex items-center gap-1 font-mono shrink-0 cursor-pointer"
                             >
                               <Star className="w-3.5 h-3.5 fill-amber-400 text-amber-500" />
-                              <span>{Number((r as any).avaliacao_media || 5).toFixed(1)}</span>
-                            </span>
+                              <span>AVALIADA ({Number((r as any).avaliacao_media || 5).toFixed(1)})</span>
+                            </button>
                           ) : (
                             <button
                               type="button"
                               onClick={() => {
-                                setPendingReqToRate(r);
+                                setPendingReqToRate(r as any);
+                                setRatingOrigin('avaliar');
                                 setIsRatingModalOpen(true);
                               }}
-                              title="Avaliar atendimento desta requisição"
-                              className="px-2 py-1 rounded bg-amber-100 hover:bg-amber-200 text-amber-900 border border-amber-300 text-xs font-bold flex items-center gap-1 cursor-pointer shrink-0"
+                              title="Responder às 3 perguntas de avaliação do atendimento desta requisição"
+                              className="px-2.5 py-1 rounded bg-amber-100 hover:bg-amber-200 text-amber-900 border border-amber-300 text-xs font-bold flex items-center gap-1 cursor-pointer shrink-0"
                             >
                               <Star className="w-3.5 h-3.5 fill-amber-400 text-amber-600" />
                               <span>AVALIAR</span>
                             </button>
                           )
+                        )}
+
+                        {isAlmoxarifeOrAdmin && r.status === 'em_separacao' && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setPendingReqToRate(r as any);
+                              setRatingOrigin('encerrar');
+                              setIsRatingModalOpen(true);
+                            }}
+                            title="Encerrar requisição respondendo às 3 perguntas de qualidade"
+                            className="px-2.5 py-1 rounded bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold flex items-center gap-1 cursor-pointer shrink-0 shadow-xs"
+                          >
+                            <CheckCircle2 className="w-3.5 h-3.5" />
+                            <span>ENCERRAR / AVALIAR</span>
+                          </button>
                         )}
 
                         <button
@@ -2160,6 +2196,55 @@ export const RequisicoesView: React.FC<RequisicoesViewProps> = ({
                 <div className="p-3 bg-rose-50 border border-rose-200 rounded text-xs text-rose-800">
                   <strong>Parecer / Registro de Recusa ou Atendimento Parcial:</strong>{' '}
                   {reqDetails?.requisicao?.motivo_rejeicao || selectedReq.motivo_rejeicao}
+                </div>
+              )}
+
+              {/* Resumo da Avaliação de Qualidade quando já avaliada */}
+              {((reqDetails?.requisicao as any)?.avaliacao_status === 'avaliado' ||
+                (selectedReq as any)?.avaliacao_status === 'avaliado') && (
+                <div className="p-3.5 bg-amber-50/70 border border-amber-200 rounded-xl text-xs space-y-2">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div className="font-bold text-amber-950 flex items-center gap-1.5">
+                      <Star className="w-4 h-4 fill-amber-400 text-amber-600" />
+                      <span>Avaliação de Qualidade Registrada no Encerramento</span>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setPendingReqToRate((reqDetails?.requisicao || selectedReq) as any);
+                        setRatingOrigin('avaliar');
+                        setIsRatingModalOpen(true);
+                      }}
+                      className="px-2.5 py-1 rounded bg-white hover:bg-amber-100 text-amber-900 border border-amber-300 text-[11px] font-bold cursor-pointer"
+                    >
+                      Editar Avaliação
+                    </button>
+                  </div>
+                  {(() => {
+                    const rq: any = reqDetails?.requisicao || selectedReq;
+                    const fmtConceito = (n: any) => {
+                      const val = Number(n || 5);
+                      if (val >= 4) return 'Ótimo';
+                      if (val >= 2.5) return 'Bom';
+                      return 'Ruim';
+                    };
+                    return (
+                      <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 pt-1">
+                        <div className="bg-white p-2 rounded border border-amber-200/80">
+                          <span className="text-[10px] text-slate-500 block">1. Foi entregue no horário previsto?</span>
+                          <strong className="text-slate-800">{fmtConceito(rq.avaliacao_entrega)}</strong>
+                        </div>
+                        <div className="bg-white p-2 rounded border border-amber-200/80">
+                          <span className="text-[10px] text-slate-500 block">2. O pedido foi entregue conforme solicitado?</span>
+                          <strong className="text-slate-800">{fmtConceito(rq.avaliacao_qualidade)}</strong>
+                        </div>
+                        <div className="bg-white p-2 rounded border border-amber-200/80">
+                          <span className="text-[10px] text-slate-500 block">3. O funcionário foi educado?</span>
+                          <strong className="text-slate-800">{fmtConceito(rq.avaliacao_agilidade)}</strong>
+                        </div>
+                      </div>
+                    );
+                  })()}
                 </div>
               )}
 
@@ -3076,19 +3161,40 @@ export const RequisicoesView: React.FC<RequisicoesViewProps> = ({
               </div>
 
               <div className="flex flex-wrap items-center gap-2.5">
-                {/* Botão de Transição Rápida: Entrega ao Solicitante quando o status for Em Separação */}
+                {/* Botão de Encerramento e Avaliação: quando o status for Em Separação */}
                 {isAlmoxarifeOrAdmin && selectedReq.status === 'em_separacao' && (
                   <button
                     type="button"
                     onClick={handleConfirmarEntrega}
                     disabled={isProcessing}
                     className="bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800 text-white font-bold px-4 py-2 rounded text-xs flex items-center gap-1.5 transition-all shadow uppercase tracking-wide cursor-pointer disabled:opacity-50 border border-emerald-500"
-                    title="Marcar material como entregue ao solicitante e finalizar requisição como Atendida"
+                    title="Responder às 3 perguntas de qualidade, confirmar entrega ao solicitante e encerrar requisição como Atendida"
                   >
                     <CheckCircle2 className="w-4 h-4 text-emerald-100" />
-                    <span>ENTREGAR AO SOLICITANTE (MARCAR ATENDIDA)</span>
+                    <span>ENCERRAR E AVALIAR REQUISIÇÃO (MARCAR ATENDIDA)</span>
                   </button>
                 )}
+
+                {/* Botão de Avaliação quando já Atendida mas ainda pendente de avaliação */}
+                {(selectedReq.status === 'atendida' ||
+                  selectedReq.status === 'aprovada_atendida' ||
+                  String(selectedReq.status) === 'parcial') &&
+                  (reqDetails?.requisicao as any)?.avaliacao_status !== 'avaliado' &&
+                  (selectedReq as any)?.avaliacao_status !== 'avaliado' && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setPendingReqToRate((reqDetails?.requisicao || selectedReq) as any);
+                        setRatingOrigin('avaliar');
+                        setIsRatingModalOpen(true);
+                      }}
+                      className="bg-amber-500 hover:bg-amber-600 text-slate-950 font-bold px-4 py-2 rounded text-xs flex items-center gap-1.5 transition-all shadow uppercase tracking-wide cursor-pointer"
+                      title="Responder às 3 perguntas de qualidade do atendimento"
+                    >
+                      <Star className="w-4 h-4 fill-slate-950" />
+                      <span>AVALIAR QUALIDADE DO ATENDIMENTO</span>
+                    </button>
+                  )}
 
                 {/* Botões de Ação para Requisição em Aberto (Aguardando Atendimento, Pendente ou Em Separação) */}
                 {isAlmoxarifeOrAdmin && isReqEmAberto(selectedReq.status) && (
@@ -3419,11 +3525,25 @@ export const RequisicoesView: React.FC<RequisicoesViewProps> = ({
       <AvaliacaoAtendimentoModal
         isOpen={isRatingModalOpen}
         requisicao={pendingReqToRate}
+        encerrarRequisicao={ratingOrigin === 'encerrar'}
         onClose={() => setIsRatingModalOpen(false)}
-        onAvaliacaoConcluida={() => {
+        onAvaliacaoConcluida={async () => {
+          const reqRated = pendingReqToRate;
+          const origem = ratingOrigin;
           setIsRatingModalOpen(false);
           setPendingReqToRate(null);
-          abrirFormularioNovaRequisicao();
+          onRefresh();
+          if (origem === 'nova_requisicao') {
+            abrirFormularioNovaRequisicao();
+          } else if (selectedReq && reqRated && selectedReq.id === reqRated.id) {
+            const updatedReq = {
+              ...selectedReq,
+              status: origem === 'encerrar' ? ('atendida' as any) : selectedReq.status,
+              avaliacao_status: 'avaliado',
+            } as any;
+            setSelectedReq(updatedReq);
+            await handleAbrirAnalise(updatedReq, activeDetailTab);
+          }
         }}
       />
 

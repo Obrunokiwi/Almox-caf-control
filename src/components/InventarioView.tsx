@@ -39,6 +39,7 @@ import type {
 import { useToast } from '../context/ToastContext.tsx';
 import { CentroCustoAlertBanner } from './CentroCustoAlertBanner.tsx';
 import { SearchableSelect, type SearchableOption } from './SearchableSelect.tsx';
+import { round4, parseDecimal } from '../utils/numberUtils.ts';
 
 interface InventarioViewProps {
   currentUser: Usuario;
@@ -328,19 +329,16 @@ export const InventarioView: React.FC<InventarioViewProps> = ({
       [key]: valorDigitado,
     }));
 
-    // Normaliza vírgula para ponto e converte para número
-    const normalized = valorDigitado.replace(',', '.').trim();
-    const valorNum = normalized === '' ? 0 : parseFloat(normalized);
-    const qtdFisica = isNaN(valorNum) ? 0 : Math.max(0, valorNum);
+    const qtdFisica = Math.max(0, round4(parseDecimal(valorDigitado, 0)));
 
     setFormItens((prev) =>
       prev.map((item) => {
         if (getItemKey(item) === key) {
-          const qtdSistema = item.quantidade_sistema;
+          const qtdSistema = round4(item.quantidade_sistema);
           return {
             ...item,
             quantidade_fisica: qtdFisica,
-            diferenca: qtdFisica - qtdSistema,
+            diferenca: round4(qtdFisica - qtdSistema),
           };
         }
         return item;
@@ -1624,7 +1622,9 @@ export const InventarioView: React.FC<InventarioViewProps> = ({
                   min="0"
                   step="any"
                   value={manualQuantidadeFisica}
-                  onChange={(e) => setManualQuantidadeFisica(e.target.value ? parseFloat(e.target.value) : '')}
+                  onChange={(e) =>
+                    setManualQuantidadeFisica(e.target.value ? round4(parseDecimal(e.target.value, 0)) : '')
+                  }
                   className="w-full px-3 py-2 bg-white border border-teal-500 rounded text-xs font-mono font-bold text-slate-800 focus:outline-none focus:ring-2 focus:ring-teal-400"
                 />
                 <p className="text-[11px] text-slate-500 mt-1">

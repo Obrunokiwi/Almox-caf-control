@@ -60,6 +60,7 @@ import {
   FormDraftStatusIndicator,
   FormDraftSaveButton,
 } from './FormDraftBanner.tsx';
+import { round4, parseDecimal, formatCurrency4 } from '../utils/numberUtils.ts';
 
 interface EntradasViewProps {
   produtos: Produto[];
@@ -1492,23 +1493,20 @@ export const EntradasView: React.FC<EntradasViewProps> = ({
                               {isEditingNota ? (
                                 <input
                                   type="number"
-                                  step="0.01"
+                                  step="0.0001"
                                   min="0"
                                   value={it.valor_unitario ?? 0}
                                   onChange={(e) => {
                                     const next = [...detalheItens];
-                                    next[idx].valor_unitario = Number(e.target.value);
+                                    next[idx].valor_unitario = round4(parseDecimal(e.target.value, 0));
                                     setDetalheItens(next);
                                   }}
-                                  className="w-20 px-2 py-1 border border-slate-300 rounded text-right font-mono text-xs"
+                                  className="w-24 px-2 py-1 border border-slate-300 rounded text-right font-mono text-xs"
                                 />
                               ) : (
                                 <span>
                                   {it.valor_unitario
-                                    ? Number(it.valor_unitario).toLocaleString('pt-BR', {
-                                        style: 'currency',
-                                        currency: 'BRL',
-                                      })
+                                    ? formatCurrency4(Number(it.valor_unitario))
                                     : '—'}
                                 </span>
                               )}
@@ -1818,10 +1816,10 @@ export const EntradasView: React.FC<EntradasViewProps> = ({
                               const pId = Number(val);
                               next[actualIndex].produto_id = pId;
                               const pObj = produtos.find((p) => p.id === pId);
-                              const pUnit = pObj?.valor_unitario || pObj?.custo_unitario || 0;
-                              const qtd = next[actualIndex].quantidade || 1;
+                              const pUnit = round4(pObj?.valor_unitario || pObj?.custo_unitario || 0);
+                              const qtd = round4(next[actualIndex].quantidade || 1);
                               next[actualIndex].valor_unitario = pUnit;
-                              next[actualIndex].valor_total = Number((qtd * pUnit).toFixed(2));
+                              next[actualIndex].valor_total = round4(qtd * pUnit);
                               setNewNotaItens(next);
                             }}
                             placeholder="Digite código ou nome do produto..."
@@ -1867,16 +1865,18 @@ export const EntradasView: React.FC<EntradasViewProps> = ({
                           </label>
                           <input
                             type="number"
-                            min="0.001"
+                            min="0.0001"
                             step="any"
                             value={item.quantidade || ''}
                             onChange={(e) => {
                               const next = [...newNotaItens];
                               const val = e.target.value;
-                              const q = val === '' ? ('' as any) : Number(val);
+                              const q = val === '' ? ('' as any) : round4(parseDecimal(val, 0));
                               next[actualIndex].quantidade = q;
                               if (next[actualIndex].valor_total && Number(q) > 0) {
-                                next[actualIndex].valor_unitario = Number(next[actualIndex].valor_total) / Number(q);
+                                next[actualIndex].valor_unitario = round4(
+                                  Number(next[actualIndex].valor_total) / Number(q)
+                                );
                               }
                               setNewNotaItens(next);
                             }}
@@ -1909,22 +1909,22 @@ export const EntradasView: React.FC<EntradasViewProps> = ({
                             </label>
                             {item.quantidade > 0 && item.valor_total > 0 && (
                               <span className="text-[10px] font-mono text-[#00237D] font-bold bg-blue-50 px-1.5 py-0.5 rounded border border-blue-200">
-                                Unit.: {unitarioCalc.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL', minimumFractionDigits: 2, maximumFractionDigits: 4 })} / {prod?.unidade_medida || 'UN'}
+                                Unit.: {formatCurrency4(unitarioCalc)} / {prod?.unidade_medida || 'UN'}
                               </span>
                             )}
                           </div>
                           <input
                             type="number"
-                            step="0.01"
+                            step="0.0001"
                             min="0"
                             value={item.valor_total || ''}
                             onChange={(e) => {
                               const next = [...newNotaItens];
                               const val = e.target.value;
-                              const tot = val === '' ? ('' as any) : Number(val);
+                              const tot = val === '' ? ('' as any) : round4(parseDecimal(val, 0));
                               next[actualIndex].valor_total = tot;
-                              const q = Number(next[actualIndex].quantidade) || 0;
-                              next[actualIndex].valor_unitario = q > 0 && tot ? Number(tot) / q : 0;
+                              const q = round4(next[actualIndex].quantidade || 0);
+                              next[actualIndex].valor_unitario = q > 0 && tot ? round4(Number(tot) / q) : 0;
                               setNewNotaItens(next);
                             }}
                             placeholder="0,00"

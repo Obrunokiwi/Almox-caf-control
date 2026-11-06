@@ -34,6 +34,15 @@ import {
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import {
+  round4,
+  parseDecimal,
+  parseDecimalNullable,
+  hadMoreThan4Decimals,
+  hasSufficientStock,
+  safeSubtractStock,
+  safeAddStock,
+} from '../utils/numberUtils.ts';
 
 export const apiRouter = Router();
 
@@ -98,6 +107,7 @@ export function upsertLoteEstoque(params: {
   nomenclatura_fornecedor?: string | null;
   centro_custo_id?: number | null;
 }): { id: number; numero_lote: string; data_validade: string | null } {
+  const qtdNorm = round4(params.quantidade);
   const loteNorm = params.numero_lote && String(params.numero_lote).trim()
     ? String(params.numero_lote).trim().toUpperCase()
     : 'LOTE-PADRAO';
@@ -106,19 +116,21 @@ export function upsertLoteEstoque(params: {
     : null;
 
   const existente = db.prepare(`
-    SELECT id, numero_lote, data_validade, centro_custo_id
+    SELECT id, numero_lote, data_validade, centro_custo_id, quantidade_atual, quantidade_inicial
     FROM lotes_estoque
     WHERE produto_id = ?
       AND UPPER(numero_lote) = ?
       AND COALESCE(data_validade, '') = COALESCE(?, '')
     LIMIT 1
-  `).get(params.produto_id, loteNorm, validadeNorm || '') as { id: number; numero_lote: string; data_validade: string | null; centro_custo_id: number | null } | undefined;
+  `).get(params.produto_id, loteNorm, validadeNorm || '') as { id: number; numero_lote: string; data_validade: string | null; centro_custo_id: number | null; quantidade_atual: number; quantidade_inicial: number } | undefined;
 
   if (existente) {
+    const novaQtdAtual = safeAddStock(existente.quantidade_atual, qtdNorm);
+    const novaQtdInicial = safeAddStock(existente.quantidade_inicial, qtdNorm);
     db.prepare(`
       UPDATE lotes_estoque
-      SET quantidade_atual = quantidade_atual + ?,
-          quantidade_inicial = quantidade_inicial + ?,
+      SET quantidade_atual = ?,
+          quantidade_inicial = ?,
           fornecedor_id = COALESCE(?, fornecedor_id),
           documento_referencia = COALESCE(?, documento_referencia),
           marca = COALESCE(?, marca),
@@ -126,8 +138,8 @@ export function upsertLoteEstoque(params: {
           centro_custo_id = COALESCE(?, centro_custo_id)
       WHERE id = ?
     `).run(
-      params.quantidade,
-      params.quantidade,
+      novaQtdAtual,
+      novaQtdInicial,
       params.fornecedor_id || null,
       params.documento_referencia || null,
       params.marca || null,
@@ -147,8 +159,8 @@ export function upsertLoteEstoque(params: {
     params.produto_id,
     loteNorm,
     validadeNorm,
-    params.quantidade,
-    params.quantidade,
+    qtdNorm,
+    qtdNorm,
     params.fornecedor_id || null,
     params.documento_referencia || null,
     params.marca || null,
@@ -172,6 +184,7 @@ export function consumirLotesValidosFEFO(
   qtdNecessaria: number,
   loteIdEspecifico?: number | null
 ): Array<{ lote_id: number; numero_lote: string; data_validade: string | null; quantidade_consumida: number }> {
+  const qtdReq = round4(qtdNecessaria);
   const hojeStr = new Date().toISOString().slice(0, 10);
   const prod = db.prepare('SELECT id, codigo, nome, unidade_medida FROM produtos WHERE id = ?').get(produtoId) as any;
   const prodLabel = prod ? `${prod.codigo} - ${prod.nome}` : `Produto #${produtoId}`;
@@ -188,17 +201,18 @@ export function consumirLotesValidosFEFO(
         `A única movimentação permitida para lotes vencidos é "Saída por Vencimento/Descarte" em Movimentações Diversas.`
       );
     }
-    if (Number(lote.quantidade_atual) < qtdNecessaria) {
+    if (!hasSufficientStock(lote.quantidade_atual, qtdReq)) {
       throw new Error(
-        `Saldo insuficiente no lote "${lote.numero_lote}" (${prodLabel}). Disponível no lote: ${lote.quantidade_atual}, Solicitado: ${qtdNecessaria}.`
+        `Saldo insuficiente no lote "${lote.numero_lote}" (${prodLabel}). Disponível no lote: ${round4(lote.quantidade_atual)}, Solicitado: ${qtdReq}.`
       );
     }
-    db.prepare('UPDATE lotes_estoque SET quantidade_atual = quantidade_atual - ? WHERE id = ?').run(qtdNecessaria, lote.id);
+    const novoSaldoLote = safeSubtractStock(lote.quantidade_atual, qtdReq);
+    db.prepare('UPDATE lotes_estoque SET quantidade_atual = ? WHERE id = ?').run(novoSaldoLote, lote.id);
     return [{
       lote_id: lote.id,
       numero_lote: lote.numero_lote,
       data_validade: lote.data_validade || null,
-      quantidade_consumida: qtdNecessaria,
+      quantidade_consumida: qtdReq,
     }];
   }
 
@@ -219,37 +233,38 @@ export function consumirLotesValidosFEFO(
     (l) => l.data_validade && String(l.data_validade).slice(0, 10) < hojeStr
   );
 
-  const saldoValido = lotesValidos.reduce((acc, l) => acc + Number(l.quantidade_atual), 0);
-  const saldoVencido = lotesVencidos.reduce((acc, l) => acc + Number(l.quantidade_atual), 0);
+  const saldoValido = round4(lotesValidos.reduce((acc, l) => acc + parseDecimal(l.quantidade_atual), 0));
+  const saldoVencido = round4(lotesVencidos.reduce((acc, l) => acc + parseDecimal(l.quantidade_atual), 0));
 
-  if (saldoValido < qtdNecessaria) {
+  if (!hasSufficientStock(saldoValido, qtdReq)) {
     if (saldoVencido > 0) {
       const listaVenc = lotesVencidos
-        .map((l) => `${l.numero_lote} (Val: ${l.data_validade}, Qtd: ${l.quantidade_atual})`)
+        .map((l) => `${l.numero_lote} (Val: ${l.data_validade}, Qtd: ${round4(l.quantidade_atual)})`)
         .join(', ');
       throw new Error(
-        `BLOQUEIO AUTOMÁTICO DE MOVIMENTAÇÃO POR VENCIMENTO: O produto "${prodLabel}" possui ${saldoVencido} ${prod?.unidade_medida || 'un.'} em lote(s) VENCIDO(S) [${listaVenc}] e apenas ${saldoValido} ${prod?.unidade_medida || 'un.'} em lotes válidos não vencidos (Solicitado: ${qtdNecessaria}). ` +
+        `BLOQUEIO AUTOMÁTICO DE MOVIMENTAÇÃO POR VENCIMENTO: O produto "${prodLabel}" possui ${saldoVencido} ${prod?.unidade_medida || 'un.'} em lote(s) VENCIDO(S) [${listaVenc}] e apenas ${saldoValido} ${prod?.unidade_medida || 'un.'} em lotes válidos não vencidos (Solicitado: ${qtdReq}). ` +
         `O sistema bloqueia sumariamente a liberação de lotes vencidos para consumo ou empréstimo. Realize a baixa em "Movimentações Diversas > Saída por Vencimento/Descarte".`
       );
     }
   }
 
-  let restante = qtdNecessaria;
+  let restante = qtdReq;
   const consumidos: Array<{ lote_id: number; numero_lote: string; data_validade: string | null; quantidade_consumida: number }> = [];
 
   for (const lote of lotesValidos) {
     if (restante <= 0) break;
-    const disp = Number(lote.quantidade_atual);
-    const abater = Math.min(disp, restante);
+    const disp = round4(lote.quantidade_atual);
+    const abater = round4(Math.min(disp, restante));
     if (abater > 0) {
-      db.prepare('UPDATE lotes_estoque SET quantidade_atual = quantidade_atual - ? WHERE id = ?').run(abater, lote.id);
+      const novoSaldo = safeSubtractStock(disp, abater);
+      db.prepare('UPDATE lotes_estoque SET quantidade_atual = ? WHERE id = ?').run(novoSaldo, lote.id);
       consumidos.push({
         lote_id: lote.id,
         numero_lote: lote.numero_lote,
         data_validade: lote.data_validade || null,
         quantidade_consumida: abater,
       });
-      restante -= abater;
+      restante = safeSubtractStock(restante, abater);
     }
   }
 
@@ -677,7 +692,7 @@ apiRouter.post('/consumos', (req, res) => {
       // 3. Processa cada item com FEFO e bloqueio de vencido
       for (const it of itens) {
         const prodId = Number(it.produto_id);
-        const qtd = Number(it.quantidade);
+        const qtd = parseDecimal(it.quantidade);
         if (!prodId || qtd <= 0) {
           throw new Error('Quantidade inválida para o produto.');
         }
@@ -699,10 +714,11 @@ apiRouter.post('/consumos', (req, res) => {
               `BLOQUEIO DE VENCIMENTO: O lote "${loteUsado.numero_lote}" do item "${prod.nome}" está VENCIDO (${loteUsado.data_validade}) e não pode ser dispensado para consumo.`
             );
           }
-          if (Number(loteUsado.quantidade_atual) < qtd) {
-            throw new Error(`Saldo insuficiente no lote "${loteUsado.numero_lote}" (${prod.nome}). Disponível: ${loteUsado.quantidade_atual}, Solicitado: ${qtd}.`);
+          if (!hasSufficientStock(loteUsado.quantidade_atual, qtd)) {
+            throw new Error(`Saldo insuficiente no lote "${loteUsado.numero_lote}" (${prod.nome}). Disponível: ${round4(loteUsado.quantidade_atual)}, Solicitado: ${qtd}.`);
           }
-          db.prepare('UPDATE lotes_estoque SET quantidade_atual = quantidade_atual - ? WHERE id = ?').run(qtd, loteUsado.id);
+          const novoSaldoLote = safeSubtractStock(loteUsado.quantidade_atual, qtd);
+          db.prepare('UPDATE lotes_estoque SET quantidade_atual = ? WHERE id = ?').run(novoSaldoLote, loteUsado.id);
         } else {
           // Tenta FEFO automático se houver lotes com saldo
           const lotesConsumidos = consumirLotesValidosFEFO(prodId, qtd);
@@ -710,16 +726,17 @@ apiRouter.post('/consumos', (req, res) => {
             loteUsado = lotesConsumidos[0];
           } else {
             // Produto sem lote: valida estoque geral do produto
-            if (Number(prod.quantidade_atual) < qtd) {
-              throw new Error(`Estoque insuficiente para o produto "${prod.nome}". Disponível: ${prod.quantidade_atual}, Solicitado: ${qtd}.`);
+            if (!hasSufficientStock(prod.quantidade_atual, qtd)) {
+              throw new Error(`Estoque insuficiente para o produto "${prod.nome}". Disponível: ${round4(prod.quantidade_atual)}, Solicitado: ${qtd}.`);
             }
           }
         }
 
-        // Atualiza quantidade_atual do produto
-        db.prepare('UPDATE produtos SET quantidade_atual = MAX(0, quantidade_atual - ?) WHERE id = ?').run(qtd, prodId);
+        // Atualiza quantidade_atual do produto com precisão de 4 casas
+        const novoSaldoProd = safeSubtractStock(prod.quantidade_atual, qtd);
+        db.prepare('UPDATE produtos SET quantidade_atual = ? WHERE id = ?').run(novoSaldoProd, prodId);
 
-        const custoUnit = Number(it.custo_unitario || prod.valor_unitario || 0);
+        const custoUnit = parseDecimal(it.custo_unitario ?? prod.valor_unitario ?? 0);
 
         insItem.run(
           consumoId,
@@ -3168,25 +3185,33 @@ apiRouter.get('/produtos', (req, res) => {
     }
 
     for (const r of rows) {
-      r.custo_unitario = r.custo_unitario !== null && r.custo_unitario !== undefined ? Number(r.custo_unitario) : (Number(r.valor_unitario) || 0.0);
-      r.valor_unitario = Number(r.valor_unitario !== null && r.valor_unitario !== undefined ? r.valor_unitario : r.custo_unitario);
+      r.quantidade_atual = round4(r.quantidade_atual);
+      r.estoque_minimo = round4(r.estoque_minimo);
+      r.estoque_maximo = round4(r.estoque_maximo);
+      r.custo_unitario = r.custo_unitario !== null && r.custo_unitario !== undefined ? parseDecimal(r.custo_unitario) : parseDecimal(r.valor_unitario);
+      r.valor_unitario = parseDecimal(r.valor_unitario !== null && r.valor_unitario !== undefined ? r.valor_unitario : r.custo_unitario);
       r.fornecedores_vinculados = mapByProd.get(r.id) || [];
       const prodLotes = lotesByProd.get(r.id) || [];
       r.lotes = prodLotes;
-      const qtdBloqueadaVencida = prodLotes
-        .filter((l: any) => l.status_validade === 'vencido')
-        .reduce((acc: number, l: any) => acc + Number(l.quantidade_atual), 0);
+      const qtdBloqueadaVencida = round4(
+        prodLotes
+          .filter((l: any) => l.status_validade === 'vencido')
+          .reduce((acc: number, l: any) => acc + parseDecimal(l.quantidade_atual), 0)
+      );
       r.quantidade_bloqueada_vencida = qtdBloqueadaVencida;
-      r.quantidade_disponivel_valida = Math.max(0, Number(r.quantidade_atual) - qtdBloqueadaVencida);
+      r.quantidade_disponivel_valida = safeSubtractStock(r.quantidade_atual, qtdBloqueadaVencida);
     }
   } catch {
     for (const r of rows) {
-      r.custo_unitario = Number(r.custo_unitario || r.valor_unitario || 0.0);
-      r.valor_unitario = Number(r.valor_unitario || r.custo_unitario || 0.0);
+      r.quantidade_atual = round4(r.quantidade_atual);
+      r.estoque_minimo = round4(r.estoque_minimo);
+      r.estoque_maximo = round4(r.estoque_maximo);
+      r.custo_unitario = parseDecimal(r.custo_unitario || r.valor_unitario || 0.0);
+      r.valor_unitario = parseDecimal(r.valor_unitario || r.custo_unitario || 0.0);
       r.fornecedores_vinculados = [];
       r.lotes = [];
       r.quantidade_bloqueada_vencida = 0;
-      r.quantidade_disponivel_valida = Number(r.quantidade_atual);
+      r.quantidade_disponivel_valida = round4(r.quantidade_atual);
     }
   }
 
@@ -3340,10 +3365,10 @@ apiRouter.post('/produtos', (req, res) => {
   }
 
   const custoFinal = custo_unitario !== undefined && custo_unitario !== null && custo_unitario !== ''
-    ? Number(custo_unitario)
-    : (valor_unitario ? Number(valor_unitario) : 0);
+    ? parseDecimal(custo_unitario)
+    : (valor_unitario ? parseDecimal(valor_unitario) : 0);
   const valorFinal = valor_unitario !== undefined && valor_unitario !== null && valor_unitario !== ''
-    ? Number(valor_unitario)
+    ? parseDecimal(valor_unitario)
     : custoFinal;
 
   let finalSubgrupoId = subgrupo_id ? Number(subgrupo_id) : null;
@@ -3379,8 +3404,8 @@ apiRouter.post('/produtos', (req, res) => {
       unidade_medida.trim().toUpperCase(),
       tipo,
       controla_validade === 0 || controla_validade === false ? 0 : 1,
-      Number(estoque_minimo) || 0,
-      Number(estoque_maximo) || 0,
+      parseDecimal(estoque_minimo),
+      parseDecimal(estoque_maximo),
       valorFinal,
       custoFinal,
       localizacao ? localizacao.trim().toUpperCase() : null
@@ -3430,10 +3455,10 @@ apiRouter.put('/produtos/:id', (req, res) => {
   } = req.body;
 
   const custoFinal = custo_unitario !== undefined && custo_unitario !== null && custo_unitario !== ''
-    ? Number(custo_unitario)
-    : (valor_unitario ? Number(valor_unitario) : 0);
+    ? parseDecimal(custo_unitario)
+    : (valor_unitario ? parseDecimal(valor_unitario) : 0);
   const valorFinal = valor_unitario !== undefined && valor_unitario !== null && valor_unitario !== ''
-    ? Number(valor_unitario)
+    ? parseDecimal(valor_unitario)
     : custoFinal;
 
   let finalSubgrupoId = subgrupo_id !== undefined ? (subgrupo_id ? Number(subgrupo_id) : null) : undefined;
@@ -3472,8 +3497,8 @@ apiRouter.put('/produtos/:id', (req, res) => {
       unidade_medida.trim().toUpperCase(),
       tipo,
       controla_validade === 0 || controla_validade === false ? 0 : 1,
-      Number(estoque_minimo) || 0,
-      Number(estoque_maximo) || 0,
+      parseDecimal(estoque_minimo),
+      parseDecimal(estoque_maximo),
       valorFinal,
       custoFinal,
       localizacao ? localizacao.trim().toUpperCase() : null,
@@ -3599,119 +3624,121 @@ apiRouter.post('/entradas', (req, res) => {
         },
       ];
 
-  for (const item of listaItens) {
-    const qtd = Number(item.quantidade);
-    if (!item.produto_id || !qtd || qtd <= 0) {
-      res.status(400).json({ error: 'Produto cadastrado e quantidade válida positiva são obrigatórios em todos os itens da NF' });
-      return;
-    }
-  }
-
-  try {
-    const result = runInTransaction(() => {
-      let fornRow: any = null;
-      if (fornecedor_id) {
-        fornRow = db.prepare('SELECT * FROM fornecedores WHERE id = ?').get(Number(fornecedor_id)) as any;
-        if (!fornRow) {
-          throw new Error('Fornecedor/Entidade selecionado não foi encontrado no cadastro.');
+      for (const item of listaItens) {
+        const qtd = parseDecimal(item.quantidade);
+        if (!item.produto_id || !qtd || qtd <= 0) {
+          res.status(400).json({ error: 'Produto cadastrado e quantidade válida positiva são obrigatórios em todos os itens da NF' });
+          return;
         }
       }
 
-      const nomeFornecedorLabel = fornRow
-        ? `${fornRow.codigo} - ${fornRow.nome_fantasia || fornRow.razao_social}${fornRow.cnpj ? ` (CNPJ: ${fornRow.cnpj})` : ''}`
-        : fornecedor
-        ? String(fornecedor).trim()
-        : null;
+      try {
+        const result = runInTransaction(() => {
+          let fornRow: any = null;
+          if (fornecedor_id) {
+            fornRow = db.prepare('SELECT * FROM fornecedores WHERE id = ?').get(Number(fornecedor_id)) as any;
+            if (!fornRow) {
+              throw new Error('Fornecedor/Entidade selecionado não foi encontrado no cadastro.');
+            }
+          }
 
-      const docRefUpper = String(documento_referencia).trim().toUpperCase();
-      const movsCriadas: number[] = [];
-      const produtosAtualizados: any[] = [];
+          const nomeFornecedorLabel = fornRow
+            ? `${fornRow.codigo} - ${fornRow.nome_fantasia || fornRow.razao_social}${fornRow.cnpj ? ` (CNPJ: ${fornRow.cnpj})` : ''}`
+            : fornecedor
+            ? String(fornecedor).trim()
+            : null;
 
-      const targetCentroCustoId = centro_custo_id ? Number(centro_custo_id) : null;
+          const docRefUpper = String(documento_referencia).trim().toUpperCase();
+          const movsCriadas: number[] = [];
+          const produtosAtualizados: any[] = [];
 
-      // 1. Cria a Nota Fiscal em notas_fiscais com situação ABERTA
-      const nfInfo = db.prepare(`
-        INSERT INTO notas_fiscais (
-          numero_documento, fornecedor_id, fornecedor_nome, centro_custo_id,
-          usuario_id, responsavel_nome, observacao, data_emissao, situacao
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, 'ABERTA')
-      `).run(
-        docRefUpper,
-        fornRow ? fornRow.id : null,
-        fornRow ? (fornRow.nome_fantasia || fornRow.razao_social) : (fornecedor ? String(fornecedor).trim() : null),
-        targetCentroCustoId,
-        user.id,
-        user.nome,
-        observacao ? String(observacao).trim() : null
-      );
-      const notaFiscalId = Number(nfInfo.lastInsertRowid);
+          const targetCentroCustoId = centro_custo_id ? Number(centro_custo_id) : null;
 
-      db.prepare(`
-        INSERT INTO historico_notas_fiscais (nota_fiscal_id, usuario_id, acao, detalhes)
-        VALUES (?, ?, 'abertura', ?)
-      `).run(
-        notaFiscalId,
-        user.id,
-        `Nota Fiscal "${docRefUpper}" registrada com ${listaItens.length} item(ns) por ${user.nome}.`
-      );
+          // 1. Cria a Nota Fiscal em notas_fiscais com situação ABERTA
+          const nfInfo = db.prepare(`
+            INSERT INTO notas_fiscais (
+              numero_documento, fornecedor_id, fornecedor_nome, centro_custo_id,
+              usuario_id, responsavel_nome, observacao, data_emissao, situacao
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, 'ABERTA')
+          `).run(
+            docRefUpper,
+            fornRow ? fornRow.id : null,
+            fornRow ? (fornRow.nome_fantasia || fornRow.razao_social) : (fornecedor ? String(fornecedor).trim() : null),
+            targetCentroCustoId,
+            user.id,
+            user.nome,
+            observacao ? String(observacao).trim() : null
+          );
+          const notaFiscalId = Number(nfInfo.lastInsertRowid);
 
-      const movStmt = db.prepare(`
-        INSERT INTO movimentacoes (
-          tipo, motivo_diverso, produto_id, lote_id, quantidade, centro_custo_id, fornecedor_id, usuario_id,
-          responsavel_nome, documento_referencia, numero_lote, data_validade, valor_unitario,
-          marca, nomenclatura_fornecedor, observacao, nota_fiscal_id
-        )
-        VALUES ('entrada', 'Entrada por Nota Fiscal', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `);
+          db.prepare(`
+            INSERT INTO historico_notas_fiscais (nota_fiscal_id, usuario_id, acao, detalhes)
+            VALUES (?, ?, 'abertura', ?)
+          `).run(
+            notaFiscalId,
+            user.id,
+            `Nota Fiscal "${docRefUpper}" registrada com ${listaItens.length} item(ns) por ${user.nome}.`
+          );
 
-      for (const item of listaItens) {
-        const prodId = Number(item.produto_id);
-        const qtd = Number(item.quantidade);
-        const valUnit = item.valor_unitario !== undefined && item.valor_unitario !== null ? Number(item.valor_unitario) : null;
-        const itemMarca = item.marca ? String(item.marca).trim() : null;
-        const itemNomenclatura = item.nomenclatura_fornecedor ? String(item.nomenclatura_fornecedor).trim() : null;
-        const itemCodRef = item.codigo_referencia_fornecedor ? String(item.codigo_referencia_fornecedor).trim().toUpperCase() : null;
-        const itemLote = item.numero_lote ? String(item.numero_lote).trim().toUpperCase() : null;
-        const itemValidade = item.data_validade ? String(item.data_validade).trim().slice(0, 10) : null;
+          const movStmt = db.prepare(`
+            INSERT INTO movimentacoes (
+              tipo, motivo_diverso, produto_id, lote_id, quantidade, centro_custo_id, fornecedor_id, usuario_id,
+              responsavel_nome, documento_referencia, numero_lote, data_validade, valor_unitario,
+              marca, nomenclatura_fornecedor, observacao, nota_fiscal_id
+            )
+            VALUES ('entrada', 'Entrada por Nota Fiscal', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          `);
 
-        // 1. Verifica produto no catálogo (mantém SEMPRE o mesmo código único de estoque)
-        const prod = db.prepare('SELECT id, codigo, nome, tipo, controla_validade, quantidade_atual FROM produtos WHERE id = ? AND ativo = 1').get(prodId) as any;
-        if (!prod) {
-          throw new Error(`Produto #${prodId} não encontrado ou inativo no catálogo`);
-        }
+          for (const item of listaItens) {
+            const prodId = Number(item.produto_id);
+            const qtd = parseDecimal(item.quantidade);
+            const valUnit = parseDecimalNullable(item.valor_unitario);
+            const itemMarca = item.marca ? String(item.marca).trim() : null;
+            const itemNomenclatura = item.nomenclatura_fornecedor ? String(item.nomenclatura_fornecedor).trim() : null;
+            const itemCodRef = item.codigo_referencia_fornecedor ? String(item.codigo_referencia_fornecedor).trim().toUpperCase() : null;
+            const itemLote = item.numero_lote ? String(item.numero_lote).trim().toUpperCase() : null;
+            const itemValidade = item.data_validade ? String(item.data_validade).trim().slice(0, 10) : null;
 
-        // Lote e validade: se não informado ou se o produto não exige lote, define SEM LOTE para não travar
-        const finalLote = itemLote && itemLote.trim() ? itemLote.trim().toUpperCase() : 'SEM LOTE';
-        const finalValidade = itemValidade && itemValidade.trim() ? itemValidade.trim().slice(0, 10) : null;
+            // 1. Verifica produto no catálogo (mantém SEMPRE o mesmo código único de estoque)
+            const prod = db.prepare('SELECT id, codigo, nome, tipo, controla_validade, quantidade_atual FROM produtos WHERE id = ? AND ativo = 1').get(prodId) as any;
+            if (!prod) {
+              throw new Error(`Produto #${prodId} não encontrado ou inativo no catálogo`);
+            }
 
-        // 2. Registra/atualiza Lote em lotes_estoque vinculado ao código único do produto
-        const loteReg = upsertLoteEstoque({
-          produto_id: prodId,
-          numero_lote: finalLote,
-          data_validade: finalValidade,
-          quantidade: qtd,
-          fornecedor_id: fornRow ? fornRow.id : null,
-          documento_referencia: docRefUpper,
-          marca: itemMarca,
-          nomenclatura_fornecedor: itemNomenclatura,
-          centro_custo_id: targetCentroCustoId,
-        });
+            // Lote e validade: se não informado ou se o produto não exige lote, define SEM LOTE para não travar
+            const finalLote = itemLote && itemLote.trim() ? itemLote.trim().toUpperCase() : 'SEM LOTE';
+            const finalValidade = itemValidade && itemValidade.trim() ? itemValidade.trim().slice(0, 10) : null;
 
-        // 3. Soma saldo no mesmo código único de produto no estoque, independente de marca ou nomenclatura na NF
-        db.prepare(`
-          UPDATE produtos 
-          SET quantidade_atual = quantidade_atual + ? 
-          WHERE id = ?
-        `).run(qtd, prodId);
+            // 2. Registra/atualiza Lote em lotes_estoque vinculado ao código único do produto
+            const loteReg = upsertLoteEstoque({
+              produto_id: prodId,
+              numero_lote: finalLote,
+              data_validade: finalValidade,
+              quantidade: qtd,
+              fornecedor_id: fornRow ? fornRow.id : null,
+              documento_referencia: docRefUpper,
+              marca: itemMarca,
+              nomenclatura_fornecedor: itemNomenclatura,
+              centro_custo_id: targetCentroCustoId,
+            });
 
-        let finalValUnit = valUnit && valUnit > 0 ? valUnit : 0;
-        if ((!finalValUnit || finalValUnit === 0) && item.valor_total && Number(item.valor_total) > 0 && qtd > 0) {
-          finalValUnit = Number(item.valor_total) / qtd;
-        }
+            // 3. Soma saldo no mesmo código único de produto no estoque, com precisão de 4 casas
+            const novoSaldoProd = safeAddStock(prod.quantidade_atual, qtd);
+            db.prepare(`
+              UPDATE produtos 
+              SET quantidade_atual = ? 
+              WHERE id = ?
+            `).run(novoSaldoProd, prodId);
 
-        if (finalValUnit > 0) {
-          db.prepare('UPDATE produtos SET valor_unitario = ? WHERE id = ?').run(finalValUnit, prodId);
-        }
+            let finalValUnit = valUnit && valUnit > 0 ? round4(valUnit) : 0;
+            const valTotParsed = parseDecimal(item.valor_total);
+            if ((!finalValUnit || finalValUnit === 0) && valTotParsed > 0 && qtd > 0) {
+              finalValUnit = round4(valTotParsed / qtd);
+            }
+
+            if (finalValUnit > 0) {
+              db.prepare('UPDATE produtos SET valor_unitario = ?, custo_unitario = ? WHERE id = ?').run(finalValUnit, finalValUnit, prodId);
+            }
 
         // 4. Se houver fornecedor_id cadastrado, registra/atualiza equivalência em produto_fornecedores
         if (fornRow) {
@@ -4437,8 +4464,32 @@ apiRouter.post('/notas-fiscais/:id/fechar', (req, res) => {
 
 
 // ----------------------------------------------------------------------------
-// AVALIAÇÃO DE PERFORMANCE DO ATENDIMENTO (AGILIDADE, QUALIDADE, ENTREGA)
+// AVALIAÇÃO DE PERFORMANCE DO ATENDIMENTO (ENCERRAMENTO DE REQUISIÇÃO)
+// 1. Foi entregue no horário previsto? (avaliacao_agilidade)
+// 2. O pedido foi entregue conforme solicitado? (avaliacao_qualidade)
+// 3. O funcionário foi educado? (avaliacao_entrega)
+// Opções: Ótimo (5), Bom (3) ou Ruim (1) — compatível com notas legadas 1..5
 // ----------------------------------------------------------------------------
+
+function parseAvaliacaoConceitoToScore(val: unknown): number {
+  if (val === null || val === undefined || val === '') return 0;
+  if (typeof val === 'string') {
+    const s = val.trim().toLowerCase();
+    if (s === 'otimo' || s === 'ótimo' || s === '5') return 5;
+    if (s === 'bom' || s === '3' || s === '4') return 3;
+    if (s === 'ruim' || s === '1' || s === '2') return 1;
+  }
+  const n = Number(val);
+  if (!Number.isFinite(n) || n < 1) return 0;
+  return Math.min(5, Math.max(1, Math.round(n)));
+}
+
+function scoreToAvaliacaoConceitoLabel(score: unknown): 'Ótimo' | 'Bom' | 'Ruim' {
+  const n = Number(score || 0);
+  if (n >= 4.5) return 'Ótimo';
+  if (n >= 2.5) return 'Bom';
+  return 'Ruim';
+}
 
 apiRouter.get('/requisicoes/pendente-avaliacao', (req, res) => {
   const user = authenticateRequest(req);
@@ -4451,8 +4502,8 @@ apiRouter.get('/requisicoes/pendente-avaliacao', (req, res) => {
     let query = `
       SELECT 
         r.id, r.numero_requisicao, r.data_atendimento, r.centro_custo_nome, r.solicitante_nome,
-        r.avaliacao_status, r.avaliacao_agilidade, r.avaliacao_qualidade, r.avaliacao_entrega,
-        r.avaliacao_sugestao
+        r.status, r.avaliacao_status, r.avaliacao_agilidade, r.avaliacao_qualidade, r.avaliacao_entrega,
+        r.avaliacao_media, r.avaliacao_sugestao, r.avaliacao_data
       FROM requisicoes r
       WHERE r.status IN ('aprovada_atendida', 'atendida', 'parcial')
         AND (r.avaliacao_status IS NULL OR r.avaliacao_status = 'pendente')
@@ -4460,13 +4511,8 @@ apiRouter.get('/requisicoes/pendente-avaliacao', (req, res) => {
     const params: any[] = [];
 
     if (user.perfil === 'requisitante') {
-      if (user.centro_custo_id) {
-        query += ' AND (r.solicitante_id = ? OR r.centro_custo_id = ?)';
-        params.push(user.id, user.centro_custo_id);
-      } else {
-        query += ' AND r.solicitante_id = ?';
-        params.push(user.id);
-      }
+      query += ' AND r.solicitante_id = ?';
+      params.push(user.id);
     }
 
     query += ' ORDER BY r.id DESC LIMIT 1';
@@ -4486,27 +4532,41 @@ apiRouter.post('/requisicoes/:id/avaliar', (req, res) => {
   }
 
   const { id } = req.params;
-  const { agilidade, qualidade, entrega, sugestao } = req.body;
+  const {
+    agilidade,
+    qualidade,
+    entrega,
+    horario_previsto,
+    conforme_solicitado,
+    funcionario_educado,
+    sugestao,
+    encerrar_requisicao,
+    responsavel_recebimento,
+    observacao_entrega,
+  } = req.body || {};
 
-  const nAgilidade = Math.min(5, Math.max(1, Number(agilidade) || 0));
-  const nQualidade = Math.min(5, Math.max(1, Number(qualidade) || 0));
-  const nEntrega = Math.min(5, Math.max(1, Number(entrega) || 0));
+  const nAgilidade = parseAvaliacaoConceitoToScore(horario_previsto ?? agilidade);
+  const nQualidade = parseAvaliacaoConceitoToScore(conforme_solicitado ?? qualidade);
+  const nEntrega = parseAvaliacaoConceitoToScore(funcionario_educado ?? entrega);
 
   if (!nAgilidade || !nQualidade || !nEntrega) {
-    res.status(400).json({ error: 'Por favor, avalie com notas de 1 a 5 estrelas os 3 quesitos: Agilidade, Qualidade e Entrega.' });
+    res.status(400).json({
+      error:
+        'Para concluir e encerrar a requisição, responda as 3 perguntas obrigatórias (Ótimo, Bom ou Ruim): ' +
+        '1. Foi entregue no horário previsto? ' +
+        '2. O pedido foi entregue conforme solicitado? ' +
+        '3. O funcionário foi educado?',
+    });
     return;
   }
 
-  const possuiNotaBaixa = nAgilidade < 5 || nQualidade < 5 || nEntrega < 5;
   const textoSugestao = sugestao ? String(sugestao).trim() : '';
-
-  if (possuiNotaBaixa && textoSugestao.length < 3) {
-    res.status(400).json({ error: 'Para avaliações abaixo de 5 estrelas, o preenchimento do campo "O que podemos melhorar?" é obrigatório.' });
-    return;
-  }
-
-  const media = parseFloat(((nAgilidade + nQualidade + nEntrega) / 3).toFixed(2));
+  const media = round4((nAgilidade + nQualidade + nEntrega) / 3, 2);
   const agora = new Date().toISOString();
+
+  const labelP1 = scoreToAvaliacaoConceitoLabel(nAgilidade);
+  const labelP2 = scoreToAvaliacaoConceitoLabel(nQualidade);
+  const labelP3 = scoreToAvaliacaoConceitoLabel(nEntrega);
 
   try {
     const reqRow = db.prepare('SELECT * FROM requisicoes WHERE id = ?').get(id) as any;
@@ -4515,46 +4575,112 @@ apiRouter.post('/requisicoes/:id/avaliar', (req, res) => {
       return;
     }
 
-    db.prepare(`
-      UPDATE requisicoes
-      SET avaliacao_agilidade = ?,
-          avaliacao_qualidade = ?,
-          avaliacao_entrega = ?,
-          avaliacao_media = ?,
-          avaliacao_sugestao = ?,
-          avaliacao_data = ?,
-          avaliacao_status = 'avaliado'
-      WHERE id = ?
-    `).run(
-      nAgilidade,
-      nQualidade,
-      nEntrega,
-      media,
-      textoSugestao || null,
-      agora,
-      id
-    );
+    // Requisitante só pode avaliar suas próprias requisições
+    if (user.perfil === 'requisitante' && Number(reqRow.solicitante_id) !== Number(user.id)) {
+      res.status(403).json({ error: 'Requisitantes só podem avaliar suas próprias requisições.' });
+      return;
+    }
 
-    // Registra no histórico de auditoria
-    db.prepare(`
-      INSERT INTO historico_requisicoes (
-        requisicao_id, usuario_id, acao, detalhes, data_registro
-      ) VALUES (?, ?, 'avaliacao_atendimento', ?, ?)
-    `).run(
-      id,
-      user.id,
-      `Atendimento avaliado por ${user.nome} com Média ${media}⭐ (Agilidade: ${nAgilidade}⭐, Qualidade: ${nQualidade}⭐, Entrega: ${nEntrega}⭐). ${textoSugestao ? `Sugestão: "${textoSugestao}"` : ''}`,
-      agora
-    );
+    runInTransaction(() => {
+      const statusAnterior = reqRow.status;
+      const deveEncerrar =
+        Boolean(encerrar_requisicao) ||
+        reqRow.status === 'em_separacao' ||
+        reqRow.status === 'aguardando_atendimento' ||
+        reqRow.status === 'pendente';
+
+      if (deveEncerrar && reqRow.status !== 'atendida' && reqRow.status !== 'aprovada_atendida') {
+        db.prepare(`
+          UPDATE requisicoes
+          SET status = 'atendida',
+              almoxarife_id = COALESCE(almoxarife_id, ?),
+              data_atendimento = COALESCE(data_atendimento, CURRENT_TIMESTAMP),
+              avaliacao_agilidade = ?,
+              avaliacao_qualidade = ?,
+              avaliacao_entrega = ?,
+              avaliacao_media = ?,
+              avaliacao_sugestao = ?,
+              avaliacao_data = ?,
+              avaliacao_status = 'avaliado'
+          WHERE id = ?
+        `).run(
+          user.id,
+          nAgilidade,
+          nQualidade,
+          nEntrega,
+          media,
+          textoSugestao || null,
+          agora,
+          id
+        );
+
+        const detalhesEntrega = `Material entregue ao solicitante e requisição ENCERRADA por ${user.nome} (${user.perfil.toUpperCase()}).${responsavel_recebimento ? ` Recebido por: ${responsavel_recebimento}.` : ''}`;
+        db.prepare(`
+          INSERT INTO historico_requisicoes (
+            requisicao_id, item_requisicao_id, produto_id, usuario_id, acao,
+            status_anterior, status_novo, quantidade_solicitada, quantidade_atendida,
+            detalhes, justificativa, data_registro
+          ) VALUES (?, NULL, NULL, ?, 'entrega_material', ?, 'atendida', NULL, NULL, ?, ?, ?)
+        `).run(
+          id,
+          user.id,
+          statusAnterior,
+          detalhesEntrega,
+          observacao_entrega ? String(observacao_entrega).trim() : null,
+          agora
+        );
+      } else {
+        db.prepare(`
+          UPDATE requisicoes
+          SET avaliacao_agilidade = ?,
+              avaliacao_qualidade = ?,
+              avaliacao_entrega = ?,
+              avaliacao_media = ?,
+              avaliacao_sugestao = ?,
+              avaliacao_data = ?,
+              avaliacao_status = 'avaliado'
+          WHERE id = ?
+        `).run(
+          nAgilidade,
+          nQualidade,
+          nEntrega,
+          media,
+          textoSugestao || null,
+          agora,
+          id
+        );
+      }
+
+      // Registra no histórico de auditoria
+      db.prepare(`
+        INSERT INTO historico_requisicoes (
+          requisicao_id, usuario_id, acao, detalhes, data_registro
+        ) VALUES (?, ?, 'avaliacao_atendimento', ?, ?)
+      `).run(
+        id,
+        user.id,
+        `Questionário de qualidade respondido no encerramento por ${user.nome}: ` +
+        `1. Entregue no horário previsto: ${labelP1} | ` +
+        `2. Entregue conforme solicitado: ${labelP2} | ` +
+        `3. Funcionário educado: ${labelP3} ` +
+        `(Média: ${media}/5).${textoSugestao ? ` Observação: "${textoSugestao}"` : ''}`,
+        agora
+      );
+    });
 
     res.json({
-      message: 'Avaliação de performance registrada com sucesso! Muito obrigado pelo seu feedback.',
+      message: 'Questionário de avaliação concluído e requisição encerrada com sucesso!',
       avaliacao: {
         agilidade: nAgilidade,
         qualidade: nQualidade,
         entrega: nEntrega,
+        horario_previsto_conceito: labelP1,
+        conforme_solicitado_conceito: labelP2,
+        funcionario_educado_conceito: labelP3,
         media,
         sugestao: textoSugestao,
+        status_requisicao: 'atendida',
+        avaliacao_status: 'avaliado',
       },
     });
   } catch (err: any) {
@@ -4570,18 +4696,40 @@ apiRouter.get('/relatorios/indicadores-performance', (req, res) => {
   }
 
   try {
+    // Requisitantes só podem ver indicadores/avaliações de suas próprias requisições (nunca de outros usuários)
+    const filtroRequisitanteSql = user.perfil === 'requisitante' ? ' AND r.solicitante_id = ?' : '';
+    const params: any[] = user.perfil === 'requisitante' ? [user.id] : [];
+
     const stats = db.prepare(`
       SELECT 
         COUNT(*) as total_avaliacoes,
-        ROUND(AVG(avaliacao_agilidade), 2) as media_agilidade,
-        ROUND(AVG(avaliacao_qualidade), 2) as media_qualidade,
-        ROUND(AVG(avaliacao_entrega), 2) as media_entrega,
-        ROUND(AVG(avaliacao_media), 2) as media_geral,
-        SUM(CASE WHEN avaliacao_agilidade = 5 AND avaliacao_qualidade = 5 AND avaliacao_entrega = 5 THEN 1 ELSE 0 END) as total_excelentes,
-        SUM(CASE WHEN avaliacao_agilidade < 5 OR avaliacao_qualidade < 5 OR avaliacao_entrega < 5 THEN 1 ELSE 0 END) as total_com_sugestao
-      FROM requisicoes
-      WHERE avaliacao_status = 'avaliado' AND avaliacao_media IS NOT NULL
-    `).get() as any;
+        ROUND(AVG(r.avaliacao_agilidade), 2) as media_agilidade,
+        ROUND(AVG(r.avaliacao_qualidade), 2) as media_qualidade,
+        ROUND(AVG(r.avaliacao_entrega), 2) as media_entrega,
+        ROUND(AVG(r.avaliacao_media), 2) as media_geral,
+        SUM(CASE WHEN r.avaliacao_agilidade >= 4.5 AND r.avaliacao_qualidade >= 4.5 AND r.avaliacao_entrega >= 4.5 THEN 1 ELSE 0 END) as total_excelentes,
+        SUM(CASE WHEN (r.avaliacao_agilidade < 4.5 OR r.avaliacao_qualidade < 4.5 OR r.avaliacao_entrega < 4.5) AND r.avaliacao_sugestao IS NOT NULL AND TRIM(r.avaliacao_sugestao) != '' THEN 1 ELSE 0 END) as total_com_sugestao,
+        SUM(CASE WHEN r.avaliacao_agilidade >= 4.5 THEN 1 ELSE 0 END) as p1_otimo,
+        SUM(CASE WHEN r.avaliacao_agilidade >= 2.5 AND r.avaliacao_agilidade < 4.5 THEN 1 ELSE 0 END) as p1_bom,
+        SUM(CASE WHEN r.avaliacao_agilidade < 2.5 THEN 1 ELSE 0 END) as p1_ruim,
+        SUM(CASE WHEN r.avaliacao_qualidade >= 4.5 THEN 1 ELSE 0 END) as p2_otimo,
+        SUM(CASE WHEN r.avaliacao_qualidade >= 2.5 AND r.avaliacao_qualidade < 4.5 THEN 1 ELSE 0 END) as p2_bom,
+        SUM(CASE WHEN r.avaliacao_qualidade < 2.5 THEN 1 ELSE 0 END) as p2_ruim,
+        SUM(CASE WHEN r.avaliacao_entrega >= 4.5 THEN 1 ELSE 0 END) as p3_otimo,
+        SUM(CASE WHEN r.avaliacao_entrega >= 2.5 AND r.avaliacao_entrega < 4.5 THEN 1 ELSE 0 END) as p3_bom,
+        SUM(CASE WHEN r.avaliacao_entrega < 2.5 THEN 1 ELSE 0 END) as p3_ruim
+      FROM requisicoes r
+      WHERE r.avaliacao_status = 'avaliado' AND r.avaliacao_media IS NOT NULL
+      ${filtroRequisitanteSql}
+    `).get(...params) as any;
+
+    const pendentesRow = db.prepare(`
+      SELECT COUNT(*) as total_pendentes
+      FROM requisicoes r
+      WHERE r.status IN ('atendida', 'aprovada_atendida', 'em_separacao')
+        AND (r.avaliacao_status IS NULL OR r.avaliacao_status != 'avaliado')
+      ${filtroRequisitanteSql}
+    `).get(...params) as any;
 
     const ultimasAvaliacoes = db.prepare(`
       SELECT 
@@ -4598,20 +4746,44 @@ apiRouter.get('/relatorios/indicadores-performance', (req, res) => {
         r.avaliacao_data
       FROM requisicoes r
       WHERE r.avaliacao_status = 'avaliado' AND r.avaliacao_media IS NOT NULL
-      ORDER BY r.avaliacao_data DESC
+      ${filtroRequisitanteSql}
+      ORDER BY r.avaliacao_data DESC, r.id DESC
       LIMIT 100
-    `).all();
+    `).all(...params);
+
+    const totalAv = Number(stats?.total_avaliacoes || 0);
 
     res.json({
       stats: {
-        total_avaliacoes: Number(stats?.total_avaliacoes || 0),
-        media_agilidade: Number(stats?.media_agilidade || 0),
-        media_qualidade: Number(stats?.media_qualidade || 0),
-        media_entrega: Number(stats?.media_entrega || 0),
-        media_geral: Number(stats?.media_geral || 0),
+        total_avaliacoes: totalAv,
+        total_pendentes: Number(pendentesRow?.total_pendentes || 0),
+        media_agilidade: round4(stats?.media_agilidade || 0, 2),
+        media_qualidade: round4(stats?.media_qualidade || 0, 2),
+        media_entrega: round4(stats?.media_entrega || 0, 2),
+        media_geral: round4(stats?.media_geral || 0, 2),
         total_excelentes: Number(stats?.total_excelentes || 0),
         total_com_sugestao: Number(stats?.total_com_sugestao || 0),
-        percentual_excelencia: stats?.total_avaliacoes ? Math.round((Number(stats.total_excelentes) / Number(stats.total_avaliacoes)) * 100) : 0,
+        percentual_excelencia: totalAv ? Math.round((Number(stats.total_excelentes) / totalAv) * 100) : 0,
+        perguntas: {
+          horario_previsto: {
+            pergunta: 'Foi entregue no horário previsto?',
+            otimo: Number(stats?.p1_otimo || 0),
+            bom: Number(stats?.p1_bom || 0),
+            ruim: Number(stats?.p1_ruim || 0),
+          },
+          conforme_solicitado: {
+            pergunta: 'O pedido foi entregue conforme solicitado?',
+            otimo: Number(stats?.p2_otimo || 0),
+            bom: Number(stats?.p2_bom || 0),
+            ruim: Number(stats?.p2_ruim || 0),
+          },
+          funcionario_educado: {
+            pergunta: 'O funcionário foi educado?',
+            otimo: Number(stats?.p3_otimo || 0),
+            bom: Number(stats?.p3_bom || 0),
+            ruim: Number(stats?.p3_ruim || 0),
+          },
+        },
       },
       avaliacoes: ultimasAvaliacoes,
     });
@@ -4628,6 +4800,8 @@ apiRouter.get('/requisicoes', (req, res) => {
     SELECT 
       r.id, r.numero_requisicao, r.centro_custo_id, r.solicitante_id, r.almoxarife_id,
       r.data_solicitacao, r.data_atendimento, r.status, r.prioridade, r.motivo_rejeicao, r.observacao,
+      r.avaliacao_status, r.avaliacao_agilidade, r.avaliacao_qualidade, r.avaliacao_entrega,
+      r.avaliacao_media, r.avaliacao_sugestao, r.avaliacao_data,
       cc.codigo as centro_custo_codigo, cc.nome as centro_custo_nome,
       u_sol.nome as solicitante_nome, u_sol.login as solicitante_login,
       u_alm.nome as almoxarife_nome,
@@ -4684,8 +4858,23 @@ apiRouter.get('/requisicoes', (req, res) => {
 
   query += ' ORDER BY r.id DESC';
 
-  const rows = db.prepare(query).all(...params);
-  res.json(rows);
+  const rows = db.prepare(query).all(...params) as any[];
+  const isReqUser = user && user.perfil === 'requisitante';
+  const sanitizedRows = rows.map((r) => {
+    if (isReqUser && Number(r.solicitante_id) !== Number(user.id)) {
+      return {
+        ...r,
+        avaliacao_agilidade: null,
+        avaliacao_qualidade: null,
+        avaliacao_entrega: null,
+        avaliacao_media: null,
+        avaliacao_sugestao: null,
+        avaliacao_data: null,
+      };
+    }
+    return r;
+  });
+  res.json(sanitizedRows);
 });
 
 apiRouter.get('/requisicoes/:id', (req, res) => {
@@ -4696,6 +4885,8 @@ apiRouter.get('/requisicoes/:id', (req, res) => {
     SELECT 
       r.id, r.numero_requisicao, r.centro_custo_id, r.solicitante_id, r.almoxarife_id,
       r.data_solicitacao, r.data_atendimento, r.status, r.prioridade, r.motivo_rejeicao, r.observacao,
+      r.avaliacao_status, r.avaliacao_agilidade, r.avaliacao_qualidade, r.avaliacao_entrega,
+      r.avaliacao_media, r.avaliacao_sugestao, r.avaliacao_data,
       cc.codigo as centro_custo_codigo, cc.nome as centro_custo_nome, cc.departamento as centro_custo_depto,
       u_sol.nome as solicitante_nome, u_sol.login as solicitante_login,
       u_alm.nome as almoxarife_nome
@@ -4712,6 +4903,14 @@ apiRouter.get('/requisicoes/:id', (req, res) => {
   }
 
   const isRequisitante = user && user.perfil === 'requisitante';
+  if (isRequisitante && Number(reqRow.solicitante_id) !== Number(user.id)) {
+    reqRow.avaliacao_agilidade = null;
+    reqRow.avaliacao_qualidade = null;
+    reqRow.avaliacao_entrega = null;
+    reqRow.avaliacao_media = null;
+    reqRow.avaliacao_sugestao = null;
+    reqRow.avaliacao_data = null;
+  }
   const hojeStr = new Date().toISOString().slice(0, 10);
 
   const rawItens = db.prepare(`
@@ -5001,7 +5200,7 @@ apiRouter.post('/requisicoes', (req, res) => {
       `);
 
       for (const it of itens) {
-        const qtd = Number(it.quantidade_solicitada);
+        const qtd = parseDecimal(it.quantidade_solicitada);
         if (!it.produto_id || !qtd || qtd <= 0) {
           throw new Error('Cada item deve conter um produto válido e quantidade maior que zero');
         }
@@ -5167,24 +5366,24 @@ apiRouter.post('/requisicoes/:id/aprovar', (req, res) => {
 
           if (!isNegado && Array.isArray(d.lotes_dispensados)) {
             lotesEscolhidos = d.lotes_dispensados
-              .filter((l: any) => Number(l.quantidade) > 0)
+              .filter((l: any) => parseDecimal(l.quantidade) > 0)
               .map((l: any) => ({
                 lote_id: Number(l.lote_id),
                 numero_lote: String(l.numero_lote || '').trim(),
                 data_validade: l.data_validade ? String(l.data_validade).slice(0, 10) : null,
-                quantidade: Number(l.quantidade),
+                quantidade: parseDecimal(l.quantidade),
               }));
           }
 
-          const somaLotes = lotesEscolhidos.reduce((acc, l) => acc + l.quantidade, 0);
+          const somaLotes = round4(lotesEscolhidos.reduce((acc, l) => acc + l.quantidade, 0));
 
           let qtdAtend = isNegado
             ? 0
             : somaLotes > 0
             ? somaLotes
             : d.quantidade_atendida !== undefined
-            ? Number(d.quantidade_atendida)
-            : Number(itemOriginal.quantidade_solicitada);
+            ? parseDecimal(d.quantidade_atendida)
+            : parseDecimal(itemOriginal.quantidade_solicitada);
 
           const motivo = d.motivo_decisao ? String(d.motivo_decisao).trim() : '';
           if (isNegado && !motivo) {
@@ -5208,7 +5407,7 @@ apiRouter.post('/requisicoes/:id/aprovar', (req, res) => {
         if (!decisoesMap.has(item.id)) {
           decisoesMap.set(item.id, {
             decisao: 'aprovado',
-            quantidade_atendida: Number(item.quantidade_solicitada),
+            quantidade_atendida: parseDecimal(item.quantidade_solicitada),
             motivo_decisao: 'Item conferido, aprovado e dispensado.',
           });
         }
@@ -5222,11 +5421,11 @@ apiRouter.post('/requisicoes/:id/aprovar', (req, res) => {
         const dec = decisoesMap.get(item.id)!;
         if (dec.decisao === 'aprovado') {
           qtdItensAprovados++;
-          if (item.saldo_atual < dec.quantidade_atendida) {
+          if (!hasSufficientStock(item.saldo_atual, dec.quantidade_atendida)) {
             throw new Error(
               `Estoque insuficiente para aprovar o item "${item.produto_nome}". ` +
-              `Quantidade para atender: ${dec.quantidade_atendida} ${item.unidade_medida}, ` +
-              `Disponível em estoque: ${item.saldo_atual} ${item.unidade_medida}. ` +
+              `Quantidade para atender: ${round4(dec.quantidade_atendida)} ${item.unidade_medida}, ` +
+              `Disponível em estoque: ${round4(item.saldo_atual)} ${item.unidade_medida}. ` +
               `Negue este item individualmente ou ajuste a quantidade antes de prosseguir.`
             );
           }
@@ -5238,8 +5437,8 @@ apiRouter.post('/requisicoes/:id/aprovar', (req, res) => {
       // Statements de atualização e auditoria
       const debitProdStmt = db.prepare(`
         UPDATE produtos 
-        SET quantidade_atual = quantidade_atual - ? 
-        WHERE id = ? AND quantidade_atual >= ?
+        SET quantidade_atual = MAX(0, ROUND(quantidade_atual - ?, 4)) 
+        WHERE id = ? AND ROUND(quantidade_atual, 4) + 0.00001 >= ?
       `);
 
       const updateItemStmt = db.prepare(`
@@ -5288,14 +5487,15 @@ apiRouter.post('/requisicoes/:id/aprovar', (req, res) => {
                   `Lotes vencidos estão sumariamente bloqueados para dispensação.`
                 );
               }
-              if (Number(loteDb.quantidade_atual) < l.quantidade) {
+              if (!hasSufficientStock(loteDb.quantidade_atual, l.quantidade)) {
                 throw new Error(
                   `Saldo insuficiente no lote "${loteDb.numero_lote}" (${item.produto_nome}). ` +
-                  `Disponível no lote: ${loteDb.quantidade_atual}, Tentativa de dispensar: ${l.quantidade}.`
+                  `Disponível no lote: ${round4(loteDb.quantidade_atual)}, Tentativa de dispensar: ${round4(l.quantidade)}.`
                 );
               }
 
-              const resLote = db.prepare('UPDATE lotes_estoque SET quantidade_atual = quantidade_atual - ? WHERE id = ? AND quantidade_atual >= ?').run(l.quantidade, loteDb.id, l.quantidade);
+              const novoSaldoLote = safeSubtractStock(loteDb.quantidade_atual, l.quantidade);
+              const resLote = db.prepare('UPDATE lotes_estoque SET quantidade_atual = ? WHERE id = ? AND ROUND(quantidade_atual, 4) + 0.00001 >= ?').run(novoSaldoLote, loteDb.id, round4(l.quantidade));
               if (resLote.changes === 0) {
                 throw new Error(`Falha de concorrência ao debitar lote "${loteDb.numero_lote}".`);
               }
@@ -5303,7 +5503,7 @@ apiRouter.post('/requisicoes/:id/aprovar', (req, res) => {
               movStmt.run(
                 item.produto_id,
                 loteDb.id,
-                l.quantidade,
+                round4(l.quantidade),
                 reqRow.centro_custo_id,
                 user.id,
                 user.nome,
@@ -5317,7 +5517,7 @@ apiRouter.post('/requisicoes/:id/aprovar', (req, res) => {
                 lote_id: loteDb.id,
                 numero_lote: loteDb.numero_lote,
                 data_validade: loteDb.data_validade || null,
-                quantidade: l.quantidade,
+                quantidade: round4(l.quantidade),
               });
             }
           } else {
@@ -5328,7 +5528,7 @@ apiRouter.post('/requisicoes/:id/aprovar', (req, res) => {
                 movStmt.run(
                   item.produto_id,
                   lf.lote_id,
-                  lf.quantidade_consumida,
+                  round4(lf.quantidade_consumida),
                   reqRow.centro_custo_id,
                   user.id,
                   user.nome,
@@ -5341,7 +5541,7 @@ apiRouter.post('/requisicoes/:id/aprovar', (req, res) => {
                   lote_id: lf.lote_id,
                   numero_lote: lf.numero_lote,
                   data_validade: lf.data_validade || null,
-                  quantidade: lf.quantidade_consumida,
+                  quantidade: round4(lf.quantidade_consumida),
                 });
               }
             } else {
@@ -5349,7 +5549,7 @@ apiRouter.post('/requisicoes/:id/aprovar', (req, res) => {
               movStmt.run(
                 item.produto_id,
                 null,
-                dec.quantidade_atendida,
+                round4(dec.quantidade_atendida),
                 reqRow.centro_custo_id,
                 user.id,
                 user.nome,
@@ -5361,7 +5561,8 @@ apiRouter.post('/requisicoes/:id/aprovar', (req, res) => {
             }
           }
 
-          const updateResult = debitProdStmt.run(dec.quantidade_atendida, item.produto_id, dec.quantidade_atendida);
+          const qtdDebitar = round4(dec.quantidade_atendida);
+          const updateResult = debitProdStmt.run(qtdDebitar, item.produto_id, qtdDebitar);
           if (updateResult.changes === 0) {
             throw new Error(`Falha de concorrência ao debitar estoque geral de "${item.produto_nome}".`);
           }
@@ -7091,7 +7292,7 @@ apiRouter.post('/movimentacoes/diversas', (req, res) => {
     }
   }
 
-  const qtd = Number(quantidade);
+  const qtd = parseDecimal(quantidade);
   if (!produto_id || !qtd || qtd <= 0) {
     res.status(400).json({ error: 'Selecione um produto válido e informe quantidade maior que zero' });
     return;
@@ -7126,10 +7327,10 @@ apiRouter.post('/movimentacoes/diversas', (req, res) => {
       const hojeStr = new Date().toISOString().slice(0, 10);
 
       if (natureza === 'saida') {
-        if (prod.quantidade_atual < qtd) {
+        if (!hasSufficientStock(prod.quantidade_atual, qtd)) {
           throw new Error(
             `Saldo insuficiente no estoque para "${prod.codigo} - ${prod.nome}". ` +
-            `Disponível: ${prod.quantidade_atual} ${prod.unidade_medida}, Solicitado: ${qtd} ${prod.unidade_medida}.`
+            `Disponível: ${round4(prod.quantidade_atual)} ${prod.unidade_medida}, Solicitado: ${qtd} ${prod.unidade_medida}.`
           );
         }
 
@@ -7152,13 +7353,14 @@ apiRouter.post('/movimentacoes/diversas', (req, res) => {
             );
           }
 
-          if (loteRow.quantidade_atual < qtd) {
+          if (!hasSufficientStock(loteRow.quantidade_atual, qtd)) {
             throw new Error(
-              `A quantidade informada (${qtd}) é maior que o saldo disponível no lote ${loteRow.numero_lote} (${loteRow.quantidade_atual} ${prod.unidade_medida}).`
+              `A quantidade informada (${qtd}) é maior que o saldo disponível no lote ${loteRow.numero_lote} (${round4(loteRow.quantidade_atual)} ${prod.unidade_medida}).`
             );
           }
 
-          db.prepare('UPDATE lotes_estoque SET quantidade_atual = quantidade_atual - ? WHERE id = ?').run(qtd, loteRow.id);
+          const novoSaldoLote = safeSubtractStock(loteRow.quantidade_atual, qtd);
+          db.prepare('UPDATE lotes_estoque SET quantidade_atual = ? WHERE id = ?').run(novoSaldoLote, loteRow.id);
           loteIdUsado = loteRow.id;
           numLoteUsado = loteRow.numero_lote;
           dtValidadeUsada = loteRow.data_validade;
@@ -7185,10 +7387,10 @@ apiRouter.post('/movimentacoes/diversas', (req, res) => {
           }
         }
 
-        db.prepare('UPDATE produtos SET quantidade_atual = quantidade_atual - ? WHERE id = ? AND quantidade_atual >= ?').run(
-          qtd,
-          prod.id,
-          qtd
+        const novoSaldoProd = safeSubtractStock(prod.quantidade_atual, qtd);
+        db.prepare('UPDATE produtos SET quantidade_atual = ? WHERE id = ?').run(
+          novoSaldoProd,
+          prod.id
         );
       } else {
         // ENTRADA DIVERSA
@@ -9050,7 +9252,12 @@ apiRouter.post('/relatorios/dinamico', (req, res) => {
 
     const mapaProdutos = new Map<number, any>();
     for (const p of produtosRows) {
-      const custoCadastro = Number(p.valor_unitario || p.custo_unitario || 0);
+      const vUnit = parseDecimal(p.valor_unitario);
+      const cUnit = parseDecimal(p.custo_unitario);
+      const custoCadastro = vUnit > 0 ? vUnit : cUnit;
+      p.quantidade_atual = parseDecimal(p.quantidade_atual);
+      p.valor_unitario = vUnit;
+      p.custo_unitario = cUnit;
       mapaProdutos.set(Number(p.id), {
         ...p,
         custo_cadastro: custoCadastro,
@@ -9066,6 +9273,24 @@ apiRouter.post('/relatorios/dinamico', (req, res) => {
         le.quantidade_atual
       FROM lotes_estoque le
     `).all() as any[];
+
+    const somaLotesPorProd = new Map<number, number>();
+    for (const l of lotesRows) {
+      l.quantidade_atual = parseDecimal(l.quantidade_atual);
+      const pid = Number(l.produto_id);
+      somaLotesPorProd.set(pid, round4((somaLotesPorProd.get(pid) || 0) + l.quantidade_atual));
+    }
+
+    // Sincroniza em memória o saldo do produto se houver lotes com saldo positivo e quantidade_atual zerada
+    for (const p of produtosRows) {
+      const pid = Number(p.id);
+      const sLotes = somaLotesPorProd.get(pid) || 0;
+      if (p.quantidade_atual <= 0 && sLotes > 0) {
+        p.quantidade_atual = sLotes;
+        const mp = mapaProdutos.get(pid);
+        if (mp) mp.quantidade_atual = sLotes;
+      }
+    }
 
     // 3. Carregamento de Movimentações
     const todasMovimentacoes = db.prepare(`
@@ -9098,6 +9323,18 @@ apiRouter.post('/relatorios/dinamico', (req, res) => {
       ORDER BY datetime(m.data_movimentacao) ASC, m.id ASC
     `).all() as any[];
 
+    // Normaliza timestamp ISO ('T' -> ' ') para comparações exatas de intervalo de datas
+    const normDateTimeStr = (raw: unknown): string => {
+      if (!raw) return '';
+      return String(raw).trim().replace('T', ' ').slice(0, 19);
+    };
+
+    for (const m of todasMovimentacoes) {
+      m.quantidade = parseDecimal(m.quantidade);
+      m.valor_unitario = parseDecimalNullable(m.valor_unitario);
+      m.data_mov_norm = normDateTimeStr(m.data_movimentacao);
+    }
+
     // Helper para verificar se uma movimentação de saída pertence aos tipos considerados para consumo
     const isSaidaConsumoConsiderada = (m: any): boolean => {
       if (m.tipo !== 'saida') return false;
@@ -9116,7 +9353,7 @@ apiRouter.post('/relatorios/dinamico', (req, res) => {
 
     // Helper para verificar se movimentação aumenta ou reduz saldo físico
     const deltaEstoqueMov = (m: any): number => {
-      const q = Number(m.quantidade || 0);
+      const q = parseDecimal(m.quantidade);
       if (m.tipo === 'entrada' || m.tipo === 'estorno_saida') return q;
       if (m.tipo === 'saida' || m.tipo === 'estorno_entrada') return -q;
       return 0;
@@ -9136,7 +9373,7 @@ apiRouter.post('/relatorios/dinamico', (req, res) => {
     // Filtros de Lote e Validade
     const passaFiltrosLoteValidade = (numeroLote: string | null | undefined, dataValidade: string | null | undefined): boolean => {
       const numNorm = String(numeroLote || '').trim();
-      const semLote = !numNorm || numNorm === 'S/L' || numNorm === '-';
+      const semLote = !numNorm || numNorm === 'S/L' || numNorm === '-' || numNorm.toUpperCase() === 'SEM LOTE';
 
       if (semLote && !incluirSemLote) {
         return false;
@@ -9175,6 +9412,9 @@ apiRouter.post('/relatorios/dinamico', (req, res) => {
 
     let linhasBrutas: any[] = [];
     let movsSemCustoHistorico = 0;
+    let qtdExcluidosPorZero = 0;
+    let qtdExcluidosPorFaixa = 0;
+    let qtdExcluidosPorClasseAbc = 0;
 
     // ========================================================================
     // CONSTRUÇÃO DOS REGISTROS CONFORME A BASE E O DETALHAMENTO
@@ -9208,50 +9448,60 @@ apiRouter.post('/relatorios/dinamico', (req, res) => {
             }
           }
 
-          let saldoFinal = Number(prod.quantidade_atual || 0);
+          let saldoFinal = parseDecimal(prod.quantidade_atual);
           let entradasAteRef = 0;
           let saidasAteRef = 0;
+          let consumoLiquidoAteRef = 0;
           let ultimoCustoMov: number | null = null;
           let faltouCustoMov = false;
 
           for (const m of todasMovimentacoes) {
             if (Number(m.produto_id) !== Number(prod.id)) continue;
-            const dtMov = String(m.data_movimentacao || '');
+            const dtMov = m.data_mov_norm;
             if (modoSaldo === 'data_referencia' && dtMov > refLimitStr) {
               // Desfaz movimentação ocorrida após a data de referência
-              saldoFinal -= deltaEstoqueMov(m);
+              saldoFinal = round4(saldoFinal - deltaEstoqueMov(m));
             } else {
               const delta = deltaEstoqueMov(m);
-              if (delta > 0) entradasAteRef += delta;
-              if (delta < 0) saidasAteRef += Math.abs(delta);
-              if (m.valor_unitario !== null && m.valor_unitario !== undefined && Number(m.valor_unitario) > 0) {
-                ultimoCustoMov = Number(m.valor_unitario);
+              if (delta > 0) entradasAteRef = round4(entradasAteRef + delta);
+              if (delta < 0) saidasAteRef = round4(saidasAteRef + Math.abs(delta));
+              if (isSaidaConsumoConsiderada(m)) {
+                consumoLiquidoAteRef = round4(consumoLiquidoAteRef + m.quantidade);
+              } else if (isDevolucaoOuEstornoSaida(m) && tratamentoDevolucoes === 'liquido') {
+                consumoLiquidoAteRef = round4(Math.max(0, consumoLiquidoAteRef - m.quantidade));
+              }
+              if (m.valor_unitario !== null && m.valor_unitario > 0) {
+                ultimoCustoMov = m.valor_unitario;
               } else {
                 faltouCustoMov = true;
               }
             }
           }
 
-          if (!incluirZeros && Math.abs(saldoFinal) < 1e-9) continue;
+          saldoFinal = round4(saldoFinal);
+          if (!incluirZeros && Math.abs(saldoFinal) < 1e-6) {
+            qtdExcluidosPorZero++;
+            continue;
+          }
 
-          let custoUnitario: number | null = Number(prod.valor_unitario || prod.custo_unitario || 0);
+          let custoUnitario: number | null = round4(prod.valor_unitario || prod.custo_unitario || 0);
           if (origemCusto === 'movimentacao_lote') {
             if (ultimoCustoMov !== null) {
-              custoUnitario = ultimoCustoMov;
+              custoUnitario = round4(ultimoCustoMov);
             } else {
               custoUnitario = null;
               if (faltouCustoMov || saldoFinal > 0) movsSemCustoHistorico++;
             }
           }
 
-          const valorTotal = custoUnitario !== null ? saldoFinal * custoUnitario : null;
+          const valorTotal = custoUnitario !== null ? round4(saldoFinal * custoUnitario) : null;
           const lotesResumo = lotesDoProd
-            .filter((l) => Number(l.quantidade_atual || 0) > 0)
+            .filter((l) => l.quantidade_atual > 0)
             .map((l) => l.numero_lote)
             .filter(Boolean)
             .join(', ');
           const menorValidade = lotesDoProd
-            .filter((l) => Number(l.quantidade_atual || 0) > 0 && l.data_validade)
+            .filter((l) => l.quantidade_atual > 0 && l.data_validade)
             .map((l) => String(l.data_validade).slice(0, 10))
             .sort()[0] || null;
 
@@ -9269,10 +9519,10 @@ apiRouter.post('/relatorios/dinamico', (req, res) => {
             tipo_movimentacao: modoSaldo === 'data_referencia' ? 'Posição Histórica' : 'Posição Atual',
             documento: '-',
             saldo_inicial: 0,
-            entradas: entradasAteRef,
-            saidas: saidasAteRef,
-            saldo_final: saldoFinal,
-            quantidade_consumida: 0,
+            entradas: round4(entradasAteRef),
+            saidas: round4(saidasAteRef),
+            saldo_final: round4(saldoFinal),
+            quantidade_consumida: round4(consumoLiquidoAteRef),
             custo_unitario: exibirCustos ? custoUnitario : null,
             valor_total: exibirCustos ? valorTotal : null,
           });
@@ -9285,19 +9535,25 @@ apiRouter.post('/relatorios/dinamico', (req, res) => {
 
           if (lotesDoProd.length === 0) {
             if (!passaFiltrosLoteValidade(null, null)) continue;
-            let saldoFinal = Number(prod.quantidade_atual || 0);
-            if (modoSaldo === 'data_referencia') {
-              for (const m of todasMovimentacoes) {
-                if (Number(m.produto_id) === Number(prod.id) && String(m.data_movimentacao || '') > refLimitStr) {
-                  saldoFinal -= deltaEstoqueMov(m);
-                }
+            let saldoFinal = parseDecimal(prod.quantidade_atual);
+            let consumoProd = 0;
+            for (const m of todasMovimentacoes) {
+              if (Number(m.produto_id) !== Number(prod.id)) continue;
+              if (modoSaldo === 'data_referencia' && m.data_mov_norm > refLimitStr) {
+                saldoFinal = round4(saldoFinal - deltaEstoqueMov(m));
+              } else if (isSaidaConsumoConsiderada(m)) {
+                consumoProd = round4(consumoProd + m.quantidade);
               }
             }
-            if (!incluirZeros && Math.abs(saldoFinal) < 1e-9) continue;
+            saldoFinal = round4(saldoFinal);
+            if (!incluirZeros && Math.abs(saldoFinal) < 1e-6) {
+              qtdExcluidosPorZero++;
+              continue;
+            }
 
             const custoUnitario =
               origemCusto === 'cadastro_atual'
-                ? Number(prod.valor_unitario || prod.custo_unitario || 0)
+                ? round4(prod.valor_unitario || prod.custo_unitario || 0)
                 : null;
             if (origemCusto === 'movimentacao_lote' && custoUnitario === null) movsSemCustoHistorico++;
 
@@ -9319,17 +9575,18 @@ apiRouter.post('/relatorios/dinamico', (req, res) => {
               entradas: 0,
               saidas: 0,
               saldo_final: saldoFinal,
-              quantidade_consumida: 0,
+              quantidade_consumida: consumoProd,
               custo_unitario: exibirCustos ? custoUnitario : null,
-              valor_total: exibirCustos && custoUnitario !== null ? saldoFinal * custoUnitario : null,
+              valor_total: exibirCustos && custoUnitario !== null ? round4(saldoFinal * custoUnitario) : null,
             });
           } else {
             for (const lote of lotesDoProd) {
               if (!passaFiltrosLoteValidade(lote.numero_lote, lote.data_validade)) continue;
 
-              let saldoLote = Number(lote.quantidade_atual || 0);
+              let saldoLote = parseDecimal(lote.quantidade_atual);
               let entradasLote = 0;
               let saidasLote = 0;
+              let consumoLote = 0;
               let ultimoCustoMovLote: number | null = null;
 
               for (const m of todasMovimentacoes) {
@@ -9339,25 +9596,32 @@ apiRouter.post('/relatorios/dinamico', (req, res) => {
                   (!m.lote_id && String(m.numero_lote || '').trim() === String(lote.numero_lote || '').trim());
                 if (!mesmoLote) continue;
 
-                const dtMov = String(m.data_movimentacao || '');
+                const dtMov = m.data_mov_norm;
                 if (modoSaldo === 'data_referencia' && dtMov > refLimitStr) {
-                  saldoLote -= deltaEstoqueMov(m);
+                  saldoLote = round4(saldoLote - deltaEstoqueMov(m));
                 } else {
                   const delta = deltaEstoqueMov(m);
-                  if (delta > 0) entradasLote += delta;
-                  if (delta < 0) saidasLote += Math.abs(delta);
-                  if (m.valor_unitario !== null && m.valor_unitario !== undefined && Number(m.valor_unitario) > 0) {
-                    ultimoCustoMovLote = Number(m.valor_unitario);
+                  if (delta > 0) entradasLote = round4(entradasLote + delta);
+                  if (delta < 0) saidasLote = round4(saidasLote + Math.abs(delta));
+                  if (isSaidaConsumoConsiderada(m)) {
+                    consumoLote = round4(consumoLote + m.quantidade);
+                  }
+                  if (m.valor_unitario !== null && m.valor_unitario > 0) {
+                    ultimoCustoMovLote = m.valor_unitario;
                   }
                 }
               }
 
-              if (!incluirZeros && Math.abs(saldoLote) < 1e-9) continue;
+              saldoLote = round4(saldoLote);
+              if (!incluirZeros && Math.abs(saldoLote) < 1e-6) {
+                qtdExcluidosPorZero++;
+                continue;
+              }
 
-              let custoUnitario: number | null = Number(prod.valor_unitario || prod.custo_unitario || 0);
+              let custoUnitario: number | null = round4(prod.valor_unitario || prod.custo_unitario || 0);
               if (origemCusto === 'movimentacao_lote') {
                 if (ultimoCustoMovLote !== null) {
-                  custoUnitario = ultimoCustoMovLote;
+                  custoUnitario = round4(ultimoCustoMovLote);
                 } else {
                   custoUnitario = null;
                   movsSemCustoHistorico++;
@@ -9379,12 +9643,12 @@ apiRouter.post('/relatorios/dinamico', (req, res) => {
                 tipo_movimentacao: modoSaldo === 'data_referencia' ? 'Posição Histórica (Lote)' : 'Posição Atual (Lote)',
                 documento: '-',
                 saldo_inicial: 0,
-                entradas: entradasLote,
-                saidas: saidasLote,
-                saldo_final: saldoLote,
-                quantidade_consumida: 0,
+                entradas: round4(entradasLote),
+                saidas: round4(saidasLote),
+                saldo_final: round4(saldoLote),
+                quantidade_consumida: round4(consumoLote),
                 custo_unitario: exibirCustos ? custoUnitario : null,
-                valor_total: exibirCustos && custoUnitario !== null ? saldoLote * custoUnitario : null,
+                valor_total: exibirCustos && custoUnitario !== null ? round4(saldoLote * custoUnitario) : null,
               });
             }
           }
@@ -9410,7 +9674,7 @@ apiRouter.post('/relatorios/dinamico', (req, res) => {
       // Filtrar movimentações do período e calcular saldos antes/depois por produto
       const saldoAtualPorProd = new Map<number, number>();
       for (const p of produtosRows) {
-        saldoAtualPorProd.set(Number(p.id), Number(p.quantidade_atual || 0));
+        saldoAtualPorProd.set(Number(p.id), parseDecimal(p.quantidade_atual));
       }
 
       // Reconstruir saldo no início do período e no fim do período para cada produto
@@ -9422,24 +9686,24 @@ apiRouter.post('/relatorios/dinamico', (req, res) => {
         let sIni = sFim;
         for (const m of todasMovimentacoes) {
           if (Number(m.produto_id) !== pid) continue;
-          const dt = String(m.data_movimentacao || '');
+          const dt = m.data_mov_norm;
           const delta = deltaEstoqueMov(m);
           if (dtFimStr && dt > dtFimStr) {
-            sFim -= delta;
+            sFim = round4(sFim - delta);
           }
           if (dtIniStr && dt >= dtIniStr) {
-            sIni -= delta;
+            sIni = round4(sIni - delta);
           } else if (!dtIniStr) {
-            sIni -= delta;
+            sIni = round4(sIni - delta);
           }
         }
-        saldoInicialPeriodoProd.set(pid, sIni);
-        saldoFinalPeriodoProd.set(pid, sFim);
+        saldoInicialPeriodoProd.set(pid, round4(sIni));
+        saldoFinalPeriodoProd.set(pid, round4(sFim));
       }
 
       // Movimentações elegíveis dentro do intervalo de datas e filtros operacionais
       const movsNoPeriodo = todasMovimentacoes.filter((m) => {
-        const dt = String(m.data_movimentacao || '');
+        const dt = m.data_mov_norm;
         if (dtIniStr && dt < dtIniStr) return false;
         if (dtFimStr && dt > dtFimStr) return false;
 
@@ -9470,8 +9734,11 @@ apiRouter.post('/relatorios/dinamico', (req, res) => {
           const prod = mapaProdutos.get(Number(m.produto_id));
           if (!prod) continue;
 
-          const qtd = Number(m.quantidade || 0);
-          if (!incluirZeros && Math.abs(qtd) < 1e-9) continue;
+          const qtd = parseDecimal(m.quantidade);
+          if (!incluirZeros && Math.abs(qtd) < 1e-6) {
+            qtdExcluidosPorZero++;
+            continue;
+          }
 
           const ehSaidaConsumo = isSaidaConsumoConsiderada(m);
           const ehDevEstorno = isDevolucaoOuEstornoSaida(m);
@@ -9490,7 +9757,7 @@ apiRouter.post('/relatorios/dinamico', (req, res) => {
             if (ehSaidaConsumo) {
               qtdConsumidaLinha = qtd;
             } else if (ehDevEstorno) {
-              qtdConsumidaLinha = tratamentoDevolucoes === 'liquido' ? -qtd : 0;
+              qtdConsumidaLinha = tratamentoDevolucoes === 'liquido' ? round4(-qtd) : 0;
             }
           } else {
             // Na base 'movimentacoes', se o tipo for uma saída considerada consumo, informa quantidade consumida
@@ -9499,10 +9766,10 @@ apiRouter.post('/relatorios/dinamico', (req, res) => {
             }
           }
 
-          let custoUnit: number | null = prod.custo_cadastro;
+          let custoUnit: number | null = round4(prod.custo_cadastro);
           if (origemCusto === 'movimentacao_lote') {
-            if (m.valor_unitario !== null && m.valor_unitario !== undefined && Number(m.valor_unitario) > 0) {
-              custoUnit = Number(m.valor_unitario);
+            if (m.valor_unitario !== null && m.valor_unitario > 0) {
+              custoUnit = round4(m.valor_unitario);
             } else {
               custoUnit = null;
               movsSemCustoHistorico++;
@@ -9510,7 +9777,7 @@ apiRouter.post('/relatorios/dinamico', (req, res) => {
           }
 
           const grandezaBaseValor = base === 'consumo_saidas' ? qtdConsumidaLinha : qtd;
-          const valorTotal = custoUnit !== null ? grandezaBaseValor * custoUnit : null;
+          const valorTotal = custoUnit !== null ? round4(grandezaBaseValor * custoUnit) : null;
 
           const docRef =
             m.documento_referencia ||
@@ -9539,14 +9806,14 @@ apiRouter.post('/relatorios/dinamico', (req, res) => {
             validade: m.data_validade ? String(m.data_validade).slice(0, 10) : null,
             centro_custo: String(m.centro_custo_nome || 'Sem Centro de Custo'),
             centro_custo_id: m.centro_custo_id ? Number(m.centro_custo_id) : null,
-            data: String(m.data_movimentacao || '').slice(0, 19),
+            data: m.data_mov_norm,
             tipo_movimentacao: labelTipoMov,
             documento: String(docRef),
-            saldo_inicial: saldoInicialPeriodoProd.get(Number(prod.id)) ?? 0,
-            entradas: entradasLinha,
-            saidas: saidasLinha,
-            saldo_final: saldoFinalPeriodoProd.get(Number(prod.id)) ?? 0,
-            quantidade_consumida: qtdConsumidaLinha,
+            saldo_inicial: round4(saldoInicialPeriodoProd.get(Number(prod.id)) ?? 0),
+            entradas: round4(entradasLinha),
+            saidas: round4(saidasLinha),
+            saldo_final: round4(saldoFinalPeriodoProd.get(Number(prod.id)) ?? 0),
+            quantidade_consumida: round4(qtdConsumidaLinha),
             custo_unitario: exibirCustos ? custoUnit : null,
             valor_total: exibirCustos ? valorTotal : null,
           });
@@ -9577,7 +9844,7 @@ apiRouter.post('/relatorios/dinamico', (req, res) => {
               centros_distintos: new Set<string>(),
               tipos_distintos: new Set<string>(),
               docs_distintos: new Set<string>(),
-              ultima_data: String(m.data_movimentacao || ''),
+              ultima_data: m.data_mov_norm,
               entradas: 0,
               saidas: 0,
               saidas_consumo_bruto: 0,
@@ -9589,7 +9856,7 @@ apiRouter.post('/relatorios/dinamico', (req, res) => {
           }
 
           const item = gruposConsol.get(chave)!;
-          const qtd = Number(m.quantidade || 0);
+          const qtd = parseDecimal(m.quantidade);
           if (m.centro_custo_nome) item.centros_distintos.add(String(m.centro_custo_nome));
 
           const labelTipo =
@@ -9606,25 +9873,25 @@ apiRouter.post('/relatorios/dinamico', (req, res) => {
             (m.numero_nota ? `NF ${m.numero_nota}` : null);
           if (docRef) item.docs_distintos.add(String(docRef));
 
-          if (String(m.data_movimentacao || '') > item.ultima_data) {
-            item.ultima_data = String(m.data_movimentacao || '');
+          if (m.data_mov_norm > item.ultima_data) {
+            item.ultima_data = m.data_mov_norm;
           }
 
           if (m.tipo === 'entrada' || m.tipo === 'estorno_saida') {
-            item.entradas += qtd;
+            item.entradas = round4(item.entradas + qtd);
           } else if (m.tipo === 'saida' || m.tipo === 'estorno_entrada') {
-            item.saidas += qtd;
+            item.saidas = round4(item.saidas + qtd);
           }
 
           if (isSaidaConsumoConsiderada(m)) {
-            item.saidas_consumo_bruto += qtd;
+            item.saidas_consumo_bruto = round4(item.saidas_consumo_bruto + qtd);
           } else if (isDevolucaoOuEstornoSaida(m)) {
-            item.devolucoes_estornos += qtd;
+            item.devolucoes_estornos = round4(item.devolucoes_estornos + qtd);
           }
 
-          if (m.valor_unitario !== null && m.valor_unitario !== undefined && Number(m.valor_unitario) > 0) {
-            item.soma_custo_mov_ponderado += qtd * Number(m.valor_unitario);
-            item.qtd_com_custo_mov += qtd;
+          if (m.valor_unitario !== null && m.valor_unitario > 0) {
+            item.soma_custo_mov_ponderado += qtd * m.valor_unitario;
+            item.qtd_com_custo_mov = round4(item.qtd_com_custo_mov + qtd);
           } else {
             item.faltou_custo_mov = true;
           }
@@ -9661,18 +9928,22 @@ apiRouter.post('/relatorios/dinamico', (req, res) => {
 
         for (const item of gruposConsol.values()) {
           const prod = item.prod;
-          const qtdConsumida =
+          const qtdConsumida = round4(
             tratamentoDevolucoes === 'liquido'
               ? Math.max(0, item.saidas_consumo_bruto - item.devolucoes_estornos)
-              : item.saidas_consumo_bruto;
+              : item.saidas_consumo_bruto
+          );
 
-          const grandezaPrincipal = base === 'consumo_saidas' ? qtdConsumida : item.entradas + item.saidas;
-          if (!incluirZeros && Math.abs(grandezaPrincipal) < 1e-9) continue;
+          const grandezaPrincipal = base === 'consumo_saidas' ? qtdConsumida : round4(item.entradas + item.saidas);
+          if (!incluirZeros && Math.abs(grandezaPrincipal) < 1e-6) {
+            qtdExcluidosPorZero++;
+            continue;
+          }
 
-          let custoUnit: number | null = prod.custo_cadastro;
+          let custoUnit: number | null = round4(prod.custo_cadastro);
           if (origemCusto === 'movimentacao_lote') {
             if (item.qtd_com_custo_mov > 0 && !item.faltou_custo_mov) {
-              custoUnit = item.soma_custo_mov_ponderado / item.qtd_com_custo_mov;
+              custoUnit = round4(item.soma_custo_mov_ponderado / item.qtd_com_custo_mov);
             } else {
               custoUnit = null;
               if (item.faltou_custo_mov) movsSemCustoHistorico++;
@@ -9685,7 +9956,7 @@ apiRouter.post('/relatorios/dinamico', (req, res) => {
               : item.saidas > 0
               ? item.saidas
               : item.entradas;
-          const valorTotal = custoUnit !== null ? qtdBaseValor * custoUnit : null;
+          const valorTotal = custoUnit !== null ? round4(qtdBaseValor * custoUnit) : null;
 
           const ccDisplay =
             agrupamento === 'centro_custo'
@@ -9696,9 +9967,11 @@ apiRouter.post('/relatorios/dinamico', (req, res) => {
               ? `${item.centros_distintos.size} centros de custo`
               : 'Não vinculado';
 
-          // Nota: Saldo inicial e final do produto pertencem ao estoque geral da área, não ao centro de custo específico
-          const saldoIni = agrupamento === 'centro_custo' ? null : (saldoInicialPeriodoProd.get(Number(prod.id)) ?? 0);
-          const saldoFim = agrupamento === 'centro_custo' ? null : (saldoFinalPeriodoProd.get(Number(prod.id)) ?? 0);
+          const saldoIniProd = round4(saldoInicialPeriodoProd.get(Number(prod.id)) ?? 0);
+          const saldoFimProd = round4(saldoFinalPeriodoProd.get(Number(prod.id)) ?? 0);
+          // Saldo inicial/final na coluna visual: null quando agrupado por centro de custo (pois centro de custo não possui estoque próprio), mas preservado em saldo_final_produto para indicadores de estoque da Curva ABC
+          const saldoIni = agrupamento === 'centro_custo' ? null : saldoIniProd;
+          const saldoFim = agrupamento === 'centro_custo' ? null : saldoFimProd;
 
           linhasBrutas.push({
             produto_id: Number(prod.id),
@@ -9715,9 +9988,10 @@ apiRouter.post('/relatorios/dinamico', (req, res) => {
             tipo_movimentacao: Array.from(item.tipos_distintos).join('; ') || '-',
             documento: Array.from(item.docs_distintos).slice(0, 5).join(', ') || '-',
             saldo_inicial: saldoIni,
-            entradas: item.entradas,
-            saidas: item.saidas,
+            entradas: round4(item.entradas),
+            saidas: round4(item.saidas),
             saldo_final: saldoFim,
+            saldo_final_produto: saldoFimProd,
             quantidade_consumida: qtdConsumida,
             custo_unitario: exibirCustos ? custoUnit : null,
             valor_total: exibirCustos ? valorTotal : null,
@@ -9747,26 +10021,28 @@ apiRouter.post('/relatorios/dinamico', (req, res) => {
     const grandezaValor: 'valor_total' | 'custo_unitario' =
       filtros.grandeza_valor === 'custo_unitario' ? 'custo_unitario' : 'valor_total';
 
-    const qtdMin = filtros.qtd_min !== undefined && filtros.qtd_min !== null && String(filtros.qtd_min) !== '' ? Number(filtros.qtd_min) : null;
-    const qtdMax = filtros.qtd_max !== undefined && filtros.qtd_max !== null && String(filtros.qtd_max) !== '' ? Number(filtros.qtd_max) : null;
-    const valMin = filtros.valor_min !== undefined && filtros.valor_min !== null && String(filtros.valor_min) !== '' ? Number(filtros.valor_min) : null;
-    const valMax = filtros.valor_max !== undefined && filtros.valor_max !== null && String(filtros.valor_max) !== '' ? Number(filtros.valor_max) : null;
+    const qtdMin = parseDecimalNullable(filtros.qtd_min);
+    const qtdMax = parseDecimalNullable(filtros.qtd_max);
+    const valMin = parseDecimalNullable(filtros.valor_min);
+    const valMax = parseDecimalNullable(filtros.valor_max);
 
     if (qtdMin !== null || qtdMax !== null || valMin !== null || valMax !== null) {
+      const antesFaixa = linhasBrutas.length;
       linhasBrutas = linhasBrutas.filter((row) => {
-        const vQtd = Number(row[grandezaQuantidade] ?? 0);
-        if (qtdMin !== null && !Number.isNaN(qtdMin) && vQtd < qtdMin) return false;
-        if (qtdMax !== null && !Number.isNaN(qtdMax) && vQtd > qtdMax) return false;
+        const vQtd = parseDecimal(row[grandezaQuantidade] ?? 0);
+        if (qtdMin !== null && vQtd + 1e-6 < qtdMin) return false;
+        if (qtdMax !== null && vQtd - 1e-6 > qtdMax) return false;
 
         if (valMin !== null || valMax !== null) {
           const rawVal = row[grandezaValor];
           if (rawVal === null || rawVal === undefined) return false;
-          const vVal = Number(rawVal);
-          if (valMin !== null && !Number.isNaN(valMin) && vVal < valMin) return false;
-          if (valMax !== null && !Number.isNaN(valMax) && vVal > valMax) return false;
+          const vVal = parseDecimal(rawVal);
+          if (valMin !== null && vVal + 1e-6 < valMin) return false;
+          if (valMax !== null && vVal - 1e-6 > valMax) return false;
         }
         return true;
       });
+      qtdExcluidosPorFaixa = antesFaixa - linhasBrutas.length;
     }
 
     // ========================================================================
@@ -9785,12 +10061,12 @@ apiRouter.post('/relatorios/dinamico', (req, res) => {
         ? 'valor_estoque'
         : 'valor_consumo';
 
-      const pctA = Number(abcConfig.pct_a ?? 80);
-      const pctB = Number(abcConfig.pct_b ?? 15);
-      const pctC = Number(abcConfig.pct_c ?? 5);
-      const somaPct = Math.round((pctA + pctB + pctC) * 100) / 100;
+      const pctA = parseDecimal(abcConfig.pct_a ?? 80);
+      const pctB = parseDecimal(abcConfig.pct_b ?? 15);
+      const pctC = parseDecimal(abcConfig.pct_c ?? 5);
+      const somaPct = round4(pctA + pctB + pctC, 4);
 
-      if (pctA <= 0 || pctB < 0 || pctC < 0 || Math.abs(somaPct - 100) > 0.01) {
+      if (pctA <= 0 || pctB < 0 || pctC < 0 || Math.abs(somaPct - 100) > 0.05) {
         res.status(400).json({
           error: `Os percentuais da Curva ABC (A: ${pctA}%, B: ${pctB}%, C: ${pctC}%) devem somar exatamente 100% (atual: ${somaPct}%).`,
         });
@@ -9798,7 +10074,7 @@ apiRouter.post('/relatorios/dinamico', (req, res) => {
       }
 
       const limiteA = pctA;
-      const limiteB = pctA + pctB;
+      const limiteB = round4(pctA + pctB);
 
       const abrangencia: 'geral' | 'por_agrupamento' =
         abcConfig.abrangencia === 'por_agrupamento' && agrupamento !== 'nenhum'
@@ -9811,33 +10087,43 @@ apiRouter.post('/relatorios/dinamico', (req, res) => {
       const regraEmpate: 'manter_mesma_classe' | 'desempatar_codigo' =
         abcConfig.regra_empate === 'desempatar_codigo' ? 'desempatar_codigo' : 'manter_mesma_classe';
 
-      const classesExibidas: string[] = Array.isArray(abcConfig.classes_exibidas)
-        ? abcConfig.classes_exibidas
-        : ['A', 'B', 'C', 'SC'];
+      const classesExibidas: string[] =
+        Array.isArray(abcConfig.classes_exibidas) && abcConfig.classes_exibidas.length > 0
+          ? abcConfig.classes_exibidas
+          : ['A', 'B', 'C', 'SC'];
 
-      // Helper para extrair o valor do indicador de uma linha
+      // Helper para extrair o valor do indicador de uma linha (protegido contra NaN/Infinity e 4 casas)
       const extrairIndicadorLinha = (row: any): number | null => {
         const prod = mapaProdutos.get(Number(row.produto_id));
         const custoUnit =
           row.custo_unitario !== null && row.custo_unitario !== undefined
-            ? Number(row.custo_unitario)
+            ? parseDecimal(row.custo_unitario)
             : origemCusto === 'cadastro_atual' && prod
-            ? Number(prod.custo_cadastro || 0)
+            ? parseDecimal(prod.custo_cadastro || 0)
             : null;
 
+        const qtdEstoqueBase =
+          row.saldo_final !== null && row.saldo_final !== undefined
+            ? parseDecimal(row.saldo_final)
+            : row.saldo_final_produto !== undefined
+            ? parseDecimal(row.saldo_final_produto)
+            : prod
+            ? parseDecimal(prod.quantidade_atual)
+            : 0;
+
         if (indicador === 'quantidade_consumida') {
-          return Number(row.quantidade_consumida ?? 0);
+          return parseDecimal(row.quantidade_consumida ?? 0);
         }
         if (indicador === 'valor_consumo') {
           if (custoUnit === null) return null;
-          return Number(row.quantidade_consumida ?? 0) * custoUnit;
+          return round4(parseDecimal(row.quantidade_consumida ?? 0) * custoUnit);
         }
         if (indicador === 'quantidade_estoque') {
-          return Number(row.saldo_final ?? 0);
+          return qtdEstoqueBase;
         }
         if (indicador === 'valor_estoque') {
           if (custoUnit === null) return null;
-          return Number(row.saldo_final ?? 0) * custoUnit;
+          return round4(qtdEstoqueBase * custoUnit);
         }
         return 0;
       };
@@ -9857,6 +10143,9 @@ apiRouter.post('/relatorios/dinamico', (req, res) => {
         if (!escoposMap.has(escopo)) escoposMap.set(escopo, []);
         escoposMap.get(escopo)!.push(row);
       }
+
+      let totalItensPositivosAbc = 0;
+      let totalItensSemClassificacaoAbc = 0;
 
       for (const [, rowsDoEscopo] of escoposMap.entries()) {
         // Consolidar indicador por produto_id dentro do escopo
@@ -9882,8 +10171,7 @@ apiRouter.post('/relatorios/dinamico', (req, res) => {
               jaContouEstoque: false,
             });
             if (indicador === 'quantidade_estoque' || indicador === 'valor_estoque') {
-              // Se o detalhamento for produto_lote, soma o estoque de cada lote; se for movimentacao, usa o saldo_final do produto uma única vez
-              if (detalhamento === 'movimentacao') {
+              if (detalhamento === 'movimentacao' || agrupamento === 'centro_custo') {
                 entidadesProd.get(pid)!.jaContouEstoque = true;
               }
             }
@@ -9892,10 +10180,10 @@ apiRouter.post('/relatorios/dinamico', (req, res) => {
             if (valLinha === null || ent.indicador_total === null) {
               ent.indicador_total = null;
             } else {
-              if ((indicador === 'quantidade_estoque' || indicador === 'valor_estoque') && detalhamento === 'movimentacao') {
+              if ((indicador === 'quantidade_estoque' || indicador === 'valor_estoque') && (detalhamento === 'movimentacao' || agrupamento === 'centro_custo')) {
                 // Não soma saldo_final repetido em múltiplas movimentações do mesmo produto
               } else {
-                ent.indicador_total += valLinha;
+                ent.indicador_total = round4(ent.indicador_total + valLinha);
               }
             }
           }
@@ -9908,18 +10196,20 @@ apiRouter.post('/relatorios/dinamico', (req, res) => {
         >();
 
         for (const ent of entidadesProd.values()) {
-          if (ent.indicador_total === null || ent.indicador_total <= 0) {
+          if (ent.indicador_total === null || !Number.isFinite(ent.indicador_total) || ent.indicador_total <= 0) {
+            totalItensSemClassificacaoAbc++;
             resultadoAbcPorProd.set(ent.produto_id, {
               classe_abc: 'SC',
               participacao_abc: null,
               acumulado_abc: null,
-              valor_indicador_abc: ent.indicador_total,
+              valor_indicador_abc: ent.indicador_total !== null && Number.isFinite(ent.indicador_total) ? round4(ent.indicador_total) : null,
             });
           } else {
+            totalItensPositivosAbc++;
             positivas.push({
               produto_id: ent.produto_id,
               codigo: ent.codigo,
-              valor: ent.indicador_total,
+              valor: round4(ent.indicador_total),
             });
           }
         }
@@ -9932,22 +10222,21 @@ apiRouter.post('/relatorios/dinamico', (req, res) => {
           return a.codigo.localeCompare(b.codigo, 'pt-BR', { numeric: true });
         });
 
-        const somaTotalIndicador = positivas.reduce((acc, item) => acc + item.valor, 0);
+        const somaTotalIndicador = round4(positivas.reduce((acc, item) => acc + item.valor, 0));
         let acumPct = 0;
         let ultimoValor: number | null = null;
         let ultimaClasse: 'A' | 'B' | 'C' = 'A';
 
         for (let idx = 0; idx < positivas.length; idx++) {
           const item = positivas[idx];
-          const partPct = somaTotalIndicador > 0 ? (item.valor / somaTotalIndicador) * 100 : 0;
+          const partPct = somaTotalIndicador > 0 ? round4((item.valor / somaTotalIndicador) * 100) : 0;
           const prevAcum = acumPct;
-          acumPct = Math.min(100, acumPct + partPct);
+          acumPct = round4(Math.min(100, acumPct + partPct));
 
           let classeItem: 'A' | 'B' | 'C' = 'C';
           if (regraEmpate === 'manter_mesma_classe' && ultimoValor !== null && Math.abs(item.valor - ultimoValor) <= 1e-9) {
             classeItem = ultimaClasse;
           } else if (regraFronteira === 'incluir_na_atual') {
-            // O item que atinge ou ultrapassa o limite fecha a classe que estava sendo preenchida
             if (prevAcum < limiteA - 1e-7) {
               classeItem = 'A';
             } else if (prevAcum < limiteB - 1e-7) {
@@ -9956,7 +10245,6 @@ apiRouter.post('/relatorios/dinamico', (req, res) => {
               classeItem = 'C';
             }
           } else {
-            // mover_para_seguinte: se o percentual acumulado com o item ultrapassa o limite (exceto quando é o 1º item da classe), passa para a classe seguinte
             if (acumPct <= limiteA + 1e-7 || prevAcum === 0) {
               classeItem = 'A';
             } else if (acumPct <= limiteB + 1e-7) {
@@ -9987,16 +10275,36 @@ apiRouter.post('/relatorios/dinamico', (req, res) => {
         }
       }
 
-      // Filtrar as classes exibidas APÓS o cálculo, sem recalcular os percentuais
-      const setClasses = new Set(classesExibidas.map((c) => String(c).toUpperCase()));
-      linhasBrutas = linhasBrutas.filter((row) => setClasses.has(String(row.classe_abc || 'SC').toUpperCase()));
-
       const LABELS_INDICADOR: Record<string, string> = {
         quantidade_consumida: 'Quantidade Consumida no Período',
         valor_consumo: 'Valor Total do Consumo no Período',
         quantidade_estoque: 'Quantidade em Estoque',
         valor_estoque: 'Valor Total em Estoque',
       };
+
+      if (linhasBrutas.length > 0 && totalItensPositivosAbc === 0) {
+        if (indicador === 'valor_estoque' || indicador === 'valor_consumo') {
+          avisos.push(
+            `Curva ABC sem valores positivos para o indicador "${LABELS_INDICADOR[indicador]}": todos os ${totalItensSemClassificacaoAbc} produto(s) avaliados possuem valor/custo unitário igual a R$ 0,00 ou quantidade zero no período, recebendo classificação "SC" (Sem Classificação). Dica: verifique se os produtos possuem custo unitário cadastrado ou selecione um indicador por Quantidade.`
+          );
+        } else {
+          avisos.push(
+            `Curva ABC sem quantidades positivas para o indicador "${LABELS_INDICADOR[indicador]}": todos os ${totalItensSemClassificacaoAbc} produto(s) avaliados possuem valor zero para este indicador no período selecionado, recebendo classificação "SC" (Sem Classificação).`
+          );
+        }
+      }
+
+      // Filtrar as classes exibidas APÓS o cálculo, sem recalcular os percentuais
+      const setClasses = new Set(classesExibidas.map((c) => String(c).toUpperCase()));
+      const antesFiltroAbc = linhasBrutas.length;
+      linhasBrutas = linhasBrutas.filter((row) => setClasses.has(String(row.classe_abc || 'SC').toUpperCase()));
+      qtdExcluidosPorClasseAbc = antesFiltroAbc - linhasBrutas.length;
+
+      if (antesFiltroAbc > 0 && linhasBrutas.length === 0 && qtdExcluidosPorClasseAbc > 0) {
+        avisos.push(
+          `Atenção: Todos os ${antesFiltroAbc} registro(s) foram ocultados porque pertencem a classes da Curva ABC desmarcadas no filtro de "Classes Exibidas" (atualmente exibindo apenas: ${classesExibidas.join(', ')}). Marque a opção "SC (Zero / Sem Custo)" ou as demais classes A, B e C para visualizá-los.`
+        );
+      }
 
       metadadosAbc = {
         ativa: true,
@@ -10017,7 +10325,44 @@ apiRouter.post('/relatorios/dinamico', (req, res) => {
             ? 'Itens com indicador idêntico permanecem juntos na mesma classe'
             : 'Itens com indicador idêntico são desempatados por ordem crescente de código do produto',
         classes_exibidas: classesExibidas,
+        total_classificados_abc: totalItensPositivosAbc,
+        total_sem_classificacao: totalItensSemClassificacaoAbc,
       };
+    }
+
+    // Diagnóstico explícito quando o relatório resulta em 0 linhas (nunca deixar em branco sem explicação)
+    if (linhasBrutas.length === 0) {
+      if (produtosRows.length === 0) {
+        avisos.push(
+          `Causa do resultado vazio: Não há produtos cadastrados no banco de dados da área ${areaSigla}. Cadastre ou importe produtos antes de gerar o relatório.`
+        );
+      } else if ((base === 'movimentacoes' || base === 'consumo_saidas') && todasMovimentacoes.length === 0) {
+        avisos.push(
+          `Causa do resultado vazio: Não existem movimentações de estoque registradas na área ${areaSigla}.`
+        );
+      } else if (qtdExcluidosPorClasseAbc > 0) {
+        // Aviso específico de classe ABC já adicionado acima
+      } else if (qtdExcluidosPorFaixa > 0) {
+        avisos.push(
+          `Causa do resultado vazio: ${qtdExcluidosPorFaixa} registro(s) foram encontrados, mas todos foram eliminados pelo filtro de Faixas de Quantidade ou Valor configurado.`
+        );
+      } else if (qtdExcluidosPorZero > 0 && !incluirZeros) {
+        avisos.push(
+          `Causa do resultado vazio: Foram encontrados ${qtdExcluidosPorZero} registro(s), porém todos possuem saldo ou quantidade igual a zero e a opção "Incluir registros com saldo ou quantidade zero" está desmarcada.`
+        );
+      } else if (base === 'movimentacoes' || base === 'consumo_saidas') {
+        const perTexto =
+          dataInicio && dataFim
+            ? `no período de ${dataInicio.split('-').reverse().join('/')} a ${dataFim.split('-').reverse().join('/')}`
+            : 'no período informado';
+        avisos.push(
+          `Causa do resultado vazio: Nenhuma movimentação ou saída compatível com os filtros selecionados foi encontrada ${perTexto} na área ${areaSigla}. Verifique o intervalo de datas, os tipos de saída/movimentação e os filtros de catálogo.`
+        );
+      } else {
+        avisos.push(
+          `Causa do resultado vazio: Nenhum produto ou lote atendeu simultaneamente aos filtros selecionados (Grupos, Subgrupos, Produtos, Unidades, Lotes ou Validade).`
+        );
+      }
     }
 
     // ========================================================================
@@ -10066,10 +10411,11 @@ apiRouter.post('/relatorios/dinamico', (req, res) => {
         ? ['codigo', 'descricao', 'unidade', 'centro_custo', 'quantidade_consumida', ...(exibirCustos ? ['custo_unitario', 'valor_total'] : [])]
         : ['data', 'codigo', 'descricao', 'unidade', 'lote', 'tipo_movimentacao', 'centro_custo', 'documento', 'entradas', 'saidas', ...(exibirCustos ? ['custo_unitario', 'valor_total'] : [])];
 
+    // Quando calcularAbc está ativo, garante que as colunas da Curva ABC estejam sempre presentes
     const colunasIdsFinais = Array.from(
       new Set([
         ...(colunasValidas.length > 0 ? colunasValidas : colunasPadrao),
-        ...(calcularAbc && colunasValidas.length === 0 ? ['classe_abc', 'participacao_abc', 'acumulado_abc'] : []),
+        ...(calcularAbc ? ['classe_abc', 'participacao_abc', 'acumulado_abc'] : []),
       ])
     );
 
@@ -10112,9 +10458,9 @@ apiRouter.post('/relatorios/dinamico', (req, res) => {
       let somaSaldoFinal: number | null = null;
 
       if (mesmaUnidade) {
-        somaEntradas = rows.reduce((acc, r) => acc + Number(r.entradas || 0), 0);
-        somaSaidas = rows.reduce((acc, r) => acc + Number(r.saidas || 0), 0);
-        somaConsumo = rows.reduce((acc, r) => acc + Number(r.quantidade_consumida || 0), 0);
+        somaEntradas = round4(rows.reduce((acc, r) => acc + parseDecimal(r.entradas), 0));
+        somaSaidas = round4(rows.reduce((acc, r) => acc + parseDecimal(r.saidas), 0));
+        somaConsumo = round4(rows.reduce((acc, r) => acc + parseDecimal(r.quantidade_consumida), 0));
 
         if (detalhamento === 'movimentacao') {
           // Não duplicar saldo inicial/final de produtos que aparecem em várias movimentações
@@ -10125,8 +10471,8 @@ apiRouter.post('/relatorios/dinamico', (req, res) => {
             const pid = Number(r.produto_id);
             if (!vistos.has(pid)) {
               vistos.add(pid);
-              sIni += Number(r.saldo_inicial || 0);
-              sFim += Number(r.saldo_final || 0);
+              sIni = round4(sIni + parseDecimal(r.saldo_inicial));
+              sFim = round4(sFim + parseDecimal(r.saldo_final));
             }
           }
           somaSaldoInicial = sIni;
@@ -10134,8 +10480,8 @@ apiRouter.post('/relatorios/dinamico', (req, res) => {
         } else {
           const temSaldoValido = rows.some((r) => r.saldo_final !== null && r.saldo_final !== undefined);
           if (temSaldoValido) {
-            somaSaldoInicial = rows.reduce((acc, r) => acc + Number(r.saldo_inicial || 0), 0);
-            somaSaldoFinal = rows.reduce((acc, r) => acc + Number(r.saldo_final || 0), 0);
+            somaSaldoInicial = round4(rows.reduce((acc, r) => acc + parseDecimal(r.saldo_inicial), 0));
+            somaSaldoFinal = round4(rows.reduce((acc, r) => acc + parseDecimal(r.saldo_final), 0));
           }
         }
       }
@@ -10144,7 +10490,7 @@ apiRouter.post('/relatorios/dinamico', (req, res) => {
       if (exibirCustos) {
         const linhasComValor = rows.filter((r) => r.valor_total !== null && r.valor_total !== undefined);
         if (linhasComValor.length > 0) {
-          somaValorTotal = linhasComValor.reduce((acc, r) => acc + Number(r.valor_total || 0), 0);
+          somaValorTotal = round4(linhasComValor.reduce((acc, r) => acc + parseDecimal(r.valor_total), 0));
         }
       }
 
@@ -11054,9 +11400,9 @@ apiRouter.post('/inventarios', (req, res) => {
         `);
 
         for (const it of itens) {
-          const qtdSis = Number(it.quantidade_sistema || 0);
-          const qtdFis = Number(it.quantidade_fisica !== undefined ? it.quantidade_fisica : qtdSis);
-          const dif = qtdFis - qtdSis;
+          const qtdSis = parseDecimal(it.quantidade_sistema);
+          const qtdFis = parseDecimal(it.quantidade_fisica !== undefined ? it.quantidade_fisica : qtdSis);
+          const dif = round4(qtdFis - qtdSis);
 
           insertItem.run(
             invId,
@@ -11166,9 +11512,9 @@ apiRouter.put('/inventarios/:id', (req, res) => {
         `);
 
         for (const it of itens) {
-          const qtdSis = Number(it.quantidade_sistema || 0);
-          const qtdFis = Number(it.quantidade_fisica !== undefined ? it.quantidade_fisica : qtdSis);
-          const dif = qtdFis - qtdSis;
+          const qtdSis = parseDecimal(it.quantidade_sistema);
+          const qtdFis = parseDecimal(it.quantidade_fisica !== undefined ? it.quantidade_fisica : qtdSis);
+          const dif = round4(qtdFis - qtdSis);
 
           insertItem.run(
             invId,
@@ -12057,9 +12403,14 @@ function handleImportacaoProdutosRoute(req: any, res: any) {
         const rawUnd = String(item.unidade || item.unidade_medida || 'UN').trim().toUpperCase() || 'UN';
         const rawLote = item.lote && String(item.lote).trim() ? String(item.lote).trim().toUpperCase() : 'SEM LOTE';
         const rawValidade = item.validade && String(item.validade).trim() ? String(item.validade).trim().slice(0, 10) : null;
-        const saldoNum = item.saldo !== undefined && item.saldo !== null ? Number(item.saldo) : (item.sald !== undefined ? Number(item.sald) : 0);
-        const custoNum = item.custo !== undefined && item.custo !== null ? Number(item.custo) : (item.custo_unitario !== undefined ? Number(item.custo_unitario) : 0);
-        const totalNum = item.total !== undefined && item.total !== null ? Number(item.total) : (item.valor_total !== undefined ? Number(item.valor_total) : (saldoNum * custoNum));
+        const rawSaldoInput = item.saldo !== undefined && item.saldo !== null ? item.saldo : (item.sald !== undefined ? item.sald : 0);
+        const rawCustoInput = item.custo !== undefined && item.custo !== null ? item.custo : (item.custo_unitario !== undefined ? item.custo_unitario : 0);
+        const saldoNum = parseDecimal(rawSaldoInput, 0);
+        const custoNum = parseDecimal(rawCustoInput, 0);
+        const totalNum = item.total !== undefined && item.total !== null ? parseDecimal(item.total) : (item.valor_total !== undefined ? parseDecimal(item.valor_total) : round4(saldoNum * custoNum));
+        if (hadMoreThan4Decimals(rawSaldoInput) || hadMoreThan4Decimals(rawCustoInput)) {
+          avisos.push(`Linha ${i + 1} (${rawCod}): Valores com mais de 4 casas decimais foram arredondados comercialmente para 4 casas (Saldo: ${saldoNum}, Custo: ${custoNum}).`);
+        }
         const fallbackGrupoPadrao = req.body?.grupo_padrao_nome || (areaRow.sigla === 'CAF' ? 'MEDICAMENTOS' : 'ALMOXARIFADO CENTRAL');
         const fallbackSubgrupoPadrao = req.body?.subgrupo_padrao_nome || 'GERAL';
         const rawGrupoNome = String(item.grupo_nome || item.grupo || fallbackGrupoPadrao || '').trim();

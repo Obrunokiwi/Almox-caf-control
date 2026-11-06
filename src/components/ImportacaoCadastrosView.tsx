@@ -28,6 +28,7 @@ import type { Usuario, Produto, Fornecedor, Area, GrupoProduto, SubgrupoProduto 
 import { AutocompleteSelect } from './AutocompleteSelect.tsx';
 import { useToast } from '../context/ToastContext.tsx';
 import { formatDateTimeBrasilia } from '../utils/dateUtils.ts';
+import { round4, parseDecimal } from '../utils/numberUtils.ts';
 
 interface ImportacaoCadastrosViewProps {
   currentUser: Usuario | null;
@@ -95,35 +96,14 @@ function decodeCsvBuffer(buffer: ArrayBuffer): string {
   return text;
 }
 
-// Utilitário para conversão de custo mantendo a precisão decimal original (suporta número, vírgula e ponto)
+// Utilitário centralizado para conversão de custo com arredondamento comercial em até 4 casas decimais (suporta número, vírgula e ponto)
 function parseCustoValue(rawCustoCell: any): number {
-  if (rawCustoCell === undefined || rawCustoCell === null || rawCustoCell === '') return 0;
-  if (typeof rawCustoCell === 'number') return rawCustoCell;
-  let str = String(rawCustoCell).replace('R$', '').trim();
-  // Se contiver tanto ponto quanto vírgula (ex: 1.250,50), ponto é milhar e vírgula é decimal
-  if (str.includes('.') && str.includes(',')) {
-    str = str.replace(/\./g, '').replace(',', '.');
-  } else if (str.includes(',')) {
-    // Apenas vírgula (ex: 1,50 ou 1250,50): vírgula é separador decimal
-    str = str.replace(',', '.');
-  }
-  // Se contiver apenas ponto (ex: 5.25 ou 1250.50): ponto já é decimal legítimo
-  const parsed = parseFloat(str);
-  return isNaN(parsed) ? 0 : parsed;
+  return Math.max(0, round4(parseDecimal(rawCustoCell, 0)));
 }
 
-// Utilitário para conversão de quantidade / saldo (suporta inteiros, decimais, vírgula e ponto)
+// Utilitário centralizado para conversão de quantidade / saldo com arredondamento comercial em até 4 casas decimais (suporta vírgula e ponto)
 function parseSaldoValue(rawSaldoCell: any): number {
-  if (rawSaldoCell === undefined || rawSaldoCell === null || rawSaldoCell === '') return 0;
-  if (typeof rawSaldoCell === 'number') return rawSaldoCell >= 0 ? rawSaldoCell : 0;
-  let str = String(rawSaldoCell).trim();
-  if (str.includes('.') && str.includes(',')) {
-    str = str.replace(/\./g, '').replace(',', '.');
-  } else if (str.includes(',')) {
-    str = str.replace(',', '.');
-  }
-  const parsed = parseFloat(str);
-  return isNaN(parsed) || parsed < 0 ? 0 : parsed;
+  return Math.max(0, round4(parseDecimal(rawSaldoCell, 0)));
 }
 
 // Utilitário para interpretar e normalizar datas de validade (suporta número de série Excel, DD/MM/AAAA, AAAA-MM-DD, MM/AAAA)

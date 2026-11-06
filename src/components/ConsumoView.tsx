@@ -22,6 +22,7 @@ import type { Consumo, ItemConsumo, Produto, LoteEstoque, CentroCusto, Usuario }
 import { SearchableSelect, type SearchableOption } from './SearchableSelect.tsx';
 import { getAuthHeaders } from '../utils/apiUtils.ts';
 import { formatDateTimeBrasilia } from '../utils/dateUtils.ts';
+import { round4, parseDecimal, hasSufficientStock } from '../utils/numberUtils.ts';
 
 interface ConsumoViewProps {
   currentUser: Usuario;
@@ -191,27 +192,33 @@ export const ConsumoView: React.FC<ConsumoViewProps> = ({
         return;
       }
 
-      // Valida saldo disponível no lote
-      const jaAdicionado = itensNovoConsumo
-        .filter((i) => i.lote_id === lote!.id)
-        .reduce((acc, curr) => acc + curr.quantidade, 0);
+      // Valida saldo disponível no lote (com tolerância de 4 casas decimais)
+      const jaAdicionado = round4(
+        itensNovoConsumo
+          .filter((i) => i.lote_id === lote!.id)
+          .reduce((acc, curr) => acc + curr.quantidade, 0)
+      );
 
-      const saldoReal = Number(lote.quantidade_atual) - jaAdicionado;
+      const saldoReal = round4(parseDecimal(lote.quantidade_atual, 0) - jaAdicionado);
+      const qtdNorm = round4(parseDecimal(itemQuantidade, 0));
 
-      if (itemQuantidade > saldoReal) {
-        alert(`Saldo insuficiente neste lote. Disponível: ${saldoReal}, Solicitado: ${itemQuantidade}`);
+      if (!hasSufficientStock(saldoReal, qtdNorm)) {
+        alert(`Saldo insuficiente neste lote. Disponível: ${saldoReal}, Solicitado: ${qtdNorm}`);
         return;
       }
     } else {
-      // Sem lote específico: valida estoque geral do produto
-      const jaAdicionado = itensNovoConsumo
-        .filter((i) => i.produto_id === prod.id && (!i.lote_id || i.lote_id === 0))
-        .reduce((acc, curr) => acc + curr.quantidade, 0);
+      // Sem lote específico: valida estoque geral do produto (com tolerância de 4 casas decimais)
+      const jaAdicionado = round4(
+        itensNovoConsumo
+          .filter((i) => i.produto_id === prod.id && (!i.lote_id || i.lote_id === 0))
+          .reduce((acc, curr) => acc + curr.quantidade, 0)
+      );
 
-      const saldoReal = Number(prod.quantidade_atual || 0) - jaAdicionado;
+      const saldoReal = round4(parseDecimal(prod.quantidade_atual, 0) - jaAdicionado);
+      const qtdNorm = round4(parseDecimal(itemQuantidade, 0));
 
-      if (itemQuantidade > saldoReal) {
-        alert(`Saldo insuficiente no estoque geral do produto. Disponível: ${saldoReal}, Solicitado: ${itemQuantidade}`);
+      if (!hasSufficientStock(saldoReal, qtdNorm)) {
+        alert(`Saldo insuficiente no estoque geral do produto. Disponível: ${saldoReal}, Solicitado: ${qtdNorm}`);
         return;
       }
     }
@@ -224,9 +231,9 @@ export const ConsumoView: React.FC<ConsumoViewProps> = ({
       lote_id: lote ? lote.id : 0,
       numero_lote: lote ? lote.numero_lote : '',
       data_validade: lote ? (lote.data_validade || null) : null,
-      saldo_disponivel: lote ? Number(lote.quantidade_atual) : Number(prod.quantidade_atual || 0),
-      quantidade: itemQuantidade,
-      custo_unitario: Number(prod.valor_unitario || prod.custo_unitario || 0),
+      saldo_disponivel: lote ? round4(lote.quantidade_atual) : round4(prod.quantidade_atual || 0),
+      quantidade: round4(parseDecimal(itemQuantidade, 0)),
+      custo_unitario: round4(prod.valor_unitario || prod.custo_unitario || 0),
     };
 
     setItensNovoConsumo([...itensNovoConsumo, newItem]);
@@ -744,9 +751,9 @@ export const ConsumoView: React.FC<ConsumoViewProps> = ({
                     <input
                       type="number"
                       step="any"
-                      min="0.01"
+                      min="0.0001"
                       value={itemQuantidade}
-                      onChange={(e) => setItemQuantidade(Number(e.target.value))}
+                      onChange={(e) => setItemQuantidade(round4(parseDecimal(e.target.value, 0)))}
                       className="w-full px-2.5 py-1.5 bg-white border border-slate-300 rounded text-xs focus:outline-none focus:border-[#00237D]"
                     />
                   </div>

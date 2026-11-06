@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { Minus, Plus } from 'lucide-react';
+import { round4, parseDecimalNullable } from '../utils/numberUtils.ts';
 
 export interface QuantityStepperProps {
   value: number;
@@ -14,13 +15,11 @@ export interface QuantityStepperProps {
 }
 
 /**
- * Componente robusto de incremento/decremento numérico para computadores e dispositivos móveis.
- * - Suporta digitação direta no campo e uso das setas do teclado (ArrowUp / ArrowDown).
- * - Suporta botões de stepper [-] e [+] com alvo de toque adequado para mobile (touch-manipulation).
- * - Suporta passo inteiro ou decimal conforme a unidade do material.
- * - Valida e limita automaticamente entre o mínimo (0) e o máximo (saldo disponível do lote/estoque).
- * - Mantém sincronizado o estado da tela de dispensação ponderada.
- */
+  * Componente robusto de incremento/decremento numérico para computadores e dispositivos móveis.
+  * - Suporta digitação direta com vírgula ou ponto e arredondamento comercial em até 4 casas decimais.
+  * - Suporta uso das setas do teclado (ArrowUp / ArrowDown) e botões [-] / [+].
+  * - Evita erros de ponto flutuante e respeita o limite mínimo e máximo (saldo disponível).
+  */
 export function QuantityStepper({
   value,
   min = 0,
@@ -32,21 +31,22 @@ export function QuantityStepper({
   className = '',
   size = 'md',
 }: QuantityStepperProps) {
-  const [textValue, setTextValue] = useState<string>(String(value ?? 0));
+  const [textValue, setTextValue] = useState<string>(String(round4(value ?? 0)));
 
-  // Sincroniza valor recebido de props
   useEffect(() => {
-    setTextValue(String(value ?? 0));
+    setTextValue(String(round4(value ?? 0)));
   }, [value]);
 
   const effectiveStep = isFractionable ? (step < 1 ? step : 0.1) : (step || 1);
 
   const clampAndFormat = (val: number): number => {
-    let clamped = Math.max(min, Math.min(max, val));
-    if (!isFractionable) {
+    const safeMin = round4(min);
+    const safeMax = round4(max);
+    let clamped = Math.max(safeMin, Math.min(safeMax, round4(val)));
+    if (!isFractionable && Number.isInteger(safeMax) && Number.isInteger(val)) {
       clamped = Math.round(clamped);
     } else {
-      clamped = Math.round(clamped * 100) / 100;
+      clamped = round4(clamped);
     }
     return clamped;
   };
@@ -58,14 +58,14 @@ export function QuantityStepper({
   };
 
   const handleIncrement = () => {
-    if (disabled || value >= max) return;
-    const next = clampAndFormat(value + effectiveStep);
+    if (disabled || round4(value) >= round4(max)) return;
+    const next = clampAndFormat(round4(value + effectiveStep));
     applyChange(next);
   };
 
   const handleDecrement = () => {
-    if (disabled || value <= min) return;
-    const prev = clampAndFormat(value - effectiveStep);
+    if (disabled || round4(value) <= round4(min)) return;
+    const prev = clampAndFormat(round4(value - effectiveStep));
     applyChange(prev);
   };
 
@@ -73,23 +73,23 @@ export function QuantityStepper({
     const raw = e.target.value;
     setTextValue(raw);
 
-    if (raw === '' || raw === '-') {
-      // Permite o usuário apagar temporariamente para redigitar
+    if (raw === '' || raw === '-' || raw.endsWith(',') || raw.endsWith('.')) {
       return;
     }
 
-    const parsed = parseFloat(raw);
-    if (!isNaN(parsed)) {
+    const parsed = parseDecimalNullable(raw);
+    if (parsed !== null) {
       const clamped = clampAndFormat(parsed);
       onChange(clamped);
     }
   };
 
   const handleBlur = () => {
-    if (textValue === '' || textValue === '-' || isNaN(parseFloat(textValue))) {
+    const parsed = parseDecimalNullable(textValue);
+    if (parsed === null) {
       applyChange(min);
     } else {
-      applyChange(parseFloat(textValue));
+      applyChange(parsed);
     }
   };
 
@@ -105,7 +105,7 @@ export function QuantityStepper({
 
   const isSm = size === 'sm';
   const btnSizeClasses = isSm ? 'w-7 h-7 text-xs' : 'w-8 h-8 text-sm';
-  const inputSizeClasses = isSm ? 'w-14 h-7 text-xs' : 'w-16 h-8 text-xs';
+  const inputSizeClasses = isSm ? 'w-16 h-7 text-xs' : 'w-20 h-8 text-xs';
 
   return (
     <div
@@ -113,11 +113,10 @@ export function QuantityStepper({
         disabled ? 'opacity-60 cursor-not-allowed bg-slate-100' : ''
       } ${className}`}
     >
-      {/* Botão Decrementar (-) para Mobile e Computador */}
       <button
         type="button"
         onClick={handleDecrement}
-        disabled={disabled || value <= min}
+        disabled={disabled || round4(value) <= round4(min)}
         title={`Diminuir quantidade (${-effectiveStep})`}
         aria-label="Diminuir quantidade"
         className={`${btnSizeClasses} flex items-center justify-center text-slate-700 hover:text-slate-900 hover:bg-slate-100 active:bg-slate-200 disabled:opacity-30 disabled:cursor-not-allowed cursor-pointer transition-colors border-r border-slate-200 select-none touch-manipulation`}
@@ -125,26 +124,21 @@ export function QuantityStepper({
         <Minus className={isSm ? 'w-3 h-3' : 'w-3.5 h-3.5'} />
       </button>
 
-      {/* Campo Numérico com suporte a digitação direta e setas */}
       <input
-        type="number"
-        min={min}
-        max={max}
-        step={effectiveStep}
-        inputMode={isFractionable ? 'decimal' : 'numeric'}
+        type="text"
+        inputMode="decimal"
         disabled={disabled}
         value={textValue}
         onChange={handleInputChange}
         onBlur={handleBlur}
         onKeyDown={handleKeyDown}
-        className={`${inputSizeClasses} text-center font-bold font-mono text-slate-800 bg-transparent focus:outline-none focus:bg-teal-50/60 [appearance:textfield] [&::-webkit-outer-spin-button]:opacity-100 [&::-webkit-inner-spin-button]:opacity-100`}
+        className={`${inputSizeClasses} text-center font-bold font-mono text-slate-800 bg-transparent focus:outline-none focus:bg-teal-50/60`}
       />
 
-      {/* Botão Incrementar (+) para Mobile e Computador */}
       <button
         type="button"
         onClick={handleIncrement}
-        disabled={disabled || value >= max}
+        disabled={disabled || round4(value) >= round4(max)}
         title={`Aumentar quantidade (+${effectiveStep})`}
         aria-label="Aumentar quantidade"
         className={`${btnSizeClasses} flex items-center justify-center text-slate-700 hover:text-slate-900 hover:bg-slate-100 active:bg-slate-200 disabled:opacity-30 disabled:cursor-not-allowed cursor-pointer transition-colors border-l border-slate-200 select-none touch-manipulation`}
