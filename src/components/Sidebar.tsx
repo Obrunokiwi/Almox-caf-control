@@ -136,9 +136,9 @@ export const Sidebar: React.FC<SidebarProps> = ({
       id: 'areas',
       label: 'Áreas Operacionais',
       icon: Layers,
-      badge: 'Admin',
+      badge: 'Multi-Área',
       badgeType: 'indigo',
-      roles: ['admin'],
+      roles: ['admin', 'ti_dpo', 'almoxarife'],
     },
     {
       id: 'centros-custo',
@@ -176,7 +176,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
       icon: FileBarChart,
       badge: 'Consulta',
       badgeType: 'blue',
-      roles: ['admin', 'almoxarife'],
+      roles: ['admin', 'ti_dpo', 'almoxarife'],
     },
     {
       id: 'perfil',

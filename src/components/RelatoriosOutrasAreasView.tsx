@@ -11,20 +11,24 @@ import {
   ShieldCheck,
   Calendar,
   Building2,
-  Lock
+  Lock,
+  ArrowLeft
 } from 'lucide-react';
 import type { Area, Usuario } from '../types/index.ts';
+import { getAuthHeaders } from '../utils/apiUtils.ts';
 
 interface RelatoriosOutrasAreasViewProps {
   currentUser: Usuario;
   activeAreaSigla?: string;
   activeAreaNome?: string;
+  onVoltar?: () => void;
 }
 
 export const RelatoriosOutrasAreasView: React.FC<RelatoriosOutrasAreasViewProps> = ({
   currentUser,
   activeAreaSigla = 'CAF',
   activeAreaNome = 'CAF',
+  onVoltar,
 }) => {
   const [permittedAreas, setPermittedAreas] = useState<Area[]>([]);
   const [selectedTargetSigla, setSelectedTargetSigla] = useState<string>('ALM');
@@ -42,18 +46,17 @@ export const RelatoriosOutrasAreasView: React.FC<RelatoriosOutrasAreasViewProps>
   useEffect(() => {
     const fetchPermitted = async () => {
       try {
-        const token = localStorage.getItem('multi_almox_token') || localStorage.getItem('token') || '';
         const res = await fetch('/api/relatorios-outras-areas/areas-permitidas', {
-          headers: {
-            Authorization: `Bearer ${token}`,
-            'X-Area-Sigla': activeAreaSigla,
-          },
+          headers: getAuthHeaders(),
         });
         if (res.ok) {
           const list: Area[] = await res.json();
           setPermittedAreas(list);
           if (list.length > 0) {
-            setSelectedTargetSigla(list[0].sigla);
+            setSelectedTargetSigla((prev) => {
+              if (list.some((a) => a.sigla === prev)) return prev;
+              return list[0].sigla;
+            });
           }
         }
       } catch (err: any) {
@@ -70,11 +73,7 @@ export const RelatoriosOutrasAreasView: React.FC<RelatoriosOutrasAreasViewProps>
     setErrorMsg(null);
 
     try {
-      const token = localStorage.getItem('multi_almox_token') || localStorage.getItem('token') || '';
-      const headers = {
-        Authorization: `Bearer ${token}`,
-        'X-Area-Sigla': activeAreaSigla,
-      };
+      const headers = getAuthHeaders();
 
       if (activeSubTab === 'saldo') {
         const res = await fetch(`/api/relatorios-outras-areas/${selectedTargetSigla}/saldo`, { headers });
@@ -138,44 +137,74 @@ export const RelatoriosOutrasAreasView: React.FC<RelatoriosOutrasAreasViewProps>
 
         {/* Seletor da Área Alvo a Consultar */}
         <div className="flex items-center gap-3">
-          <label className="text-xs font-bold text-slate-600 uppercase tracking-wider">
-            Consultar Área:
-          </label>
-          <select
-            value={selectedTargetSigla}
-            onChange={(e) => setSelectedTargetSigla(e.target.value)}
-            className="px-3 py-1.5 bg-white border border-slate-300 rounded-lg text-xs font-bold text-slate-800 focus:outline-none focus:border-[#00237D]"
-          >
-            {permittedAreas.map((a) => (
-              <option key={a.id} value={a.sigla}>
-                {a.sigla} — {a.nome}
-              </option>
-            ))}
-          </select>
+          {onVoltar && (
+            <button
+              type="button"
+              onClick={onVoltar}
+              className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-semibold rounded-lg transition-colors cursor-pointer"
+            >
+              <ArrowLeft className="w-4 h-4" />
+              <span>Voltar ao Painel</span>
+            </button>
+          )}
 
-          <button
-            type="button"
-            onClick={fetchTargetData}
-            className="p-1.5 text-slate-500 hover:text-slate-800 hover:bg-slate-100 rounded-lg border border-slate-200 transition-colors cursor-pointer"
-            title="Recarregar dados"
-          >
-            <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
-          </button>
+          {permittedAreas.length > 0 && (
+            <>
+              <label className="text-xs font-bold text-slate-600 uppercase tracking-wider">
+                Consultar Área:
+              </label>
+              <select
+                value={selectedTargetSigla}
+                onChange={(e) => setSelectedTargetSigla(e.target.value)}
+                className="px-3 py-1.5 bg-white border border-slate-300 rounded-lg text-xs font-bold text-slate-800 focus:outline-none focus:border-[#00237D]"
+              >
+                {permittedAreas.map((a) => (
+                  <option key={a.id} value={a.sigla}>
+                    {a.sigla} — {a.nome}
+                  </option>
+                ))}
+              </select>
+
+              <button
+                type="button"
+                onClick={fetchTargetData}
+                className="p-1.5 text-slate-500 hover:text-slate-800 hover:bg-slate-100 rounded-lg border border-slate-200 transition-colors cursor-pointer"
+                title="Recarregar dados"
+              >
+                <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
+              </button>
+            </>
+          )}
         </div>
       </div>
+
+      {/* Banner de Aviso quando não há áreas autorizadas */}
+      {permittedAreas.length === 0 && !loading && (
+        <div className="p-4 bg-amber-50 border border-amber-200 rounded-xl text-amber-800 text-xs flex items-start gap-3">
+          <AlertCircle className="w-5 h-5 text-amber-600 shrink-0 mt-0.5" />
+          <div>
+            <div className="font-bold text-sm">Nenhuma outra área configurada para relatórios cruzados</div>
+            <p className="mt-1 text-slate-600">
+              A área da sua sessão ({activeAreaSigla}) não possui nenhuma outra área autorizada para consulta no momento. O Administrador pode configurar o compartilhamento seguro no módulo <strong>Áreas Operacionais</strong> clicando no ícone de gráfico de cada área.
+            </p>
+          </div>
+        </div>
+      )}
 
       {/* Banner de Aviso: MODO CONSULTA */}
-      <div className="p-3.5 bg-blue-50/70 border border-blue-200 rounded-xl text-blue-900 text-xs flex items-center justify-between">
-        <div className="flex items-center gap-2.5">
-          <ShieldCheck className="w-5 h-5 text-blue-700 shrink-0" />
-          <span>
-            <strong>MODO CONSULTA ATIVO:</strong> Exibindo dados de estoque da área{' '}
-            <strong className="underline">
-              {targetAreaObj ? `${targetAreaObj.nome} (${targetAreaObj.sigla})` : selectedTargetSigla}
-            </strong>. Nenhuma alteração ou movimentação é permitida nesta base.
-          </span>
+      {permittedAreas.length > 0 && (
+        <div className="p-3.5 bg-blue-50/70 border border-blue-200 rounded-xl text-blue-900 text-xs flex items-center justify-between">
+          <div className="flex items-center gap-2.5">
+            <ShieldCheck className="w-5 h-5 text-blue-700 shrink-0" />
+            <span>
+              <strong>MODO CONSULTA ATIVO:</strong> Exibindo dados de estoque da área{' '}
+              <strong className="underline">
+                {targetAreaObj ? `${targetAreaObj.nome} (${targetAreaObj.sigla})` : selectedTargetSigla}
+              </strong>. Nenhuma alteração ou movimentação é permitida nesta base.
+            </span>
+          </div>
         </div>
-      </div>
+      )}
 
       {errorMsg && (
         <div className="p-3 bg-rose-50 border border-rose-200 rounded-lg text-rose-700 text-xs flex items-center gap-2">

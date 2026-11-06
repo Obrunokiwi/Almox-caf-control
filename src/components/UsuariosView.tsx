@@ -100,20 +100,20 @@ export function getModuloRestrictionReason(moduloId: string, perfil: PerfilUsuar
     if (moduloId === 'saldo-estoque') return 'Restrito: Requisitantes não possuem acesso ao saldo de estoque';
     if (moduloId === 'kardex') return 'Restrito: Requisitantes não possuem acesso ao Kardex do Produto';
     if (moduloId === 'lista-compras') return 'Restrito: Requisitantes não possuem acesso à Lista de Compras';
-    if (['aprovacao-requisicoes', 'consumo', 'unidades-medida', 'relatorios-outras-areas'].includes(moduloId)) {
+    if (['aprovacao-requisicoes', 'consumo', 'unidades-medida', 'areas', 'relatorios-outras-areas'].includes(moduloId)) {
       return 'Restrito: Exclusivo para Almoxarife e Administrador';
     }
-    if (['backup', 'importacao-cadastros', 'usuarios', 'areas'].includes(moduloId)) {
+    if (['backup', 'importacao-cadastros', 'usuarios'].includes(moduloId)) {
       return 'Restrito: Exclusivo para perfil Administrador';
     }
   }
   if (perfil !== 'admin' && perfil !== 'ti_dpo') {
-    if (['backup', 'importacao-cadastros', 'usuarios', 'areas'].includes(moduloId)) {
+    if (['backup', 'importacao-cadastros', 'usuarios'].includes(moduloId)) {
       return 'Restrito: Exclusivo para perfil Administrador';
     }
   }
   if (perfil !== 'admin' && perfil !== 'ti_dpo' && perfil !== 'almoxarife') {
-    if (['aprovacao-requisicoes', 'consumo', 'kardex', 'lista-compras', 'unidades-medida', 'relatorios-outras-areas'].includes(moduloId)) {
+    if (['aprovacao-requisicoes', 'consumo', 'kardex', 'lista-compras', 'unidades-medida', 'areas', 'relatorios-outras-areas'].includes(moduloId)) {
       return 'Restrito: Exclusivo para Almoxarife e Administrador';
     }
   }

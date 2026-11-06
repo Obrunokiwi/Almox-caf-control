@@ -47,7 +47,7 @@ export const MODULOS_PADRAO_SISTEMA: Record<string, string[]> = {
     'fornecedores', 'produtos', 'saldo-estoque', 'kardex', 'lista-compras',
     'entradas', 'movimentacoes', 'inventario', 'consumo', 'emprestimos',
     'requisicoes', 'aprovacao-requisicoes', 'centros-custo', 'unidades-medida',
-    'relatorios', 'relatorios-outras-areas', 'perfil', 'documentacao'
+    'areas', 'relatorios', 'relatorios-outras-areas', 'perfil', 'documentacao'
   ],
   requisitante: [
     'requisicoes', 'relatorios', 'perfil'
@@ -128,10 +128,10 @@ function attachUserModulesAndAreas(row: any, activeAreaSigla?: string) {
       }
     }
     if (row.perfil !== 'admin' && row.perfil !== 'ti_dpo') {
-      list = list.filter((m) => !['backup', 'importacao-cadastros', 'usuarios', 'areas'].includes(m));
+      list = list.filter((m) => !['backup', 'importacao-cadastros', 'usuarios'].includes(m));
     }
     if (row.perfil !== 'admin' && row.perfil !== 'ti_dpo' && row.perfil !== 'almoxarife') {
-      list = list.filter((m) => !['aprovacao-requisicoes', 'consumo', 'kardex', 'lista-compras', 'unidades-medida'].includes(m));
+      list = list.filter((m) => !['aprovacao-requisicoes', 'consumo', 'kardex', 'lista-compras', 'unidades-medida', 'areas', 'relatorios-outras-areas'].includes(m));
     }
 
     row.modulos = list;

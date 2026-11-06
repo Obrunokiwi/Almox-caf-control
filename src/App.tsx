@@ -25,6 +25,8 @@ import { KardexView } from './components/KardexView.tsx';
 import { ListaComprasView } from './components/ListaComprasView.tsx';
 import { ConsumoView } from './components/ConsumoView.tsx';
 import { UnidadesMedidaView } from './components/UnidadesMedidaView.tsx';
+import { AreasView } from './components/AreasView.tsx';
+import { RelatoriosOutrasAreasView } from './components/RelatoriosOutrasAreasView.tsx';
 import { useToast } from './context/ToastContext.tsx';
 import { Lock } from 'lucide-react';
 import type { 
@@ -771,6 +773,23 @@ export default function App() {
                   currentUser={currentUser}
                   onVoltar={handleReturnToGrid}
                   onNavigate={(tab) => setCurrentTab(tab)}
+                />
+              )}
+
+              {currentTab === 'relatorios-outras-areas' && currentUser && (
+                <RelatoriosOutrasAreasView
+                  currentUser={currentUser}
+                  activeAreaSigla={currentUser?.area_sigla || sessionStorage.getItem('multi_almox_area_sigla') || 'ALM'}
+                  activeAreaNome={currentUser?.area_nome || (currentUser?.area_sigla === 'CAF' ? 'CAF' : 'Almoxarifado')}
+                  onVoltar={handleReturnToGrid}
+                />
+              )}
+
+              {currentTab === 'areas' && currentUser && (
+                <AreasView
+                  currentUser={currentUser}
+                  onRefreshData={loadData}
+                  onVoltar={handleReturnToGrid}
                 />
               )}
 

@@ -224,9 +224,13 @@ function migrateCentralDb(db: DatabaseSync, dbFilePath: string) {
   `);
 
   try {
-    const hasRule = db.prepare('SELECT id FROM area_relatorios_cruzados WHERE area_origem_id = 2 AND area_alvo_id = 1').get();
-    if (!hasRule) {
+    const hasRule21 = db.prepare('SELECT id FROM area_relatorios_cruzados WHERE area_origem_id = 2 AND area_alvo_id = 1').get();
+    if (!hasRule21) {
       db.prepare('INSERT OR IGNORE INTO area_relatorios_cruzados (area_origem_id, area_alvo_id) VALUES (2, 1)').run();
+    }
+    const hasRule12 = db.prepare('SELECT id FROM area_relatorios_cruzados WHERE area_origem_id = 1 AND area_alvo_id = 2').get();
+    if (!hasRule12) {
+      db.prepare('INSERT OR IGNORE INTO area_relatorios_cruzados (area_origem_id, area_alvo_id) VALUES (1, 2)').run();
     }
   } catch {}
 
@@ -1721,6 +1725,52 @@ export function getOrCreateSemLote(produtoId: number, fornecedorId?: number | nu
     lote = targetDb.prepare('SELECT * FROM lotes_estoque WHERE id = ?').get(info.lastInsertRowid);
   }
   return lote;
+}
+
+/**
+ * Gera de forma garantida e atômica o próximo número sequencial para um documento,
+ * encontrando o maior sequencial numérico já existente no banco e incrementando-o.
+ * Se houver colisões residuais, incrementa em loop até encontrar um número livre.
+ */
+export function generateNextDocumentNumber(
+  targetDb: any,
+  tableName: string,
+  columnName: string,
+  prefix: string,
+  padLength: number = 4
+): string {
+  const conn = targetDb || db;
+  const rows = conn.prepare(`
+    SELECT ${columnName} as doc_num FROM ${tableName} WHERE ${columnName} LIKE ?
+  `).all(`${prefix}%`) as Array<{ doc_num: string }>;
+
+  let maxSeq = 0;
+  const existingSet = new Set<string>();
+
+  for (const row of rows) {
+    if (row.doc_num) {
+      existingSet.add(row.doc_num);
+      const parts = row.doc_num.split('-');
+      const lastPart = parts[parts.length - 1];
+      const parsed = parseInt(lastPart, 10);
+      if (!isNaN(parsed) && parsed > maxSeq) {
+        maxSeq = parsed;
+      }
+    }
+  }
+
+  let nextNum = maxSeq + 1;
+  let candidate = `${prefix}${String(nextNum).padStart(padLength, '0')}`;
+
+  while (
+    existingSet.has(candidate) ||
+    conn.prepare(`SELECT 1 FROM ${tableName} WHERE ${columnName} = ?`).get(candidate)
+  ) {
+    nextNum++;
+    candidate = `${prefix}${String(nextNum).padStart(padLength, '0')}`;
+  }
+
+  return candidate;
 }
 
 export function registrarLogAcesso(

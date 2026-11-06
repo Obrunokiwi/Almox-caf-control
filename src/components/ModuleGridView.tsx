@@ -228,9 +228,9 @@ export const ModuleGridView: React.FC<ModuleGridViewProps> = ({
       label: 'Áreas Operacionais',
       descricao: 'Gestão de áreas operacionais independentes (ALM, CAF e novas áreas)',
       icon: Layers,
-      badge: 'Admin',
+      badge: 'Multi-Área',
       badgeColor: 'bg-indigo-600 text-white',
-      allowedRoles: ['admin', 'ti_dpo'],
+      allowedRoles: ['admin', 'ti_dpo', 'almoxarife'],
     },
     {
       id: 'perfil',

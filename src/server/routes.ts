@@ -16,7 +16,8 @@ import {
   resetDatabase, 
   resetOperationalDatabase,
   updateOverdueLoans, 
-  registrarLogAcesso 
+  registrarLogAcesso,
+  generateNextDocumentNumber 
 } from './db.ts';
 import { 
   authenticateRequest, 
@@ -291,8 +292,8 @@ apiRouter.get(['/empresas-unidades', '/unidades'], (_req, res) => {
 
 apiRouter.get('/areas', (req, res) => {
   const user = authenticateRequest(req);
-  if (!user || (user.perfil !== 'admin' && user.perfil !== 'ti_dpo')) {
-    res.status(403).json({ error: 'Acesso restrito a Administradores' });
+  if (!user || (user.perfil !== 'admin' && user.perfil !== 'ti_dpo' && user.perfil !== 'almoxarife')) {
+    res.status(403).json({ error: 'Acesso restrito a Administradores e Almoxarifes' });
     return;
   }
 
@@ -641,14 +642,16 @@ apiRouter.post('/consumos', (req, res) => {
   const areaSigla = ((req as any).areaSigla || user.area_sigla || 'ALM').toUpperCase();
   const year = new Date().getFullYear();
 
-  const countCons = db.prepare(`
-    SELECT COUNT(*) as count FROM consumos WHERE numero_consumo LIKE ?
-  `).get(`CONS-${areaSigla}-${year}-%`) as { count: number };
-  const nextSeq = String((countCons?.count || 0) + 1).padStart(4, '0');
-  const numero_consumo = `CONS-${areaSigla}-${year}-${nextSeq}`;
-
   try {
     const result = runInTransaction(() => {
+      const numero_consumo = generateNextDocumentNumber(
+        db,
+        'consumos',
+        'numero_consumo',
+        `CONS-${areaSigla}-${year}-`,
+        4
+      );
+
       // 1. Dados desnormalizados do centro de custo
       const cc = db.prepare('SELECT nome, codigo FROM centros_custo WHERE id = ?').get(Number(centro_custo_id)) as any;
       const ccNome = cc ? cc.nome : null;
@@ -859,6 +862,11 @@ function checkCrossAreaAuthorization(user: UserSession | null, targetSigla: stri
     return { allowed: true, status: 200, message: 'OK', targetSiglaNorm };
   }
 
+  // Administrador e TI têm permissão universal para consultar dados consolidados de qualquer área
+  if (user.perfil === 'admin' || user.perfil === 'ti_dpo' || user.id === 1 || user.login === 'admin') {
+    return { allowed: true, status: 200, message: 'OK', targetSiglaNorm };
+  }
+
   const central = getCentralDb();
   const originArea = central.prepare('SELECT id FROM areas WHERE UPPER(sigla) = ? AND ativa = 1').get(originSigla) as { id: number } | undefined;
   const targetArea = central.prepare('SELECT id FROM areas WHERE UPPER(sigla) = ? AND ativa = 1').get(targetSiglaNorm) as { id: number } | undefined;
@@ -894,12 +902,23 @@ apiRouter.get('/relatorios-outras-areas/areas-permitidas', (req, res) => {
     const currentArea = central.prepare('SELECT id FROM areas WHERE UPPER(sigla) = ?').get(areaSigla) as any;
     const currentAreaId = currentArea ? currentArea.id : 1;
 
-    const targetAreas = central.prepare(`
-      SELECT a.id, a.sigla, a.nome, a.arquivo_db, a.descricao
-      FROM area_relatorios_cruzados rc
-      JOIN areas a ON rc.area_alvo_id = a.id
-      WHERE rc.area_origem_id = ? AND a.ativa = 1
-    `).all(currentAreaId);
+    let targetAreas: any[] = [];
+    if (user.perfil === 'admin' || user.perfil === 'ti_dpo' || user.id === 1 || user.login === 'admin') {
+      targetAreas = central.prepare(`
+        SELECT a.id, a.sigla, a.nome, a.arquivo_db, a.descricao
+        FROM areas a
+        WHERE a.id != ? AND a.ativa = 1
+        ORDER BY a.id ASC
+      `).all(currentAreaId);
+    } else {
+      targetAreas = central.prepare(`
+        SELECT a.id, a.sigla, a.nome, a.arquivo_db, a.descricao
+        FROM area_relatorios_cruzados rc
+        JOIN areas a ON rc.area_alvo_id = a.id
+        WHERE rc.area_origem_id = ? AND a.ativa = 1
+        ORDER BY a.id ASC
+      `).all(currentAreaId);
+    }
 
     res.json(targetAreas);
   } catch (err: any) {
@@ -2003,10 +2022,10 @@ apiRouter.get('/usuarios', (req, res) => {
       mods = mods.filter((m) => !['saldo-estoque', 'aprovacao-requisicoes', 'backup', 'importacao-cadastros', 'usuarios', 'areas', 'consumo', 'kardex', 'lista-compras', 'unidades-medida', 'relatorios-outras-areas'].includes(m));
     }
     if (userRole !== 'admin' && userRole !== 'ti_dpo') {
-      mods = mods.filter((m) => !['backup', 'importacao-cadastros', 'usuarios', 'areas'].includes(m));
+      mods = mods.filter((m) => !['backup', 'importacao-cadastros', 'usuarios'].includes(m));
     }
     if (userRole !== 'admin' && userRole !== 'ti_dpo' && userRole !== 'almoxarife') {
-      mods = mods.filter((m) => !['aprovacao-requisicoes', 'consumo', 'kardex', 'lista-compras', 'unidades-medida', 'relatorios-outras-areas'].includes(m));
+      mods = mods.filter((m) => !['aprovacao-requisicoes', 'consumo', 'kardex', 'lista-compras', 'unidades-medida', 'areas', 'relatorios-outras-areas'].includes(m));
     }
 
     const areasUser = (userAreaStmt.all(u.id) as any[]) || [];
@@ -2098,10 +2117,10 @@ apiRouter.post('/usuarios', (req, res) => {
         modsToSave = modsToSave.filter((m) => !['saldo-estoque', 'aprovacao-requisicoes', 'backup', 'importacao-cadastros', 'usuarios', 'areas', 'consumo', 'kardex', 'lista-compras', 'unidades-medida', 'relatorios-outras-areas'].includes(m));
       }
       if (perfil !== 'admin' && perfil !== 'ti_dpo') {
-        modsToSave = modsToSave.filter((m) => !['backup', 'importacao-cadastros', 'usuarios', 'areas'].includes(m));
+        modsToSave = modsToSave.filter((m) => !['backup', 'importacao-cadastros', 'usuarios'].includes(m));
       }
       if (perfil !== 'admin' && perfil !== 'ti_dpo' && perfil !== 'almoxarife') {
-        modsToSave = modsToSave.filter((m) => !['aprovacao-requisicoes', 'consumo', 'kardex', 'lista-compras', 'unidades-medida', 'relatorios-outras-areas'].includes(m));
+        modsToSave = modsToSave.filter((m) => !['aprovacao-requisicoes', 'consumo', 'kardex', 'lista-compras', 'unidades-medida', 'areas', 'relatorios-outras-areas'].includes(m));
       }
 
       const insertModStmt = central.prepare('INSERT OR IGNORE INTO usuario_modulos (usuario_id, modulo_chave) VALUES (?, ?)');
@@ -2223,10 +2242,10 @@ apiRouter.put('/usuarios/:id', (req, res) => {
           modsToSave = modsToSave.filter((m) => !['saldo-estoque', 'aprovacao-requisicoes', 'backup', 'importacao-cadastros', 'usuarios', 'areas', 'consumo', 'kardex', 'lista-compras', 'unidades-medida', 'relatorios-outras-areas'].includes(m));
         }
         if (effectivePerfil !== 'admin' && effectivePerfil !== 'ti_dpo') {
-          modsToSave = modsToSave.filter((m) => !['backup', 'importacao-cadastros', 'usuarios', 'areas'].includes(m));
+          modsToSave = modsToSave.filter((m) => !['backup', 'importacao-cadastros', 'usuarios'].includes(m));
         }
         if (effectivePerfil !== 'admin' && effectivePerfil !== 'ti_dpo' && effectivePerfil !== 'almoxarife') {
-          modsToSave = modsToSave.filter((m) => !['aprovacao-requisicoes', 'consumo', 'kardex', 'lista-compras', 'unidades-medida', 'relatorios-outras-areas'].includes(m));
+          modsToSave = modsToSave.filter((m) => !['aprovacao-requisicoes', 'consumo', 'kardex', 'lista-compras', 'unidades-medida', 'areas', 'relatorios-outras-areas'].includes(m));
         }
 
         central.prepare('DELETE FROM usuario_modulos WHERE usuario_id = ?').run(id);
@@ -5125,117 +5144,135 @@ apiRouter.post('/requisicoes', (req, res) => {
     return;
   }
 
-  // Gera número da requisição: REQ-${areaSigla}-${year}-${nextSeq}
   const areaSigla = ((req as any).areaSigla || user.area_sigla || 'ALM').toUpperCase();
   const year = new Date().getFullYear();
-  const countRow = db.prepare(`
-    SELECT COUNT(*) as count FROM requisicoes WHERE numero_requisicao LIKE ?
-  `).get(`REQ-${areaSigla}-${year}-%`) as { count: number };
-  const nextSeq = String((countRow?.count || 0) + 1).padStart(4, '0');
-  const numero_requisicao = `REQ-${areaSigla}-${year}-${nextSeq}`;
 
   try {
-    const result = runInTransaction(() => {
-      // 1. Cria cabeçalho da requisição (status = 'pendente', prioridade inicial 'normal' definida pelo almoxarifado)
-      const prioridadeInicial =
-        (user.perfil === 'admin' || user.perfil === 'almoxarife') && prioridade === 'urgente'
-          ? 'urgente'
-          : 'normal';
+    let result: any = null;
+    let attempts = 0;
+    const maxAttempts = 5;
 
-      const cc = db.prepare('SELECT nome, codigo FROM centros_custo WHERE id = ?').get(Number(finalCcId)) as any;
-      const ccNome = cc ? cc.nome : null;
-      const ccCodigo = cc ? cc.codigo : null;
+    while (attempts < maxAttempts) {
+      attempts++;
+      try {
+        result = runInTransaction(() => {
+          // Gera número da requisição sequencial garantido e sem colisão
+          const numero_requisicao = generateNextDocumentNumber(
+            db,
+            'requisicoes',
+            'numero_requisicao',
+            `REQ-${areaSigla}-${year}-`,
+            4
+          );
 
-      const reqStmt = db.prepare(`
-        INSERT INTO requisicoes (
-          numero_requisicao, centro_custo_id, centro_custo_nome, centro_custo_codigo,
-          solicitante_id, solicitante_nome, prioridade, status, observacao
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, 'aguardando_atendimento', ?)
-      `);
-      const reqInfo = reqStmt.run(
-        numero_requisicao,
-        finalCcId,
-        ccNome,
-        ccCodigo,
-        user.id,
-        user.nome,
-        prioridadeInicial,
-        observacao ? observacao.trim() : null
-      );
-      const requisicaoId = reqInfo.lastInsertRowid;
+          // 1. Cria cabeçalho da requisição (status = 'pendente', prioridade inicial 'normal' definida pelo almoxarifado)
+          const prioridadeInicial =
+            (user.perfil === 'admin' || user.perfil === 'almoxarife') && prioridade === 'urgente'
+              ? 'urgente'
+              : 'normal';
 
-      const horaAtual = new Date().getHours();
-      const regraEntregaTexto =
-        horaAtual < 12
-          ? 'Solicitada até as 12h: Entrega prevista no mesmo dia à tarde (após as 13h).'
-          : 'Solicitada após as 12h: Entrega prevista para o dia seguinte (após as 13h).';
+          const cc = db.prepare('SELECT nome, codigo FROM centros_custo WHERE id = ?').get(Number(finalCcId)) as any;
+          const ccNome = cc ? cc.nome : null;
+          const ccCodigo = cc ? cc.codigo : null;
 
-      // Registra abertura no histórico de auditoria da requisição
-      const histStmt = db.prepare(`
-        INSERT INTO historico_requisicoes (
-          requisicao_id, item_requisicao_id, produto_id, usuario_id, acao,
-          status_anterior, status_novo, quantidade_solicitada, quantidade_atendida,
-          detalhes, justificativa
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `);
+          const reqStmt = db.prepare(`
+            INSERT INTO requisicoes (
+              numero_requisicao, centro_custo_id, centro_custo_nome, centro_custo_codigo,
+              solicitante_id, solicitante_nome, prioridade, status, observacao
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, 'aguardando_atendimento', ?)
+          `);
+          const reqInfo = reqStmt.run(
+            numero_requisicao,
+            finalCcId,
+            ccNome,
+            ccCodigo,
+            user.id,
+            user.nome,
+            prioridadeInicial,
+            observacao ? observacao.trim() : null
+          );
+          const requisicaoId = reqInfo.lastInsertRowid;
 
-      histStmt.run(
-        requisicaoId,
-        null,
-        null,
-        user.id,
-        'criacao_requisicao',
-        null,
-        'aguardando_atendimento',
-        null,
-        null,
-        `Requisição ${numero_requisicao} aberta por ${user.nome} (${user.perfil.toUpperCase()}) contendo ${itens.length} item(ns). ${regraEntregaTexto}`,
-        observacao ? observacao.trim() : null
-      );
+          const horaAtual = new Date().getHours();
+          const regraEntregaTexto =
+            horaAtual < 12
+              ? 'Solicitada até as 12h: Entrega prevista no mesmo dia à tarde (após as 13h).'
+              : 'Solicitada após as 12h: Entrega prevista para o dia seguinte (após as 13h).';
 
-      // 2. Insere itens
-      const itemStmt = db.prepare(`
-        INSERT INTO itens_requisicao (requisicao_id, produto_id, quantidade_solicitada, quantidade_atendida, status_item)
-        VALUES (?, ?, ?, 0, 'pendente')
-      `);
+          // Registra abertura no histórico de auditoria da requisição
+          const histStmt = db.prepare(`
+            INSERT INTO historico_requisicoes (
+              requisicao_id, item_requisicao_id, produto_id, usuario_id, acao,
+              status_anterior, status_novo, quantidade_solicitada, quantidade_atendida,
+              detalhes, justificativa
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          `);
 
-      for (const it of itens) {
-        const qtd = parseDecimal(it.quantidade_solicitada);
-        if (!it.produto_id || !qtd || qtd <= 0) {
-          throw new Error('Cada item deve conter um produto válido e quantidade maior que zero');
+          histStmt.run(
+            requisicaoId,
+            null,
+            null,
+            user.id,
+            'criacao_requisicao',
+            null,
+            'aguardando_atendimento',
+            null,
+            null,
+            `Requisição ${numero_requisicao} aberta por ${user.nome} (${user.perfil.toUpperCase()}) contendo ${itens.length} item(ns). ${regraEntregaTexto}`,
+            observacao ? observacao.trim() : null
+          );
+
+          // 2. Insere itens
+          const itemStmt = db.prepare(`
+            INSERT INTO itens_requisicao (requisicao_id, produto_id, quantidade_solicitada, quantidade_atendida, status_item)
+            VALUES (?, ?, ?, 0, 'pendente')
+          `);
+
+          for (const it of itens) {
+            const qtd = parseDecimal(it.quantidade_solicitada);
+            if (!it.produto_id || !qtd || qtd <= 0) {
+              throw new Error('Cada item deve conter um produto válido e quantidade maior que zero');
+            }
+
+            // Valida se o produto existe e é consumível
+            const prod = db.prepare('SELECT id, codigo, nome, unidade_medida, tipo, ativo FROM produtos WHERE id = ?').get(it.produto_id) as any;
+            if (!prod || !prod.ativo) {
+              throw new Error(`Produto #${it.produto_id} não encontrado ou inativo`);
+            }
+            if (prod.tipo !== 'consumivel') {
+              throw new Error(`O produto "${prod.nome}" é um equipamento não consumível. Para ferramentas/equipamentos, utilize o módulo de Empréstimos.`);
+            }
+
+            const itemInfo = itemStmt.run(requisicaoId, it.produto_id, qtd);
+
+            histStmt.run(
+              requisicaoId,
+              itemInfo.lastInsertRowid,
+              it.produto_id,
+              user.id,
+              'inclusao_item',
+              null,
+              'pendente',
+              qtd,
+              0,
+              `Item incluído na requisição: ${prod.codigo} - ${prod.nome} (${qtd} ${prod.unidade_medida}).`,
+              null
+            );
+          }
+
+          return {
+            id: requisicaoId,
+            numero_requisicao,
+          };
+        });
+        break; // Sucesso na criação!
+      } catch (innerErr: any) {
+        if (innerErr?.message?.includes('UNIQUE constraint failed') && attempts < maxAttempts) {
+          continue; // Tenta o próximo número sequencial vago
         }
-
-        // Valida se o produto existe e é consumível
-        const prod = db.prepare('SELECT id, codigo, nome, unidade_medida, tipo, ativo FROM produtos WHERE id = ?').get(it.produto_id) as any;
-        if (!prod || !prod.ativo) {
-          throw new Error(`Produto #${it.produto_id} não encontrado ou inativo`);
-        }
-        if (prod.tipo !== 'consumivel') {
-          throw new Error(`O produto "${prod.nome}" é um equipamento não consumível. Para ferramentas/equipamentos, utilize o módulo de Empréstimos.`);
-        }
-
-        const itemInfo = itemStmt.run(requisicaoId, it.produto_id, qtd);
-
-        histStmt.run(
-          requisicaoId,
-          itemInfo.lastInsertRowid,
-          it.produto_id,
-          user.id,
-          'inclusao_item',
-          null,
-          'pendente',
-          qtd,
-          0,
-          `Item incluído na requisição: ${prod.codigo} - ${prod.nome} (${qtd} ${prod.unidade_medida}).`,
-          null
-        );
+        throw innerErr;
       }
-
-      return {
-        id: requisicaoId,
-        numero_requisicao,
-      };
-    });
+    }
 
     res.status(201).json({
       message: 'Requisição cadastrada com sucesso com status Pendente',
@@ -6303,12 +6340,17 @@ apiRouter.post('/emprestimos', (req, res) => {
   }
 
   const year = new Date().getFullYear();
-  const countRow = db.prepare(`SELECT COUNT(*) as count FROM emprestimos WHERE codigo_emprestimo LIKE ?`).get(`EMP-${year}-%`) as { count: number };
-  const nextSeq = String(countRow.count + 1).padStart(4, '0');
-  const codigo_emprestimo = `EMP-${year}-${nextSeq}`;
 
   try {
     const result = runInTransaction(() => {
+      const codigo_emprestimo = generateNextDocumentNumber(
+        db,
+        'emprestimos',
+        'codigo_emprestimo',
+        `EMP-${year}-`,
+        4
+      );
+
       const prod = db.prepare('SELECT * FROM produtos WHERE id = ? AND ativo = 1').get(produto_id) as any;
       if (!prod) {
         throw new Error('Produto não encontrado ou inativo');
@@ -6671,13 +6713,19 @@ apiRouter.post('/emprestimos-institucionais', (req, res) => {
     : new Date().toISOString().replace('T', ' ').slice(0, 19);
 
   const year = new Date().getFullYear();
-  const prefix = tipo === 'recebido' ? `EMP-REC-${year}` : `EMP-CON-${year}`;
-  const countRow = db.prepare(`SELECT COUNT(*) as count FROM emprestimos_institucionais WHERE numero_documento LIKE ?`).get(`${prefix}-%`) as { count: number };
-  const nextSeq = String(countRow.count + 1).padStart(4, '0');
-  const numero_documento = `${prefix}-${nextSeq}`;
+  const prefix = tipo === 'recebido' ? `EMP-REC-${year}-` : `EMP-CON-${year}-`;
+  let numero_documento = '';
 
   try {
     const createdLoan = runInTransaction(() => {
+      numero_documento = generateNextDocumentNumber(
+        db,
+        'emprestimos_institucionais',
+        'numero_documento',
+        prefix,
+        4
+      );
+
       const entidade = db.prepare('SELECT * FROM fornecedores WHERE id = ?').get(Number(entidade_id)) as any;
       if (!entidade) {
         throw new Error('Entidade parceira / fornecedor selecionado não foi encontrado no banco de dados');
@@ -11990,19 +12038,20 @@ apiRouter.post('/lista-compras', (req, res) => {
   const areaSigla = ((req as any).areaSigla || user.area_sigla || 'ALM').toUpperCase();
   const year = new Date().getFullYear();
 
-  const countRow = db.prepare(`
-    SELECT COUNT(*) as count FROM listas_reposicao WHERE numero_documento LIKE ?
-  `).get(`LREP-${areaSigla}-${year}-%`) as { count: number };
-
-  const nextSeq = String((countRow?.count || 0) + 1).padStart(4, '0');
-  const numero_documento = `LREP-${areaSigla}-${year}-${nextSeq}`;
-
   const dtIniStr = data_inicio ? String(data_inicio).trim() : new Date().toISOString().slice(0, 10);
   const dtFimStr = data_fim ? String(data_fim).trim() : new Date().toISOString().slice(0, 10);
   const finalStatus = status === 'FECHADA' ? 'FECHADA' : 'RASCUNHO';
 
   try {
     const result = runInTransaction(() => {
+      const numero_documento = generateNextDocumentNumber(
+        db,
+        'listas_reposicao',
+        'numero_documento',
+        `LREP-${areaSigla}-${year}-`,
+        4
+      );
+
       const insHeader = db.prepare(`
         INSERT INTO listas_reposicao (
           numero_documento, area_sigla, data_inicio, data_fim, grupo_id, status, observacao, usuario_id, usuario_nome

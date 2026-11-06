@@ -208,7 +208,7 @@ export const MODULOS_PADRAO_PERFIL: Record<PerfilUsuario, ModuloChave[]> = {
   almoxarife: [
     'fornecedores', 'produtos', 'saldo-estoque', 'kardex', 'lista-compras', 'entradas', 'movimentacoes',
     'inventario', 'consumo', 'emprestimos', 'requisicoes', 'aprovacao-requisicoes',
-    'centros-custo', 'unidades-medida', 'relatorios', 'relatorios-outras-areas', 'perfil', 'documentacao'
+    'centros-custo', 'unidades-medida', 'areas', 'relatorios', 'relatorios-outras-areas', 'perfil', 'documentacao'
   ],
   requisitante: [
     'requisicoes', 'relatorios', 'perfil'

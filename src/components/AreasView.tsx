@@ -13,21 +13,26 @@ import {
   Copy,
   Info,
   Building2,
-  FileBarChart
+  FileBarChart,
+  ArrowLeft
 } from 'lucide-react';
 import type { Area, Usuario } from '../types/index.ts';
+import { getAuthHeaders } from '../utils/apiUtils.ts';
 
 interface AreasViewProps {
   currentUser: Usuario;
   onRefreshData?: () => void;
+  onVoltar?: () => void;
 }
 
-export const AreasView: React.FC<AreasViewProps> = ({ currentUser, onRefreshData }) => {
+export const AreasView: React.FC<AreasViewProps> = ({ currentUser, onRefreshData, onVoltar }) => {
   const [areas, setAreas] = useState<Area[]>([]);
   const [loading, setLoading] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
   const [searchTerm, setSearchTerm] = useState('');
+
+  const isAdmin = currentUser?.perfil === 'admin' || currentUser?.perfil === 'ti_dpo' || currentUser?.id === 1 || currentUser?.login === 'admin';
 
   // Modais
   const [isNewModalOpen, setIsNewModalOpen] = useState(false);
@@ -54,9 +59,7 @@ export const AreasView: React.FC<AreasViewProps> = ({ currentUser, onRefreshData
     setLoading(true);
     try {
       const res = await fetch('/api/areas', {
-        headers: {
-          Authorization: `Bearer ${localStorage.getItem('token') || ''}`,
-        },
+        headers: getAuthHeaders(),
       });
       if (!res.ok) {
         throw new Error('Falha ao carregar áreas operacionais.');
@@ -86,10 +89,7 @@ export const AreasView: React.FC<AreasViewProps> = ({ currentUser, onRefreshData
     try {
       const res = await fetch('/api/areas', {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${localStorage.getItem('token') || ''}`,
-        },
+        headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify({
           sigla: newSigla.trim().toUpperCase(),
           nome: newNome.trim(),
@@ -125,10 +125,7 @@ export const AreasView: React.FC<AreasViewProps> = ({ currentUser, onRefreshData
     try {
       const res = await fetch(`/api/areas/${editingArea.id}`, {
         method: 'PUT',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${localStorage.getItem('token') || ''}`,
-        },
+        headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify({
           nome: editNome.trim(),
           descricao: editDescricao.trim(),
@@ -159,9 +156,7 @@ export const AreasView: React.FC<AreasViewProps> = ({ currentUser, onRefreshData
     try {
       const res = await fetch(`/api/areas/${area.id}/status`, {
         method: 'PATCH',
-        headers: {
-          Authorization: `Bearer ${localStorage.getItem('token') || ''}`,
-        },
+        headers: getAuthHeaders(),
       });
 
       const data = await res.json();
@@ -182,7 +177,7 @@ export const AreasView: React.FC<AreasViewProps> = ({ currentUser, onRefreshData
     setErrorMsg(null);
     try {
       const res = await fetch(`/api/areas/${area.id}/relatorios-cruzados`, {
-        headers: { Authorization: `Bearer ${localStorage.getItem('token') || ''}` },
+        headers: getAuthHeaders(),
       });
       if (res.ok) {
         const data = await res.json();
@@ -202,10 +197,7 @@ export const AreasView: React.FC<AreasViewProps> = ({ currentUser, onRefreshData
     try {
       const res = await fetch(`/api/areas/${crossReportArea.id}/relatorios-cruzados`, {
         method: 'PUT',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${localStorage.getItem('token') || ''}`,
-        },
+        headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify({
           area_alvo_ids: selectedTargetIds,
         }),
@@ -254,6 +246,17 @@ export const AreasView: React.FC<AreasViewProps> = ({ currentUser, onRefreshData
         </div>
 
         <div className="flex items-center gap-2">
+          {onVoltar && (
+            <button
+              type="button"
+              onClick={onVoltar}
+              className="flex items-center gap-1.5 px-3 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-semibold rounded-lg transition-colors cursor-pointer"
+            >
+              <ArrowLeft className="w-4 h-4" />
+              <span>Voltar ao Painel</span>
+            </button>
+          )}
+
           <button
             type="button"
             onClick={fetchAreas}
@@ -263,14 +266,16 @@ export const AreasView: React.FC<AreasViewProps> = ({ currentUser, onRefreshData
             <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
           </button>
 
-          <button
-            type="button"
-            onClick={() => setIsNewModalOpen(true)}
-            className="flex items-center gap-1.5 px-3.5 py-2 bg-[#00237D] hover:bg-[#001c66] text-white text-xs font-semibold rounded-lg shadow-sm transition-all cursor-pointer"
-          >
-            <Plus className="w-4 h-4" />
-            <span>Nova Área</span>
-          </button>
+          {isAdmin && (
+            <button
+              type="button"
+              onClick={() => setIsNewModalOpen(true)}
+              className="flex items-center gap-1.5 px-3.5 py-2 bg-[#00237D] hover:bg-[#001c66] text-white text-xs font-semibold rounded-lg shadow-sm transition-all cursor-pointer"
+            >
+              <Plus className="w-4 h-4" />
+              <span>Nova Área</span>
+            </button>
+          )}
         </div>
       </div>
 
@@ -393,42 +398,48 @@ export const AreasView: React.FC<AreasViewProps> = ({ currentUser, onRefreshData
                     )}
                   </td>
                   <td className="px-4 py-3 text-right space-x-1">
-                    <button
-                      type="button"
-                      onClick={() => handleOpenCrossReports(area)}
-                      className="p-1.5 text-slate-600 hover:text-blue-700 hover:bg-blue-50 rounded transition-colors cursor-pointer"
-                      title="Configurar Relatórios Cruzados"
-                    >
-                      <FileBarChart className="w-4 h-4 inline" />
-                    </button>
+                    {isAdmin ? (
+                      <>
+                        <button
+                          type="button"
+                          onClick={() => handleOpenCrossReports(area)}
+                          className="p-1.5 text-slate-600 hover:text-blue-700 hover:bg-blue-50 rounded transition-colors cursor-pointer"
+                          title="Configurar Relatórios Cruzados"
+                        >
+                          <FileBarChart className="w-4 h-4 inline" />
+                        </button>
 
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setEditingArea(area);
-                        setEditNome(area.nome);
-                        setEditDescricao(area.descricao || '');
-                        setIsEditModalOpen(true);
-                      }}
-                      className="p-1.5 text-slate-600 hover:text-[#00237D] hover:bg-slate-100 rounded transition-colors cursor-pointer"
-                      title="Editar Área"
-                    >
-                      <Edit2 className="w-4 h-4 inline" />
-                    </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setEditingArea(area);
+                            setEditNome(area.nome);
+                            setEditDescricao(area.descricao || '');
+                            setIsEditModalOpen(true);
+                          }}
+                          className="p-1.5 text-slate-600 hover:text-[#00237D] hover:bg-slate-100 rounded transition-colors cursor-pointer"
+                          title="Editar Área"
+                        >
+                          <Edit2 className="w-4 h-4 inline" />
+                        </button>
 
-                    {area.sigla !== 'ALM' && area.sigla !== 'CAF' && (
-                      <button
-                        type="button"
-                        onClick={() => handleToggleStatus(area)}
-                        className={`p-1.5 rounded transition-colors cursor-pointer ${
-                          area.ativa
-                            ? 'text-rose-600 hover:bg-rose-50'
-                            : 'text-emerald-600 hover:bg-emerald-50'
-                        }`}
-                        title={area.ativa ? 'Desativar Área' : 'Ativar Área'}
-                      >
-                        <Power className="w-4 h-4 inline" />
-                      </button>
+                        {area.sigla !== 'ALM' && area.sigla !== 'CAF' && (
+                          <button
+                            type="button"
+                            onClick={() => handleToggleStatus(area)}
+                            className={`p-1.5 rounded transition-colors cursor-pointer ${
+                              area.ativa
+                                ? 'text-rose-600 hover:bg-rose-50'
+                                : 'text-emerald-600 hover:bg-emerald-50'
+                            }`}
+                            title={area.ativa ? 'Desativar Área' : 'Ativar Área'}
+                          >
+                            <Power className="w-4 h-4 inline" />
+                          </button>
+                        )}
+                      </>
+                    ) : (
+                      <span className="text-[11px] text-slate-400 italic">Somente leitura</span>
                     )}
                   </td>
                 </tr>
