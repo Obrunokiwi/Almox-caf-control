@@ -49,11 +49,11 @@
 }
 
 .animate-slide-left {
-  animation: slideInLeft 0.28s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+  animation: slideInLeft 0.25s cubic-bezier(0.16, 1, 0.3, 1);
 }
 
 .animate-slide-right {
-  animation: slideInRight 0.28s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+  animation: slideInRight 0.25s cubic-bezier(0.16, 1, 0.3, 1);
 }
 
 @layer base {

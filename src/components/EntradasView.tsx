@@ -804,9 +804,9 @@ export const EntradasView: React.FC<EntradasViewProps> = ({
   }
 
   return (
-    <div className="space-y-6">
+    <div className="flex-1 flex flex-col gap-4 w-full min-h-[calc(100vh-104px)]">
       {/* Cabeçalho Compacto */}
-      <div className="bg-white px-4 py-3 rounded-xl border border-slate-200 shadow-sm flex flex-wrap items-center justify-between gap-3">
+      <div className="bg-white px-5 py-3.5 rounded-xl border border-slate-200 shadow-sm flex flex-wrap items-center justify-between gap-3 shrink-0">
         <div className="flex items-center gap-3">
           <div className="p-2 bg-teal-100 text-teal-800 rounded-lg">
             <PackagePlus className="w-5 h-5" />
@@ -814,7 +814,7 @@ export const EntradasView: React.FC<EntradasViewProps> = ({
           <div>
             <h1 className="text-lg font-bold text-slate-800 tracking-tight">Entrada de Estoque por Nota Fiscal</h1>
             <p className="text-xs text-slate-500">
-              Gestão por Documento Fiscal: Abertura, Conferência, Correção e Fechamento com Imutabilidade
+              Gestão por Documento Fiscal: Abertura, Conferência, Correção, Fechamento e Reabertura Auditada
             </p>
           </div>
         </div>
@@ -872,8 +872,13 @@ export const EntradasView: React.FC<EntradasViewProps> = ({
         />
       )}
 
-      {/* Top Action Bar: + NOVA NOTA FISCAL e 🔍 FILTROS */}
-      <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm flex flex-wrap items-center justify-between gap-3">
+      {/* ========================================================================= */}
+      {/* 1. VISÃO DE LISTAGEM (EXIBIDA QUANDO NÃO ESTÁ CRIANDO NEM VENDO DETALHE)  */}
+      {/* ========================================================================= */}
+      {!isNewNotaOpen && !(selectedNotaId && detalheNota) && (
+        <div className="flex-1 flex flex-col gap-4">
+          {/* Top Action Bar: + NOVA NOTA FISCAL e 🔍 FILTROS */}
+          <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm flex flex-wrap items-center justify-between gap-3 shrink-0">
         <div className="flex items-center gap-2">
           <div className="p-2 bg-teal-50 text-teal-800 rounded-lg">
             <PackagePlus className="w-5 h-5" />
@@ -1009,8 +1014,8 @@ export const EntradasView: React.FC<EntradasViewProps> = ({
       )}
 
       {/* Grid de Notas Fiscais Agrupadas por Nota (A.1) */}
-      <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
-        <div className="overflow-x-auto">
+      <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden flex-1 flex flex-col justify-between">
+        <div className="overflow-x-auto flex-1">
           <table className="w-full text-left text-xs">
             <thead className="bg-slate-100 text-slate-700 font-bold uppercase tracking-wider border-b border-slate-200">
               <tr>
@@ -1179,18 +1184,19 @@ export const EntradasView: React.FC<EntradasViewProps> = ({
           </div>
         </div>
       </div>
+        </div>
+      )}
 
       {/* ========================================================================= */}
-      {/* MODAL DE DETALHE / EDIÇÃO DA NOTA FISCAL (A.2, A.3, A.4)                 */}
+      {/* 2. PAINEL EM TELA CHEIA: DETALHE / EDIÇÃO / REABERTURA DA NOTA FISCAL     */}
       {/* ========================================================================= */}
       {selectedNotaId && detalheNota && (
-        <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-2 sm:p-4 animate-fadeIn">
-          <div className="bg-white rounded-2xl border border-slate-200 shadow-2xl w-full max-w-5xl max-h-[92vh] overflow-hidden flex flex-col">
-            {/* Cabeçalho do Modal */}
-            <div className="px-5 py-3.5 bg-slate-50 border-b border-slate-200 flex items-center justify-between shrink-0">
+        <div className="w-full flex-1 flex flex-col bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden animate-fadeIn">
+            {/* Cabeçalho do Painel de Detalhes */}
+            <div className="px-6 py-4 bg-slate-50 border-b border-slate-200 flex flex-wrap items-center justify-between gap-3 shrink-0">
               <div className="flex items-center gap-3">
                 <div
-                  className={`p-2 rounded-lg ${
+                  className={`p-2.5 rounded-xl ${
                     detalheNota.situacao === 'FECHADA'
                       ? 'bg-emerald-100 text-emerald-800'
                       : 'bg-amber-100 text-amber-800'
@@ -1199,16 +1205,16 @@ export const EntradasView: React.FC<EntradasViewProps> = ({
                   <FileText className="w-5 h-5" />
                 </div>
                 <div>
-                  <div className="flex items-center gap-2">
+                  <div className="flex items-center gap-2.5">
                     <h2 className="text-base font-bold text-slate-900">
                       Nota Fiscal: {detalheNota.numero_documento}
                     </h2>
                     {detalheNota.situacao === 'FECHADA' ? (
-                      <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-100 text-emerald-800 border border-emerald-300">
+                      <span className="px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-emerald-100 text-emerald-800 border border-emerald-300">
                         FECHADA (Somente Leitura)
                       </span>
                     ) : (
-                      <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-100 text-amber-800 border border-amber-300">
+                      <span className="px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-amber-100 text-amber-800 border border-amber-300">
                         ABERTA (Editável)
                       </span>
                     )}
@@ -1223,24 +1229,25 @@ export const EntradasView: React.FC<EntradasViewProps> = ({
                 <button
                   type="button"
                   onClick={() => handleGerarPdfNota(detalheNota, 'print')}
-                  className="px-3 py-1.5 text-xs font-semibold text-teal-800 bg-teal-50 hover:bg-teal-100 rounded border border-teal-200 inline-flex items-center gap-1.5 cursor-pointer"
+                  className="px-3.5 py-2 text-xs font-semibold text-teal-800 bg-teal-50 hover:bg-teal-100 rounded-lg border border-teal-200 inline-flex items-center gap-1.5 cursor-pointer"
                 >
-                  <Printer className="w-3.5 h-3.5" />
+                  <Printer className="w-4 h-4" />
                   <span>Imprimir PDF</span>
                 </button>
 
                 <button
                   type="button"
                   onClick={() => setSelectedNotaId(null)}
-                  className="p-1 text-slate-400 hover:text-slate-700 rounded-lg hover:bg-slate-100 cursor-pointer"
+                  className="px-3.5 py-2 text-xs font-semibold text-slate-700 bg-white hover:bg-slate-100 rounded-lg border border-slate-300 inline-flex items-center gap-1.5 cursor-pointer"
                 >
-                  <X className="w-5 h-5" />
+                  <ArrowLeft className="w-4 h-4" />
+                  <span>Voltar para Listagem</span>
                 </button>
               </div>
             </div>
 
-            {/* Conteúdo com rolagem interna */}
-            <div className="p-5 space-y-5 overflow-y-auto flex-1 min-h-0 text-xs">
+            {/* Conteúdo ocupando toda a largura da área de trabalho */}
+            <div className="p-6 space-y-6 flex-1 text-xs">
               {validationError && (
                 <div className="p-3 bg-rose-50 border border-rose-300 rounded-lg text-rose-800 flex items-start gap-2">
                   <AlertCircle className="w-4 h-4 text-rose-600 shrink-0 mt-0.5" />
@@ -1793,50 +1800,50 @@ export const EntradasView: React.FC<EntradasViewProps> = ({
                   <button
                     type="button"
                     onClick={() => setSelectedNotaId(null)}
-                    className="px-4 py-2 bg-white border border-slate-300 rounded text-xs font-semibold text-slate-700 hover:bg-slate-100 cursor-pointer"
+                    className="px-4 py-2 bg-white border border-slate-300 rounded text-xs font-semibold text-slate-700 hover:bg-slate-100 inline-flex items-center gap-1.5 cursor-pointer"
                   >
-                    Fechar Janela
+                    <ArrowLeft className="w-4 h-4" />
+                    <span>Voltar para Listagem</span>
                   </button>
                 )}
               </div>
             </div>
-          </div>
         </div>
       )}
 
       {/* ========================================================================= */}
-      {/* MODAL DE CRIAÇÃO DE NOVA NOTA FISCAL (COM MÚLTIPLOS ITENS E AUTOCOMPLETE) */}
+      {/* 3. PAINEL EM TELA CHEIA: CRIAÇÃO DE NOVA NOTA FISCAL                      */}
       {/* ========================================================================= */}
       {isNewNotaOpen && (
-        <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-2 sm:p-4 animate-fadeIn">
-          <div className="bg-white rounded-2xl border border-slate-200 shadow-2xl w-full max-w-5xl max-h-[92vh] overflow-hidden flex flex-col">
-            <div className="px-5 py-3.5 bg-slate-50 border-b border-slate-200 flex items-center justify-between shrink-0">
-              <div className="flex items-center gap-2.5">
-                <div className="p-2 bg-teal-100 text-teal-800 rounded-lg">
-                  <PackagePlus className="w-5 h-5" />
-                </div>
-                <div>
-                  <h2 className="text-base font-bold text-slate-900">Registrar Entrada por Nota Fiscal</h2>
-                  <p className="text-xs text-slate-500">
-                    Abertura da Nota Fiscal com lote, validade e múltiplos itens no Código Único de Estoque
-                  </p>
-                </div>
+        <div className="w-full flex-1 flex flex-col bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden animate-fadeIn">
+          <div className="px-6 py-4 bg-slate-50 border-b border-slate-200 flex flex-wrap items-center justify-between gap-3 shrink-0">
+            <div className="flex items-center gap-3">
+              <div className="p-2.5 bg-teal-100 text-teal-800 rounded-xl">
+                <PackagePlus className="w-5 h-5" />
               </div>
-
-              <button
-                type="button"
-                onClick={() => {
-                  setIsNewNotaOpen(false);
-                  if (setIsCreateModalOpen) setIsCreateModalOpen(false);
-                }}
-                className="p-1 text-slate-400 hover:text-slate-700 rounded-lg hover:bg-slate-100 cursor-pointer"
-              >
-                <X className="w-5 h-5" />
-              </button>
+              <div>
+                <h2 className="text-base font-bold text-slate-900">Registrar Entrada por Nota Fiscal</h2>
+                <p className="text-xs text-slate-500">
+                  Abertura da Nota Fiscal com lote, validade e múltiplos itens no Código Único de Estoque
+                </p>
+              </div>
             </div>
 
-            <form onSubmit={handleSalvarNovaNota} className="flex-1 min-h-0 flex flex-col overflow-hidden text-xs">
-              <div className="flex-1 min-h-0 overflow-y-auto p-4 sm:p-5 space-y-4">
+            <button
+              type="button"
+              onClick={() => {
+                setIsNewNotaOpen(false);
+                if (setIsCreateModalOpen) setIsCreateModalOpen(false);
+              }}
+              className="px-3.5 py-2 text-xs font-semibold text-slate-700 bg-white hover:bg-slate-100 rounded-lg border border-slate-300 inline-flex items-center gap-1.5 cursor-pointer"
+            >
+              <ArrowLeft className="w-4 h-4" />
+              <span>Voltar para Listagem</span>
+            </button>
+          </div>
+
+          <form onSubmit={handleSalvarNovaNota} className="flex-1 flex flex-col justify-between text-xs">
+            <div className="flex-1 p-6 space-y-5">
               {/* Banner de Rascunho Detectado */}
               <FormDraftResumeBanner
                 hasDraft={draft.hasDraft}
@@ -1849,9 +1856,9 @@ export const EntradasView: React.FC<EntradasViewProps> = ({
                 formTitle="lançamento de nota fiscal"
               />
 
-              {/* Cabeçalho */}
-              <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-4 bg-slate-50/70 p-4 rounded-xl border border-slate-200">
-                <div>
+              {/* Cabeçalho em largura total */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-12 gap-4 bg-slate-50/70 p-4 rounded-xl border border-slate-200">
+                <div className="lg:col-span-2">
                   <label className="block text-[11px] font-bold text-slate-600 uppercase tracking-wider mb-1">
                     Número da NF / Documento *
                   </label>
@@ -1865,7 +1872,7 @@ export const EntradasView: React.FC<EntradasViewProps> = ({
                   />
                 </div>
 
-                <div className="md:col-span-2">
+                <div className="lg:col-span-4">
                   <label className="block text-[11px] font-bold text-slate-600 uppercase tracking-wider mb-1">
                     Fornecedor / Entidade Homologada *
                   </label>
@@ -1877,9 +1884,9 @@ export const EntradasView: React.FC<EntradasViewProps> = ({
                   />
                 </div>
 
-                <div>
+                <div className="lg:col-span-3">
                   <label className="block text-[11px] font-bold text-slate-600 uppercase tracking-wider mb-1">
-                    Centro de Custo (Local de Estocagem)
+                    Centro de Custo (Local de Estocagem) *
                   </label>
                   <SearchableSelect
                     options={centrosCustoOptions}
@@ -1889,7 +1896,7 @@ export const EntradasView: React.FC<EntradasViewProps> = ({
                   />
                 </div>
 
-                <div className="md:col-span-2">
+                <div className="lg:col-span-3">
                   <label className="block text-[11px] font-bold text-slate-600 uppercase tracking-wider mb-1">
                     Observações de Recebimento
                   </label>
@@ -2229,8 +2236,7 @@ export const EntradasView: React.FC<EntradasViewProps> = ({
                   </button>
                 </div>
               </div>
-            </form>
-          </div>
+          </form>
         </div>
       )}
 
