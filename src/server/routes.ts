@@ -3950,7 +3950,7 @@ function obterQuantidadeConsumidaLote(
   if (loteId && Number(loteId) > 0) {
     row = db.prepare(`
       SELECT
-        COALESCE(SUM(CASE WHEN tipo = 'saida' AND COALESCE(estornado, 0) = 0 THEN quantidade ELSE 0 END), 0) -
+        COALESCE(SUM(CASE WHEN tipo = 'saida' THEN quantidade ELSE 0 END), 0) -
         COALESCE(SUM(CASE WHEN tipo = 'estorno_saida' THEN quantidade ELSE 0 END), 0) AS consumido_liquido
       FROM movimentacoes
       WHERE produto_id = ? AND lote_id = ?
@@ -3958,7 +3958,7 @@ function obterQuantidadeConsumidaLote(
   } else if (loteNumNorm && loteNumNorm !== 'SEM LOTE' && loteNumNorm !== 'LOTE-PADRAO') {
     row = db.prepare(`
       SELECT
-        COALESCE(SUM(CASE WHEN tipo = 'saida' AND COALESCE(estornado, 0) = 0 THEN quantidade ELSE 0 END), 0) -
+        COALESCE(SUM(CASE WHEN tipo = 'saida' THEN quantidade ELSE 0 END), 0) -
         COALESCE(SUM(CASE WHEN tipo = 'estorno_saida' THEN quantidade ELSE 0 END), 0) AS consumido_liquido
       FROM movimentacoes
       WHERE produto_id = ? AND UPPER(TRIM(COALESCE(numero_lote, ''))) = ?
@@ -4102,7 +4102,6 @@ apiRouter.get('/notas-fiscais', (req, res) => {
           WHERE m.nota_fiscal_id = nf.id
             AND m.tipo = 'entrada'
             AND COALESCE(m.motivo_diverso, '') NOT IN ('Entrada corrigida (estornada)', 'Entrada corrigida (item removido)')
-            AND COALESCE(m.estornado, 0) = 0
         ) as total_itens,
         (
           SELECT COALESCE(SUM(m.quantidade * COALESCE(m.valor_unitario, 0)), 0)
@@ -4110,7 +4109,6 @@ apiRouter.get('/notas-fiscais', (req, res) => {
           WHERE m.nota_fiscal_id = nf.id
             AND m.tipo = 'entrada'
             AND COALESCE(m.motivo_diverso, '') NOT IN ('Entrada corrigida (estornada)', 'Entrada corrigida (item removido)')
-            AND COALESCE(m.estornado, 0) = 0
         ) as valor_total
       FROM notas_fiscais nf
       LEFT JOIN fornecedores f ON nf.fornecedor_id = f.id
@@ -4228,7 +4226,6 @@ apiRouter.get('/notas-fiscais/:id', (req, res) => {
       WHERE m.nota_fiscal_id = ?
         AND m.tipo = 'entrada'
         AND COALESCE(m.motivo_diverso, '') NOT IN ('Entrada corrigida (estornada)', 'Entrada corrigida (item removido)')
-        AND COALESCE(m.estornado, 0) = 0
       ORDER BY m.id ASC
     `).all(id) as any[];
 
@@ -4350,7 +4347,6 @@ apiRouter.put('/notas-fiscais/:id', (req, res) => {
       WHERE m.nota_fiscal_id = ?
         AND m.tipo = 'entrada'
         AND COALESCE(m.motivo_diverso, '') NOT IN ('Entrada corrigida (estornada)', 'Entrada corrigida (item removido)')
-        AND COALESCE(m.estornado, 0) = 0
     `).all(id) as any[];
 
     const idsAtivosSet = new Set(itensAtuais.map((a) => Number(a.movimentacao_id)));

@@ -55,6 +55,10 @@ export function useFormDraft<T extends Record<string, any>>({
   }, [modulo]);
 
   useEffect(() => {
+    loadDraft();
+  }, [loadDraft]);
+
+  useEffect(() => {
     if (isOpen) {
       isDiscardingRef.current = false;
       loadDraft();
@@ -95,6 +99,7 @@ export function useFormDraft<T extends Record<string, any>>({
         setDraftStatus('salvo');
         setLastSaved(now);
         setDraftDate(now.toISOString());
+        setDraftData(formData);
         setHasDraft(true);
         lastSerializedDataRef.current = JSON.stringify(formData);
 

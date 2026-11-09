@@ -131,7 +131,7 @@ export const EntradasView: React.FC<EntradasViewProps> = ({
   // Filtros de busca da tela
   const [filtroDoc, setFiltroDoc] = useState('');
   const [filtroProduto, setFiltroProduto] = useState('');
-  const [filtroSituacao, setFiltroSituacao] = useState<'todas' | 'ABERTA' | 'FECHADA'>('todas');
+  const [filtroSituacao, setFiltroSituacao] = useState<'todas' | 'RASCUNHO' | 'ABERTA' | 'FECHADA'>('todas');
   const [isFilterOpen, setIsFilterOpen] = useState(false);
 
   const activeFiltersCount = useMemo(() => {
@@ -267,8 +267,8 @@ export const EntradasView: React.FC<EntradasViewProps> = ({
     draft.scheduleAutoSave,
   ]);
 
-  const handleSalvarRascunhoManual = () => {
-    draft.saveDraft(
+  const handleSalvarRascunhoManual = async () => {
+    const ok = await draft.saveDraft(
       {
         newNotaDoc,
         newNotaFornecedorId,
@@ -279,7 +279,47 @@ export const EntradasView: React.FC<EntradasViewProps> = ({
       },
       true
     );
+    if (ok) {
+      setIsNewNotaOpen(false);
+      if (setIsCreateModalOpen) setIsCreateModalOpen(false);
+    }
   };
+
+  const handleContinuarRascunho = () => {
+    const data = draft.draftData;
+    if (data) {
+      setNewNotaDoc(typeof data.newNotaDoc === 'string' ? data.newNotaDoc : '');
+      setNewNotaFornecedorId(typeof data.newNotaFornecedorId === 'number' ? data.newNotaFornecedorId : 0);
+      setNewNotaCentroCustoId(typeof data.newNotaCentroCustoId === 'number' ? data.newNotaCentroCustoId : 0);
+      setNewNotaObservacao(typeof data.newNotaObservacao === 'string' ? data.newNotaObservacao : '');
+      if (Array.isArray(data.newNotaItens) && data.newNotaItens.length > 0) {
+        setNewNotaItens(data.newNotaItens);
+        const firstId = data.newNotaItens[0]?.tempId;
+        setExpandedItemIds(data.expandedItemIds || (firstId ? { [firstId]: true } : {}));
+      }
+    }
+    setIsNewNotaOpen(true);
+    if (setIsCreateModalOpen) setIsCreateModalOpen(true);
+  };
+
+  const hasSavedDraft = useMemo(() => {
+    const d = draft.draftData;
+    if (!d) return false;
+    return (
+      (typeof d.newNotaDoc === 'string' && d.newNotaDoc.trim().length > 0) ||
+      (typeof d.newNotaFornecedorId === 'number' && d.newNotaFornecedorId > 0) ||
+      (typeof d.newNotaCentroCustoId === 'number' && d.newNotaCentroCustoId > 0) ||
+      (typeof d.newNotaObservacao === 'string' && d.newNotaObservacao.trim().length > 0) ||
+      (Array.isArray(d.newNotaItens) &&
+        d.newNotaItens.some(
+          (it) =>
+            it.produto_id > 0 ||
+            (it.numero_lote && it.numero_lote.trim().length > 0) ||
+            Number(it.quantidade) > 0 ||
+            Number(it.valor_total) > 0
+        ))
+    );
+  }, [draft.draftData]);
 
   // Preview de PDF
   const [pdfPreviewDoc, setPdfPreviewDoc] = useState<PdfGeneratedDocument | null>(null);
@@ -301,7 +341,9 @@ export const EntradasView: React.FC<EntradasViewProps> = ({
       const params = new URLSearchParams();
       if (filtroDoc.trim()) params.append('busca', filtroDoc.trim());
       if (filtroProduto.trim()) params.append('produto_busca', filtroProduto.trim());
-      if (filtroSituacao !== 'todas') params.append('situacao', filtroSituacao);
+      if (filtroSituacao !== 'todas' && filtroSituacao !== 'RASCUNHO') {
+        params.append('situacao', filtroSituacao);
+      }
 
       const res = await fetch(`/api/notas-fiscais?${params.toString()}`, {
         headers: getAuthHeaders(),
@@ -387,6 +429,7 @@ export const EntradasView: React.FC<EntradasViewProps> = ({
 
   const situacaoOptions: SearchableOption[] = [
     { value: 'todas', label: 'Todas as Situações' },
+    { value: 'RASCUNHO', label: 'RASCUNHO (Salvo / Em Preenchimento)', badge: 'Rascunho', badgeVariant: 'info' },
     { value: 'ABERTA', label: 'ABERTA (Em Conferência / Editável)', badge: 'Aberta', badgeVariant: 'warning' },
     { value: 'FECHADA', label: 'FECHADA (Concluída / Bloqueada)', badge: 'Fechada', badgeVariant: 'regular' },
   ];
@@ -1029,6 +1072,81 @@ export const EntradasView: React.FC<EntradasViewProps> = ({
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-200">
+              {/* Linha de Rascunho Salvo (quando existente) */}
+              {hasSavedDraft &&
+                draft.draftData &&
+                currentPage === 1 &&
+                (filtroSituacao === 'todas' || filtroSituacao === 'RASCUNHO') && (() => {
+                  const d = draft.draftData;
+                  const forn = fornecedores.find((f) => f.id === Number(d.newNotaFornecedorId));
+                  const qtdItensPreenchidos = Array.isArray(d.newNotaItens)
+                    ? d.newNotaItens.filter(
+                        (it) =>
+                          it.produto_id > 0 ||
+                          (it.numero_lote && it.numero_lote.trim().length > 0) ||
+                          Number(it.quantidade) > 0
+                      ).length || d.newNotaItens.length
+                    : 0;
+
+                  return (
+                    <tr
+                      onClick={handleContinuarRascunho}
+                      className="bg-amber-50/70 hover:bg-amber-100/70 transition-colors cursor-pointer border-l-4 border-l-amber-500"
+                    >
+                      <td className="py-2.5 px-3 text-amber-900 font-mono text-[11px]">
+                        {draft.draftDate ? formatBrasiliaDateTime(draft.draftDate) : 'Em preenchimento'}
+                      </td>
+                      <td className="py-2.5 px-3 font-mono font-bold text-slate-900">
+                        <div className="flex items-center gap-1.5">
+                          <FileText className="w-3.5 h-3.5 text-amber-600" />
+                          <span>{d.newNotaDoc?.trim() || 'RASCUNHO (Sem nº NF)'}</span>
+                        </div>
+                      </td>
+                      <td className="py-2.5 px-3 font-medium text-slate-800 max-w-xs truncate">
+                        <div>{forn ? `${forn.codigo} - ${forn.nome_fantasia || forn.razao_social}` : 'Fornecedor em definição...'}</div>
+                        {forn?.cnpj && (
+                          <div className="text-[10px] text-slate-500 font-mono">CNPJ: {forn.cnpj}</div>
+                        )}
+                      </td>
+                      <td className="py-2.5 px-3 text-center font-bold text-slate-700">
+                        <span className="px-2 py-0.5 rounded-full bg-white text-amber-900 border border-amber-300">
+                          {qtdItensPreenchidos} item(ns)
+                        </span>
+                      </td>
+                      <td className="py-2.5 px-3 text-slate-700 font-medium">
+                        {currentUser?.nome || 'Operador Atual'}
+                      </td>
+                      <td className="py-2.5 px-3 text-center">
+                        <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-amber-200/80 text-amber-900 border border-amber-400">
+                          RASCUNHO
+                        </span>
+                      </td>
+                      <td className="py-2.5 px-3 text-right whitespace-nowrap" onClick={(e) => e.stopPropagation()}>
+                        <div className="inline-flex items-center justify-end gap-1.5">
+                          <button
+                            type="button"
+                            onClick={handleContinuarRascunho}
+                            className="px-2.5 py-1 text-[11px] font-bold text-white bg-amber-600 hover:bg-amber-700 rounded border border-amber-700 inline-flex items-center gap-1 cursor-pointer transition-colors shadow-2xs"
+                            title="Retomar preenchimento deste rascunho de nota fiscal"
+                          >
+                            <RotateCcw className="w-3 h-3" />
+                            <span>Continuar Preenchimento</span>
+                          </button>
+
+                          <button
+                            type="button"
+                            onClick={() => draft.discardDraft()}
+                            className="p-1 text-rose-600 hover:text-rose-800 bg-white hover:bg-rose-50 rounded border border-rose-200 cursor-pointer"
+                            title="Descartar rascunho"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })()}
+
               {isLoadingNotas ? (
                 <tr>
                   <td colSpan={7} className="py-10 text-center text-slate-500">
@@ -1036,7 +1154,7 @@ export const EntradasView: React.FC<EntradasViewProps> = ({
                     Carregando notas fiscais...
                   </td>
                 </tr>
-              ) : paginatedNotas.length > 0 ? (
+              ) : filtroSituacao !== 'RASCUNHO' && paginatedNotas.length > 0 ? (
                 paginatedNotas.map((nota) => {
                   const isFechada = nota.situacao === 'FECHADA';
                   return (
@@ -1128,13 +1246,13 @@ export const EntradasView: React.FC<EntradasViewProps> = ({
                     </tr>
                   );
                 })
-              ) : (
+              ) : !hasSavedDraft ? (
                 <tr>
                   <td colSpan={7} className="py-8 text-center text-slate-500">
                     Nenhuma nota fiscal localizada com os filtros selecionados.
                   </td>
                 </tr>
-              )}
+              ) : null}
             </tbody>
           </table>
         </div>
@@ -1142,7 +1260,7 @@ export const EntradasView: React.FC<EntradasViewProps> = ({
         {/* Rodapé de Paginação */}
         <div className="px-4 py-3 bg-slate-50 border-t border-slate-200 flex flex-col sm:flex-row items-center justify-between gap-3 text-xs text-slate-600">
           <div>
-            Página <strong>{currentPage}</strong> de <strong>{totalPages}</strong> ({notasList.length} notas no total)
+            Página <strong>{currentPage}</strong> de <strong>{totalPages}</strong> ({notasList.length} notas gravadas{hasSavedDraft ? ' + 1 rascunho salvo' : ''})
           </div>
 
           <div className="flex items-center gap-1">
