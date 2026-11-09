@@ -3935,6 +3935,124 @@ apiRouter.post('/entradas', (req, res) => {
 // 7.1 GESTÃO DE NOTAS FISCAIS (LISTAGEM, DETALHES, CORREÇÃO E FECHAMENTO)
 // ============================================================================
 
+/**
+ * Calcula a quantidade efetivamente consumida/dispensada de um lote a partir
+ * das movimentações reais de saída (excluindo estornos de entrada da própria NF).
+ */
+function obterQuantidadeConsumidaLote(
+  produtoId: number,
+  loteId: number | null | undefined,
+  numeroLote: string | null | undefined,
+  qtdItemNota: number
+): number {
+  const loteNumNorm = numeroLote ? String(numeroLote).trim().toUpperCase() : '';
+  let row: any;
+  if (loteId && Number(loteId) > 0) {
+    row = db.prepare(`
+      SELECT
+        COALESCE(SUM(CASE WHEN tipo = 'saida' AND COALESCE(estornado, 0) = 0 THEN quantidade ELSE 0 END), 0) -
+        COALESCE(SUM(CASE WHEN tipo = 'estorno_saida' THEN quantidade ELSE 0 END), 0) AS consumido_liquido
+      FROM movimentacoes
+      WHERE produto_id = ? AND lote_id = ?
+    `).get(produtoId, Number(loteId));
+  } else if (loteNumNorm && loteNumNorm !== 'SEM LOTE' && loteNumNorm !== 'LOTE-PADRAO') {
+    row = db.prepare(`
+      SELECT
+        COALESCE(SUM(CASE WHEN tipo = 'saida' AND COALESCE(estornado, 0) = 0 THEN quantidade ELSE 0 END), 0) -
+        COALESCE(SUM(CASE WHEN tipo = 'estorno_saida' THEN quantidade ELSE 0 END), 0) AS consumido_liquido
+      FROM movimentacoes
+      WHERE produto_id = ? AND UPPER(TRIM(COALESCE(numero_lote, ''))) = ?
+    `).get(produtoId, loteNumNorm);
+  } else {
+    return 0;
+  }
+
+  const consumidoLiquido = round4(Math.max(0, Number(row?.consumido_liquido ?? 0)));
+  if (consumidoLiquido <= 0) return 0;
+
+  return round4(Math.min(Number(qtdItemNota || 0), consumidoLiquido));
+}
+
+/**
+ * Reconcilia de forma idempotente eventuais estornos de entrada gerados em duplicidade
+ * quando uma movimentação já estornada permanecia visível na tela de edição da NF.
+ */
+function reconciliarEstornosDuplicadosNota(notaFiscalId: number) {
+  try {
+    const movsNota = db.prepare(`
+      SELECT id, tipo, motivo_diverso, produto_id, lote_id, quantidade
+      FROM movimentacoes
+      WHERE nota_fiscal_id = ?
+      ORDER BY id ASC
+    `).all(notaFiscalId) as Array<{
+      id: number;
+      tipo: string;
+      motivo_diverso: string | null;
+      produto_id: number;
+      lote_id: number | null;
+      quantidade: number;
+    }>;
+
+    const grupos = new Map<string, {
+      produto_id: number;
+      lote_id: number | null;
+      inativasQtd: number;
+      estornos: Array<{ id: number; quantidade: number }>;
+    }>();
+
+    for (const m of movsNota) {
+      const key = `${m.produto_id}:${m.lote_id || 0}`;
+      if (!grupos.has(key)) {
+        grupos.set(key, {
+          produto_id: m.produto_id,
+          lote_id: m.lote_id || null,
+          inativasQtd: 0,
+          estornos: [],
+        });
+      }
+      const g = grupos.get(key)!;
+      if (
+        m.tipo === 'entrada' &&
+        (m.motivo_diverso === 'Entrada corrigida (estornada)' ||
+          m.motivo_diverso === 'Entrada corrigida (item removido)')
+      ) {
+        g.inativasQtd = round4(g.inativasQtd + Number(m.quantidade || 0));
+      } else if (m.tipo === 'estorno_entrada') {
+        g.estornos.push({ id: m.id, quantidade: round4(Number(m.quantidade || 0)) });
+      }
+    }
+
+    for (const g of grupos.values()) {
+      const totalEstornos = round4(g.estornos.reduce((acc, e) => acc + e.quantidade, 0));
+      let excesso = round4(totalEstornos - g.inativasQtd);
+      if (excesso > 0.0001) {
+        runInTransaction(() => {
+          if (g.lote_id) {
+            db.prepare('UPDATE lotes_estoque SET quantidade_atual = ROUND(quantidade_atual + ?, 4) WHERE id = ?')
+              .run(excesso, g.lote_id);
+          }
+          db.prepare('UPDATE produtos SET quantidade_atual = ROUND(quantidade_atual + ?, 4) WHERE id = ?')
+            .run(excesso, g.produto_id);
+
+          for (let i = g.estornos.length - 1; i >= 0 && excesso > 0.0001; i--) {
+            const est = g.estornos[i];
+            if (est.quantidade <= excesso + 0.0001) {
+              db.prepare('DELETE FROM movimentacoes WHERE id = ?').run(est.id);
+              excesso = round4(excesso - est.quantidade);
+            } else {
+              db.prepare('UPDATE movimentacoes SET quantidade = ROUND(quantidade - ?, 4) WHERE id = ?')
+                .run(excesso, est.id);
+              excesso = 0;
+            }
+          }
+        });
+      }
+    }
+  } catch (err) {
+    console.warn('[reconciliarEstornosDuplicadosNota] Aviso:', err);
+  }
+}
+
 // Listagem agrupada por Nota Fiscal (A.1)
 apiRouter.get('/notas-fiscais', (req, res) => {
   const user = authenticateRequest(req);
@@ -3946,6 +4064,19 @@ apiRouter.get('/notas-fiscais', (req, res) => {
   const { busca, produto_busca, situacao, limite } = req.query;
 
   try {
+    try {
+      const nfsComEstorno = db.prepare(`
+        SELECT DISTINCT nota_fiscal_id
+        FROM movimentacoes
+        WHERE nota_fiscal_id IS NOT NULL AND tipo = 'estorno_entrada'
+      `).all() as Array<{ nota_fiscal_id: number }>;
+      for (const row of nfsComEstorno) {
+        if (row.nota_fiscal_id) {
+          reconciliarEstornosDuplicadosNota(Number(row.nota_fiscal_id));
+        }
+      }
+    } catch {}
+
     let query = `
       SELECT 
         nf.id,
@@ -3968,12 +4099,18 @@ apiRouter.get('/notas-fiscais', (req, res) => {
         (
           SELECT COUNT(DISTINCT m.id)
           FROM movimentacoes m
-          WHERE m.nota_fiscal_id = nf.id AND m.tipo = 'entrada'
+          WHERE m.nota_fiscal_id = nf.id
+            AND m.tipo = 'entrada'
+            AND COALESCE(m.motivo_diverso, '') NOT IN ('Entrada corrigida (estornada)', 'Entrada corrigida (item removido)')
+            AND COALESCE(m.estornado, 0) = 0
         ) as total_itens,
         (
           SELECT COALESCE(SUM(m.quantidade * COALESCE(m.valor_unitario, 0)), 0)
           FROM movimentacoes m
-          WHERE m.nota_fiscal_id = nf.id AND m.tipo = 'entrada'
+          WHERE m.nota_fiscal_id = nf.id
+            AND m.tipo = 'entrada'
+            AND COALESCE(m.motivo_diverso, '') NOT IN ('Entrada corrigida (estornada)', 'Entrada corrigida (item removido)')
+            AND COALESCE(m.estornado, 0) = 0
         ) as valor_total
       FROM notas_fiscais nf
       LEFT JOIN fornecedores f ON nf.fornecedor_id = f.id
@@ -3999,7 +4136,10 @@ apiRouter.get('/notas-fiscais', (req, res) => {
         OR EXISTS (
           SELECT 1 FROM movimentacoes m
           JOIN produtos p ON m.produto_id = p.id
-          WHERE m.nota_fiscal_id = nf.id AND (p.nome LIKE ? OR p.codigo LIKE ?)
+          WHERE m.nota_fiscal_id = nf.id
+            AND m.tipo = 'entrada'
+            AND COALESCE(m.motivo_diverso, '') NOT IN ('Entrada corrigida (estornada)', 'Entrada corrigida (item removido)')
+            AND (p.nome LIKE ? OR p.codigo LIKE ?)
         )
       )`;
       params.push(term, term, term, term, term, term, term);
@@ -4010,7 +4150,10 @@ apiRouter.get('/notas-fiscais', (req, res) => {
       query += ` AND EXISTS (
         SELECT 1 FROM movimentacoes m
         JOIN produtos p ON m.produto_id = p.id
-        WHERE m.nota_fiscal_id = nf.id AND (p.nome LIKE ? OR p.codigo LIKE ?)
+        WHERE m.nota_fiscal_id = nf.id
+          AND m.tipo = 'entrada'
+          AND COALESCE(m.motivo_diverso, '') NOT IN ('Entrada corrigida (estornada)', 'Entrada corrigida (item removido)')
+          AND (p.nome LIKE ? OR p.codigo LIKE ?)
       )`;
       params.push(prodTerm, prodTerm);
     }
@@ -4038,6 +4181,8 @@ apiRouter.get('/notas-fiscais/:id', (req, res) => {
   const { id } = req.params;
 
   try {
+    reconciliarEstornosDuplicadosNota(Number(id));
+
     const nota = db.prepare(`
       SELECT 
         nf.*,
@@ -4059,7 +4204,7 @@ apiRouter.get('/notas-fiscais/:id', (req, res) => {
       return;
     }
 
-    // Itens da nota a partir das movimentações ativas de entrada
+    // Itens ativos da nota (exclui movimentações já estornadas/substituídas por correção)
     const itens = db.prepare(`
       SELECT 
         m.id as movimentacao_id,
@@ -4080,15 +4225,23 @@ apiRouter.get('/notas-fiscais/:id', (req, res) => {
       FROM movimentacoes m
       JOIN produtos p ON m.produto_id = p.id
       LEFT JOIN lotes_estoque le ON m.lote_id = le.id
-      WHERE m.nota_fiscal_id = ? AND m.tipo = 'entrada'
+      WHERE m.nota_fiscal_id = ?
+        AND m.tipo = 'entrada'
+        AND COALESCE(m.motivo_diverso, '') NOT IN ('Entrada corrigida (estornada)', 'Entrada corrigida (item removido)')
+        AND COALESCE(m.estornado, 0) = 0
       ORDER BY m.id ASC
     `).all(id) as any[];
 
-    // Calcula quantidade consumida de cada lote
+    // Calcula quantidade efetivamente consumida em saídas reais de cada lote
     const itensComConsumo = itens.map((it) => {
-      const saldoLote = Number(it.saldo_atual_lote ?? 0);
-      const qtdOriginal = Number(it.quantidade);
-      const consumido = Math.max(0, qtdOriginal - saldoLote);
+      const saldoLote = round4(Number(it.saldo_atual_lote ?? 0));
+      const qtdOriginal = round4(Number(it.quantidade));
+      const consumido = obterQuantidadeConsumidaLote(
+        it.produto_id,
+        it.lote_id,
+        it.numero_lote,
+        qtdOriginal
+      );
       return {
         ...it,
         saldo_atual_lote: saldoLote,
@@ -4140,6 +4293,8 @@ apiRouter.put('/notas-fiscais/:id', (req, res) => {
   } = req.body;
 
   try {
+    reconciliarEstornosDuplicadosNota(Number(id));
+
     const nota = db.prepare('SELECT * FROM notas_fiscais WHERE id = ?').get(id) as any;
     if (!nota) {
       res.status(404).json({ error: 'Nota fiscal não encontrada.' });
@@ -4149,7 +4304,7 @@ apiRouter.put('/notas-fiscais/:id', (req, res) => {
     // Regra A.4: rejeição estrita no backend caso a nota esteja FECHADA
     if (nota.situacao === 'FECHADA') {
       res.status(400).json({
-        error: 'Esta nota fiscal está FECHADA e não pode mais ser alterada. Erros identificados após o fechamento devem ser tratados por movimentação de ajuste ou estorno formal.',
+        error: 'Esta nota fiscal está FECHADA e não pode mais ser alterada. Reabra a nota fiscal antes de editar.',
       });
       return;
     }
@@ -4159,7 +4314,7 @@ apiRouter.put('/notas-fiscais/:id', (req, res) => {
       return;
     }
 
-    const novosItens: Array<{
+    const rawNovosItens: Array<{
       movimentacao_id?: number;
       produto_id: number;
       quantidade: number;
@@ -4171,12 +4326,7 @@ apiRouter.put('/notas-fiscais/:id', (req, res) => {
       codigo_referencia_fornecedor?: string | null;
     }> = Array.isArray(itens) ? itens : [];
 
-    if (novosItens.length === 0) {
-      res.status(400).json({ error: 'A nota fiscal deve conter ao menos um item.' });
-      return;
-    }
-
-    // Busca itens atuais da nota
+    // Busca apenas os itens ATIVOS atuais da nota (exclui movimentações já estornadas/substituídas)
     const itensAtuais = db.prepare(`
       SELECT 
         m.id as movimentacao_id,
@@ -4197,14 +4347,35 @@ apiRouter.put('/notas-fiscais/:id', (req, res) => {
       FROM movimentacoes m
       JOIN produtos p ON m.produto_id = p.id
       LEFT JOIN lotes_estoque le ON m.lote_id = le.id
-      WHERE m.nota_fiscal_id = ? AND m.tipo = 'entrada'
+      WHERE m.nota_fiscal_id = ?
+        AND m.tipo = 'entrada'
+        AND COALESCE(m.motivo_diverso, '') NOT IN ('Entrada corrigida (estornada)', 'Entrada corrigida (item removido)')
+        AND COALESCE(m.estornado, 0) = 0
     `).all(id) as any[];
 
-    // Validação estrita de saldo negativo / consumo já realizado (A.3)
+    const idsAtivosSet = new Set(itensAtuais.map((a) => Number(a.movimentacao_id)));
+
+    // Filtra itens que referenciam movimentações já inativas/estornadas que estavam abertas na tela antiga
+    const novosItens = rawNovosItens.filter((n) => {
+      if (!n.movimentacao_id) return Number(n.quantidade) > 0;
+      if (idsAtivosSet.has(Number(n.movimentacao_id))) return Number(n.quantidade) > 0;
+      return false;
+    });
+
+    if (novosItens.length === 0) {
+      res.status(400).json({ error: 'A nota fiscal deve conter ao menos um item válido com quantidade maior que zero.' });
+      return;
+    }
+
+    // Validação estrita de consumo real já realizado (A.3)
     for (const atual of itensAtuais) {
-      const saldoLote = Number(atual.saldo_atual_lote ?? 0);
-      const qtdOriginal = Number(atual.quantidade);
-      const consumido = Math.max(0, qtdOriginal - saldoLote);
+      const qtdOriginal = round4(Number(atual.quantidade));
+      const consumido = obterQuantidadeConsumidaLote(
+        atual.produto_id,
+        atual.lote_id,
+        atual.numero_lote,
+        qtdOriginal
+      );
 
       const novoCorresp = novosItens.find(
         (n) => n.movimentacao_id && Number(n.movimentacao_id) === atual.movimentacao_id
@@ -4220,7 +4391,7 @@ apiRouter.put('/notas-fiscais/:id', (req, res) => {
         }
       } else {
         // Tentativa de reduzir a quantidade abaixo do que já foi consumido
-        const novaQtd = Number(novoCorresp.quantidade);
+        const novaQtd = round4(Number(novoCorresp.quantidade));
         if (novaQtd < consumido) {
           res.status(400).json({
             error: `Correção bloqueada: O lote "${atual.numero_lote || '—'}" do produto "${atual.produto_codigo} - ${atual.produto_nome}" já teve ${consumido} unidades consumidas/dispensadas. A nova quantidade não pode ser menor que ${consumido}.`,
@@ -4276,8 +4447,6 @@ apiRouter.put('/notas-fiscais/:id', (req, res) => {
       );
 
       // 3. Processa cada item atual
-      const novosIds = new Set(novosItens.map((n) => n.movimentacao_id).filter(Boolean));
-
       for (const atual of itensAtuais) {
         const novoCorresp = novosItens.find(
           (n) => n.movimentacao_id && Number(n.movimentacao_id) === atual.movimentacao_id
@@ -4315,10 +4484,10 @@ apiRouter.put('/notas-fiscais/:id', (req, res) => {
 
           // Abate do lote e do produto
           if (atual.lote_id) {
-            db.prepare('UPDATE lotes_estoque SET quantidade_atual = MAX(0, quantidade_atual - ?) WHERE id = ?')
-              .run(atual.quantidade, atual.lote_id);
+            db.prepare('UPDATE lotes_estoque SET quantidade_atual = MAX(0, ROUND(quantidade_atual - ?, 4)), quantidade_inicial = MAX(0, ROUND(quantidade_inicial - ?, 4)) WHERE id = ?')
+              .run(atual.quantidade, atual.quantidade, atual.lote_id);
           }
-          db.prepare('UPDATE produtos SET quantidade_atual = MAX(0, quantidade_atual - ?) WHERE id = ?')
+          db.prepare('UPDATE produtos SET quantidade_atual = MAX(0, ROUND(quantidade_atual - ?, 4)) WHERE id = ?')
             .run(atual.quantidade, atual.produto_id);
 
           // Invalida a movimentação original alterando motivo para histórico preservado
@@ -4330,18 +4499,18 @@ apiRouter.put('/notas-fiscais/:id', (req, res) => {
           );
         } else {
           // ITEM MANTIDO / ALTERADO
-          const novaQtd = Number(novoCorresp.quantidade);
+          const novaQtd = round4(Number(novoCorresp.quantidade));
           const novoLote = novoCorresp.numero_lote ? String(novoCorresp.numero_lote).trim().toUpperCase() : atual.numero_lote;
           const novaValidade = novoCorresp.data_validade ? String(novoCorresp.data_validade).trim().slice(0, 10) : atual.data_validade;
-          const novoValor = novoCorresp.valor_unitario !== undefined && novoCorresp.valor_unitario !== null ? Number(novoCorresp.valor_unitario) : atual.valor_unitario;
+          const novoValor = novoCorresp.valor_unitario !== undefined && novoCorresp.valor_unitario !== null ? round4(Number(novoCorresp.valor_unitario)) : atual.valor_unitario;
           const novaMarca = novoCorresp.marca ? String(novoCorresp.marca).trim() : atual.marca;
           const novaNomenclatura = novoCorresp.nomenclatura_fornecedor ? String(novoCorresp.nomenclatura_fornecedor).trim() : atual.nomenclatura_fornecedor;
 
           const houveMudanca =
-            novaQtd !== Number(atual.quantidade) ||
+            novaQtd !== round4(Number(atual.quantidade)) ||
             novoLote !== atual.numero_lote ||
             novaValidade !== atual.data_validade ||
-            novoValor !== atual.valor_unitario ||
+            round4(Number(novoValor || 0)) !== round4(Number(atual.valor_unitario || 0)) ||
             novaMarca !== atual.marca ||
             novaNomenclatura !== atual.nomenclatura_fornecedor;
 
@@ -4377,10 +4546,10 @@ apiRouter.put('/notas-fiscais/:id', (req, res) => {
 
             // Abate quantidade anterior
             if (atual.lote_id) {
-              db.prepare('UPDATE lotes_estoque SET quantidade_atual = MAX(0, quantidade_atual - ?) WHERE id = ?')
-                .run(atual.quantidade, atual.lote_id);
+              db.prepare('UPDATE lotes_estoque SET quantidade_atual = MAX(0, ROUND(quantidade_atual - ?, 4)), quantidade_inicial = MAX(0, ROUND(quantidade_inicial - ?, 4)) WHERE id = ?')
+                .run(atual.quantidade, atual.quantidade, atual.lote_id);
             }
-            db.prepare('UPDATE produtos SET quantidade_atual = MAX(0, quantidade_atual - ?) WHERE id = ?')
+            db.prepare('UPDATE produtos SET quantidade_atual = MAX(0, ROUND(quantidade_atual - ?, 4)) WHERE id = ?')
               .run(atual.quantidade, atual.produto_id);
 
             // Marca movimentação anterior
@@ -4400,12 +4569,12 @@ apiRouter.put('/notas-fiscais/:id', (req, res) => {
               centro_custo_id: centro_custo_id ? Number(centro_custo_id) : null,
             });
 
-            // Adiciona nova quantidade corrigida ao lote e produto
-            db.prepare('UPDATE produtos SET quantidade_atual = quantidade_atual + ? WHERE id = ?')
+            // Adiciona nova quantidade corrigida ao produto
+            db.prepare('UPDATE produtos SET quantidade_atual = ROUND(quantidade_atual + ?, 4) WHERE id = ?')
               .run(novaQtd, atual.produto_id);
 
             if (novoValor && novoValor > 0) {
-              db.prepare('UPDATE produtos SET valor_unitario = ? WHERE id = ?').run(novoValor, atual.produto_id);
+              db.prepare('UPDATE produtos SET valor_unitario = ?, custo_unitario = ? WHERE id = ?').run(novoValor, novoValor, atual.produto_id);
             }
 
             // Nova movimentação corrigida
