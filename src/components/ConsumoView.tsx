@@ -16,13 +16,15 @@ import {
   Eye,
   X,
   Clock,
-  ShieldAlert
+  ShieldAlert,
+  Download
 } from 'lucide-react';
 import type { Consumo, ItemConsumo, Produto, LoteEstoque, CentroCusto, Usuario } from '../types/index.ts';
 import { SearchableSelect, type SearchableOption } from './SearchableSelect.tsx';
 import { getAuthHeaders } from '../utils/apiUtils.ts';
 import { formatDateTimeBrasilia } from '../utils/dateUtils.ts';
 import { round4, parseDecimal, hasSufficientStock } from '../utils/numberUtils.ts';
+import { generateComprovanteConsumoPDF, type PdfOutputMode } from '../utils/pdfGenerator.ts';
 
 interface ConsumoViewProps {
   currentUser: Usuario;
@@ -404,9 +406,9 @@ export const ConsumoView: React.FC<ConsumoViewProps> = ({
       setNovaObservacao('');
       setItensNovoConsumo([]);
 
-      // Abre automaticamente para impressão do comprovante A4
+      // Gera e aciona impressão direta em PDF (mesmo padrão da Requisição)
       setSelectedConsumo(data);
-      setIsPrintModalOpen(true);
+      await handleEmitirPdfConsumo(data, 'print');
 
       fetchConsumos();
       fetchCatalogoProdutos();
@@ -421,7 +423,7 @@ export const ConsumoView: React.FC<ConsumoViewProps> = ({
   const handleOpenDetalhes = async (c: Consumo) => {
     try {
       const res = await fetch(`/api/consumos/${c.id}`, {
-        headers: getAuthHeaders(),
+        headers: getAuthHeaders({ 'X-Area-Sigla': activeAreaSigla }),
       });
       if (res.ok) {
         const fullConsumo = await res.json();
@@ -434,21 +436,34 @@ export const ConsumoView: React.FC<ConsumoViewProps> = ({
     }
   };
 
-  const handleOpenPrint = async (c: Consumo) => {
+  const handleEmitirPdfConsumo = async (
+    c: Consumo,
+    mode: PdfOutputMode = 'print'
+  ) => {
     try {
-      const res = await fetch(`/api/consumos/${c.id}`, {
-        headers: getAuthHeaders(),
-      });
-      if (res.ok) {
-        const fullConsumo = await res.json();
-        setSelectedConsumo(fullConsumo);
-      } else {
-        setSelectedConsumo(c);
+      let fullConsumo = c;
+      if (!c.itens || c.itens.length === 0) {
+        const res = await fetch(`/api/consumos/${c.id}`, {
+          headers: getAuthHeaders({ 'X-Area-Sigla': activeAreaSigla }),
+        });
+        if (res.ok) {
+          fullConsumo = await res.json();
+        }
       }
-    } catch {
-      setSelectedConsumo(c);
+      setSelectedConsumo(fullConsumo);
+      await generateComprovanteConsumoPDF(
+        fullConsumo,
+        { sigla: activeAreaSigla, nome: activeAreaNome },
+        mode
+      );
+    } catch (err) {
+      console.error('Erro ao gerar PDF do consumo:', err);
+      setErrorMsg('Não foi possível gerar o PDF do comprovante de consumo.');
     }
-    setIsPrintModalOpen(true);
+  };
+
+  const handleOpenPrint = async (c: Consumo) => {
+    await handleEmitirPdfConsumo(c, 'print');
   };
 
   const handleConfirmEstorno = async (e: React.FormEvent) => {
@@ -484,7 +499,9 @@ export const ConsumoView: React.FC<ConsumoViewProps> = ({
   };
 
   const triggerDirectPrint = () => {
-    window.print();
+    if (selectedConsumo) {
+      handleEmitirPdfConsumo(selectedConsumo, 'print');
+    }
   };
 
   const productOptions: SearchableOption[] = catalogoProdutos
@@ -732,11 +749,20 @@ export const ConsumoView: React.FC<ConsumoViewProps> = ({
 
                     <button
                       type="button"
-                      onClick={() => handleOpenPrint(c)}
+                      onClick={() => handleEmitirPdfConsumo(c, 'print')}
                       className="p-1.5 text-slate-600 hover:text-[#00237D] hover:bg-slate-100 rounded transition-colors cursor-pointer"
-                      title="Imprimir Comprovante A4"
+                      title="Imprimir Comprovante em PDF"
                     >
                       <Printer className="w-4 h-4 inline" />
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => handleEmitirPdfConsumo(c, 'download')}
+                      className="p-1.5 text-slate-600 hover:text-teal-700 hover:bg-teal-50 rounded transition-colors cursor-pointer"
+                      title="Baixar Comprovante em PDF"
+                    >
+                      <Download className="w-4 h-4 inline" />
                     </button>
 
                     {isAlmoxarifeOrAdmin && (
@@ -1049,14 +1075,21 @@ export const ConsumoView: React.FC<ConsumoViewProps> = ({
             <div className="flex justify-end gap-2 pt-2 border-t border-slate-100">
               <button
                 type="button"
-                onClick={() => {
-                  setIsDetalhesModalOpen(false);
-                  setIsPrintModalOpen(true);
-                }}
+                onClick={() => handleEmitirPdfConsumo(selectedConsumo, 'print')}
                 className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-slate-700 bg-slate-100 hover:bg-slate-200 rounded-lg transition-colors cursor-pointer"
+                title="Imprimir Comprovante em PDF"
               >
                 <Printer className="w-4 h-4" />
-                <span>Imprimir A4</span>
+                <span>Imprimir PDF</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => handleEmitirPdfConsumo(selectedConsumo, 'download')}
+                className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-teal-800 bg-teal-50 hover:bg-teal-100 border border-teal-200 rounded-lg transition-colors cursor-pointer"
+                title="Baixar Arquivo PDF do Comprovante"
+              >
+                <Download className="w-4 h-4" />
+                <span>Baixar PDF</span>
               </button>
               <button
                 type="button"

@@ -1638,8 +1638,9 @@ export async function generateComprovanteConsumoPDF(
     usuario_nome?: string;
     observacao?: string | null;
     itens?: Array<{
+      produto_id?: number;
       produto_codigo?: string;
-      produto_nome: string;
+      produto_nome?: string;
       unidade_medida?: string;
       numero_lote?: string;
       data_validade?: string | null;
@@ -1647,7 +1648,7 @@ export async function generateComprovanteConsumoPDF(
     }>;
   },
   areaInfo?: { sigla: string; nome: string },
-  mode: PdfOutputMode = 'download'
+  mode: PdfOutputMode = 'print'
 ): Promise<PdfGeneratedDocument> {
   const doc = new jsPDF({
     orientation: 'portrait',
@@ -1656,145 +1657,181 @@ export async function generateComprovanteConsumoPDF(
   });
 
   const pageWidth = doc.internal.pageSize.getWidth();
-  const pageHeight = doc.internal.pageSize.getHeight();
   const sigla = areaInfo?.sigla || 'ALM';
   const areaNome = areaInfo?.nome || 'Almoxarifado';
 
   const logoBase64 = await loadLogoBase64();
+
+  // Cabeçalho Institucional Limpo (mesmo padrão da Requisição)
+  const headerStartY = 12;
+  let textStartX = 14;
+
   if (logoBase64) {
     try {
-      doc.addImage(logoBase64, 'PNG', 14, 10, 16, 16);
-    } catch (_e) {}
+      doc.addImage(logoBase64, 'PNG', 14, headerStartY, 14, 14);
+      textStartX = 32;
+    } catch {
+      textStartX = 14;
+    }
   }
 
+  doc.setTextColor(15, 23, 42);
   doc.setFont('helvetica', 'bold');
-  doc.setFontSize(14);
-  doc.setTextColor(0, 35, 125);
-  doc.text('COMPROVANTE DE CONSUMO DIRETO', logoBase64 ? 34 : 14, 16);
-
-  doc.setFont('helvetica', 'bold');
-  doc.setFontSize(9);
-  doc.setTextColor(71, 85, 105);
-  doc.text(`ÁREA OPERACIONAL: ${sigla} — ${areaNome.toUpperCase()}`, logoBase64 ? 34 : 14, 22);
-
-  doc.setFont('helvetica', 'bold');
-  doc.setFontSize(11);
-  doc.setTextColor(0, 35, 125);
-  doc.text(consumo.numero_consumo, pageWidth - 14, 16, { align: 'right' });
+  doc.setFontSize(10.5);
+  doc.text('SANTA CASA S.B.C - MULTIHOSPITAL', textStartX, headerStartY + 4);
 
   doc.setFont('helvetica', 'normal');
   doc.setFontSize(8);
-  doc.setTextColor(100, 116, 139);
-  doc.text(`Emissão: ${formatDateTimeBrasilia(consumo.data_consumo)}`, pageWidth - 14, 22, { align: 'right' });
-
-  doc.setDrawColor(203, 213, 225);
-  doc.setLineWidth(0.4);
-  doc.line(14, 30, pageWidth - 14, 30);
-
-  let currentY = 36;
-  doc.setFillColor(248, 250, 252);
-  doc.rect(14, currentY, pageWidth - 28, 20, 'F');
-  doc.setDrawColor(226, 232, 240);
-  doc.rect(14, currentY, pageWidth - 28, 20, 'S');
-
-  doc.setFont('helvetica', 'bold');
-  doc.setFontSize(8);
   doc.setTextColor(71, 85, 105);
-  doc.text('SETOR ASSISTENCIAL ATENDIDO:', 18, currentY + 6);
-  doc.text('RESPONSÁVEL PELO RECEBIMENTO:', pageWidth / 2 + 5, currentY + 6);
+  doc.text(`Área Operacional: ${sigla} - ${areaNome}`, textStartX, headerStartY + 8.5);
 
   doc.setFont('helvetica', 'bold');
-  doc.setFontSize(9);
-  doc.setTextColor(15, 23, 42);
-  const setorTexto = consumo.centro_custo_codigo 
-    ? `${consumo.centro_custo_codigo} - ${consumo.centro_custo_nome || 'Setor'}`
-    : (consumo.centro_custo_nome || 'Setor Hospitalar');
-  doc.text(setorTexto, 18, currentY + 13);
-  doc.text(consumo.responsavel_recebimento, pageWidth / 2 + 5, currentY + 13);
+  doc.setFontSize(10);
+  doc.setTextColor(0, 35, 125);
+  const tituloDoc = `Comprovante de Consumo Direto ${consumo.numero_consumo}`;
+  doc.text(tituloDoc, textStartX, headerStartY + 13.5);
 
-  currentY += 26;
+  // Linha divisória sutil
+  let currentY = headerStartY + 17;
+  doc.setDrawColor(203, 213, 225);
+  doc.setLineWidth(0.3);
+  doc.line(14, currentY, pageWidth - 14, currentY);
+  currentY += 4;
+
+  const centroCustoStr = `${consumo.centro_custo_codigo ? consumo.centro_custo_codigo + ' - ' : ''}${consumo.centro_custo_nome || '—'}`;
+  const dataConsumoStr = formatDataHoraBrasilia(consumo.data_consumo);
+
+  const metaBody: any[][] = [
+    [
+      'Nº do Consumo:',
+      consumo.numero_consumo,
+      'Setor Atendido:',
+      centroCustoStr,
+    ],
+    [
+      'Recebido por:',
+      consumo.responsavel_recebimento || '—',
+      'Dispensado por:',
+      consumo.usuario_nome || 'Almoxarife Responsável',
+    ],
+    [
+      'Data/Hora da Baixa:',
+      dataConsumoStr,
+      'Área Operacional:',
+      `${sigla} (${areaNome})`,
+    ],
+  ];
 
   if (consumo.observacao && consumo.observacao.trim()) {
-    doc.setFont('helvetica', 'italic');
-    doc.setFontSize(8);
-    doc.setTextColor(100, 116, 139);
-    doc.text(`Obs: ${consumo.observacao.trim()}`, 14, currentY);
-    currentY += 6;
+    metaBody.push([
+      'Observação:',
+      { content: consumo.observacao.trim(), colSpan: 3 },
+    ]);
   }
-
-  const tableRows = (consumo.itens || []).map((it) => [
-    it.produto_codigo || '—',
-    it.produto_nome,
-    it.numero_lote || 'SEM LOTE',
-    it.data_validade ? formatDateBrasilia(it.data_validade) : 'S/V',
-    it.unidade_medida || 'UN',
-    String(it.quantidade),
-  ]);
 
   autoTable(doc, {
     startY: currentY,
-    head: [['Código', 'Descrição do Item / Material', 'Lote', 'Validade', 'UN', 'Qtd Entregue']],
-    body: tableRows,
-    theme: 'plain',
-    headStyles: {
-      fillColor: [241, 245, 249],
+    body: metaBody,
+    margin: { left: 14, right: 14 },
+    theme: 'grid',
+    styles: {
+      fontSize: 8,
+      cellPadding: 2.2,
       textColor: [30, 41, 59],
-      fontStyle: 'bold',
-      fontSize: 8,
-    },
-    bodyStyles: {
-      fontSize: 8,
-      textColor: [51, 65, 85],
+      lineColor: [226, 232, 240],
+      lineWidth: 0.15,
     },
     columnStyles: {
-      0: { cellWidth: 24, font: 'courier' },
-      1: { cellWidth: 'auto' },
-      2: { cellWidth: 26, font: 'courier', halign: 'center' },
-      3: { cellWidth: 24, halign: 'center' },
-      4: { cellWidth: 14, halign: 'center' },
-      5: { cellWidth: 24, halign: 'right', fontStyle: 'bold' },
+      0: { fontStyle: 'bold', fillColor: [248, 250, 252], cellWidth: 42 },
+      1: { cellWidth: 54 },
+      2: { fontStyle: 'bold', fillColor: [248, 250, 252], cellWidth: 42 },
+      3: { cellWidth: 44 },
     },
   });
 
-  currentY = (doc as any).lastAutoTable?.finalY || currentY + 30;
+  currentY = ((doc as any).lastAutoTable?.finalY || currentY + 22) + 5;
 
-  if (currentY + 40 > pageHeight - 20) {
+  const itemRows = (consumo.itens || []).map((it) => {
+    const prodDesc = `${it.produto_codigo || it.produto_id || ''} - ${it.produto_nome || ''}`.replace(/^ - /, '').trim();
+    const und = it.unidade_medida || 'UN';
+    const loteText = it.numero_lote && it.numero_lote.trim() !== '' ? it.numero_lote : 'SEM LOTE';
+    const validadeText = it.data_validade ? formatDataValidade(it.data_validade) : 'S/V';
+    const qtdText = `${it.quantidade} ${und}`;
+    return [prodDesc, qtdText, loteText, validadeText];
+  });
+
+  autoTable(doc, {
+    startY: currentY,
+    head: [['Código / Produto', 'Qtd Entregue', 'Lote', 'Validade']],
+    body: itemRows.length > 0 ? itemRows : [['Nenhum item registrado', '0', '—', '—']],
+    margin: { left: 14, right: 14 },
+    theme: 'grid',
+    styles: {
+      fontSize: 7.5,
+      cellPadding: 2,
+      textColor: [30, 41, 59],
+      lineColor: [226, 232, 240],
+      lineWidth: 0.15,
+    },
+    headStyles: {
+      fillColor: [241, 245, 249],
+      textColor: [15, 23, 42],
+      fontStyle: 'bold',
+      lineColor: [203, 213, 225],
+      lineWidth: 0.2,
+    },
+    alternateRowStyles: {
+      fillColor: [248, 250, 252],
+    },
+    columnStyles: {
+      0: { cellWidth: 96 },
+      1: { halign: 'right', fontStyle: 'bold', cellWidth: 28 },
+      2: { halign: 'center', fontStyle: 'bold', cellWidth: 32 },
+      3: { halign: 'center', cellWidth: 26 },
+    },
+  });
+
+  currentY = ((doc as any).lastAutoTable?.finalY || currentY + 30) + 6;
+
+  if (currentY > 235) {
     doc.addPage();
-    currentY = 30;
-  } else {
-    currentY += 25;
+    currentY = 24;
   }
 
-  doc.setDrawColor(148, 163, 184);
-  doc.setLineWidth(0.3);
-  doc.line(20, currentY, 85, currentY);
-  doc.line(pageWidth - 85, currentY, pageWidth - 20, currentY);
+  currentY += 8;
 
-  currentY += 4.5;
-  doc.setFont('helvetica', 'normal');
+  // Linhas de assinatura (mesmo padrão da Requisição)
+  doc.setDrawColor(100, 116, 139);
+  doc.setLineWidth(0.3);
+
+  // Assinatura 1: Recebedor do Setor
+  doc.line(16, currentY + 14, 96, currentY + 14);
+  doc.setFont('helvetica', 'bold');
   doc.setFontSize(8);
   doc.setTextColor(30, 41, 59);
-  doc.text(consumo.usuario_nome || 'Dispensador (Almoxarifado)', 52.5, currentY, { align: 'center' });
-  doc.text(consumo.responsavel_recebimento, pageWidth - 52.5, currentY, { align: 'center' });
-
-  currentY += 4;
+  doc.text(consumo.responsavel_recebimento || 'Recebedor do Setor', 56, currentY + 18, { align: 'center' });
+  doc.setFont('helvetica', 'normal');
   doc.setFontSize(7);
-  doc.setTextColor(148, 163, 184);
-  doc.text('Assinatura do Entregador', 52.5, currentY, { align: 'center' });
-  doc.text('Assinatura do Recebedor', pageWidth - 52.5, currentY, { align: 'center' });
+  doc.setTextColor(100, 116, 139);
+  doc.text('Assinatura do Recebedor (Setor Atendido)', 56, currentY + 22, { align: 'center' });
 
-  const totalPages = doc.getNumberOfPages();
-  for (let i = 1; i <= totalPages; i++) {
-    doc.setPage(i);
-    doc.setFont('helvetica', 'normal');
-    doc.setFontSize(7.5);
-    doc.setTextColor(148, 163, 184);
-    doc.text('Desenvolvido por Bruno Rocha - DPO', 14, pageHeight - 10);
-    doc.text(`Página ${i} de ${totalPages}`, pageWidth - 14, pageHeight - 10, { align: 'right' });
-  }
+  // Assinatura 2: Almoxarife / Dispensador
+  doc.line(pageWidth - 96, currentY + 14, pageWidth - 16, currentY + 14);
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(8);
+  doc.setTextColor(30, 41, 59);
+  doc.text(consumo.usuario_nome || 'Almoxarife Responsável', pageWidth - 56, currentY + 18, {
+    align: 'center',
+  });
+  doc.setFont('helvetica', 'normal');
+  doc.setFontSize(7);
+  doc.setTextColor(100, 116, 139);
+  doc.text(`Conferência e Baixa — ${areaNome}`, pageWidth - 56, currentY + 22, { align: 'center' });
+
+  drawCleanInstitutionalFooters(doc);
 
   const filename = `comprovante_consumo_${consumo.numero_consumo.toLowerCase()}_${Date.now()}.pdf`;
-  return finalizeJsPDF(doc, filename, `Comprovante de Consumo ${consumo.numero_consumo}`, mode);
+  return finalizeJsPDF(doc, filename, tituloDoc, mode);
 }
 
 
