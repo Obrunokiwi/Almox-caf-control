@@ -173,19 +173,22 @@ export const EntradasView: React.FC<EntradasViewProps> = ({
   const [newNotaFornecedorId, setNewNotaFornecedorId] = useState<number>(0);
   const [newNotaCentroCustoId, setNewNotaCentroCustoId] = useState<number>(0);
   const [newNotaObservacao, setNewNotaObservacao] = useState('');
-  const [newNotaItens, setNewNotaItens] = useState<
-    Array<{
-      tempId: string;
-      produto_id: number;
-      numero_lote: string;
-      data_validade: string;
-      quantidade: number;
-      valor_total: number;
-      valor_unitario: number;
-      marca: string;
-      nomenclatura_fornecedor: string;
-    }>
-  >([]);
+  interface EntradasNotaDraftItem {
+    tempId: string;
+    produto_id: number;
+    produto_codigo?: string;
+    produto_nome?: string;
+    unidade_medida?: string;
+    numero_lote: string;
+    data_validade: string;
+    quantidade: number;
+    valor_total: number;
+    valor_unitario: number;
+    marca: string;
+    nomenclatura_fornecedor: string;
+  }
+
+  const [newNotaItens, setNewNotaItens] = useState<EntradasNotaDraftItem[]>([]);
   const [expandedItemIds, setExpandedItemIds] = useState<Record<string, boolean>>({});
 
   const toggleExpandItem = (tempId: string) => {
@@ -201,17 +204,7 @@ export const EntradasView: React.FC<EntradasViewProps> = ({
     newNotaFornecedorId: number;
     newNotaCentroCustoId: number;
     newNotaObservacao: string;
-    newNotaItens: Array<{
-      tempId: string;
-      produto_id: number;
-      numero_lote: string;
-      data_validade: string;
-      quantidade: number;
-      valor_total: number;
-      valor_unitario: number;
-      marca: string;
-      nomenclatura_fornecedor: string;
-    }>;
+    newNotaItens: EntradasNotaDraftItem[];
     expandedItemIds: Record<string, boolean>;
   }
 
@@ -220,8 +213,10 @@ export const EntradasView: React.FC<EntradasViewProps> = ({
     return (
       Number(it.produto_id) > 0 ||
       (typeof it.numero_lote === 'string' && it.numero_lote.trim().length > 0) ||
-      Number(it.quantidade) > 0 ||
-      Number(it.valor_total) > 0 ||
+      (typeof it.data_validade === 'string' && it.data_validade.trim().length > 0) ||
+      parseDecimal(it.quantidade, 0) > 0 ||
+      parseDecimal(it.valor_total, 0) > 0 ||
+      parseDecimal(it.valor_unitario, 0) > 0 ||
       (typeof it.marca === 'string' && it.marca.trim().length > 0) ||
       (typeof it.nomenclatura_fornecedor === 'string' && it.nomenclatura_fornecedor.trim().length > 0)
     );
@@ -238,30 +233,35 @@ export const EntradasView: React.FC<EntradasViewProps> = ({
       if (Array.isArray(data.newNotaItens) && data.newNotaItens.length > 0) {
         const preenchidos = data.newNotaItens.filter(isItemPreenchido);
         const baseItens = preenchidos.length > 0 ? preenchidos : [data.newNotaItens[0]];
-        const itensNormalizados = baseItens.map((it, idx) => ({
-          tempId: String(it.tempId || `${Date.now()}_${idx}`),
-          produto_id: Number(it.produto_id) || 0,
-          numero_lote: typeof it.numero_lote === 'string' ? it.numero_lote : '',
-          data_validade: typeof it.data_validade === 'string' ? it.data_validade : '',
-          quantidade:
-            it.quantidade !== ('' as any) && it.quantidade !== null && it.quantidade !== undefined && Number(it.quantidade) > 0
-              ? Number(it.quantidade)
-              : ('' as any),
-          valor_total:
-            it.valor_total !== ('' as any) && it.valor_total !== null && it.valor_total !== undefined && Number(it.valor_total) > 0
-              ? Number(it.valor_total)
-              : ('' as any),
-          valor_unitario: Number(it.valor_unitario) || 0,
-          marca: typeof it.marca === 'string' ? it.marca : '',
-          nomenclatura_fornecedor: typeof it.nomenclatura_fornecedor === 'string' ? it.nomenclatura_fornecedor : '',
-        }));
+        const itensNormalizados: EntradasNotaDraftItem[] = baseItens.map((it, idx) => {
+          const qtd = parseDecimal(it.quantidade, 0);
+          const valTot = parseDecimal(it.valor_total, 0);
+          const valUnit = parseDecimal(it.valor_unitario, 0);
+          const computedTotal = valTot > 0 ? valTot : qtd > 0 && valUnit > 0 ? round4(qtd * valUnit) : 0;
+          const computedUnit = valUnit > 0 ? valUnit : qtd > 0 && computedTotal > 0 ? round4(computedTotal / qtd) : 0;
+
+          return {
+            tempId: String(it.tempId || `${Date.now()}_${idx}`),
+            produto_id: Number(it.produto_id) || 0,
+            produto_codigo: typeof it.produto_codigo === 'string' ? it.produto_codigo : undefined,
+            produto_nome: typeof it.produto_nome === 'string' ? it.produto_nome : undefined,
+            unidade_medida: typeof it.unidade_medida === 'string' ? it.unidade_medida : undefined,
+            numero_lote: typeof it.numero_lote === 'string' ? it.numero_lote : '',
+            data_validade: typeof it.data_validade === 'string' ? it.data_validade : '',
+            quantidade: qtd > 0 ? qtd : ('' as any),
+            valor_total: computedTotal > 0 ? computedTotal : ('' as any),
+            valor_unitario: computedUnit,
+            marca: typeof it.marca === 'string' ? it.marca : '',
+            nomenclatura_fornecedor: typeof it.nomenclatura_fornecedor === 'string' ? it.nomenclatura_fornecedor : '',
+          };
+        });
 
         setNewNotaItens(itensNormalizados);
 
         const savedExpanded = data.expandedItemIds || {};
-        const hasValidExpanded = itensNormalizados.some((it) => savedExpanded[it.tempId]);
-        if (hasValidExpanded) {
-          setExpandedItemIds(savedExpanded);
+        const matchingTempId = itensNormalizados.find((it) => savedExpanded[it.tempId])?.tempId;
+        if (matchingTempId) {
+          setExpandedItemIds({ [matchingTempId]: true });
         } else {
           const lastId = itensNormalizados[itensNormalizados.length - 1]?.tempId;
           setExpandedItemIds(lastId ? { [lastId]: true } : {});
@@ -282,19 +282,70 @@ export const EntradasView: React.FC<EntradasViewProps> = ({
     draft.loadDraft();
   }, [currentUser?.area_sigla, draft.loadDraft]);
 
+  const hasSavedDraft = useMemo(() => {
+    const d = draft.draftData;
+    if (!d) return false;
+    return (
+      (typeof d.newNotaDoc === 'string' && d.newNotaDoc.trim().length > 0) ||
+      (typeof d.newNotaFornecedorId === 'number' && d.newNotaFornecedorId > 0) ||
+      (typeof d.newNotaCentroCustoId === 'number' && d.newNotaCentroCustoId > 0) ||
+      (typeof d.newNotaObservacao === 'string' && d.newNotaObservacao.trim().length > 0) ||
+      (Array.isArray(d.newNotaItens) && d.newNotaItens.some(isItemPreenchido))
+    );
+  }, [draft.draftData, isItemPreenchido]);
+
+  // Se o formulário abriu em branco enquanto o rascunho ainda carregava do servidor, hidrata automaticamente
+  useEffect(() => {
+    if (!isNewNotaOpen || !hasSavedDraft || !draft.draftData) return;
+    const isFormCurrentlyBlank =
+      !newNotaDoc.trim() &&
+      newNotaFornecedorId === 0 &&
+      newNotaCentroCustoId === 0 &&
+      !newNotaObservacao.trim() &&
+      !newNotaItens.some(isItemPreenchido);
+
+    if (isFormCurrentlyBlank) {
+      restaurarDadosRascunho(draft.draftData);
+      draft.applyDraft(true, draft.draftData);
+    }
+  }, [
+    isNewNotaOpen,
+    hasSavedDraft,
+    draft.draftData,
+    newNotaDoc,
+    newNotaFornecedorId,
+    newNotaCentroCustoId,
+    newNotaObservacao,
+    newNotaItens,
+    isItemPreenchido,
+    restaurarDadosRascunho,
+    draft.applyDraft,
+  ]);
+
   // Salva rascunho de nota fiscal automaticamente com debounce
   useEffect(() => {
     if (!isNewNotaOpen) return;
+    const preenchidosAtuais = newNotaItens.filter(isItemPreenchido);
     const hasAnyContent =
       newNotaDoc.trim().length > 0 ||
       newNotaFornecedorId > 0 ||
       newNotaCentroCustoId > 0 ||
       newNotaObservacao.trim().length > 0 ||
-      newNotaItens.some(isItemPreenchido);
+      preenchidosAtuais.length > 0;
 
     if (hasAnyContent) {
-      const preenchidos = newNotaItens.filter(isItemPreenchido);
-      const itensParaRascunho = preenchidos.length > 0 ? preenchidos : newNotaItens;
+      // Proteção: se os itens atuais estão vazios mas o rascunho carregado já tinha itens preenchidos,
+      // preserva os itens preenchidos do rascunho para nunca perdê-los por auto-save parcial
+      const preenchidosSalvos = Array.isArray(draft.draftData?.newNotaItens)
+        ? draft.draftData!.newNotaItens.filter(isItemPreenchido)
+        : [];
+      const itensParaRascunho =
+        preenchidosAtuais.length > 0
+          ? preenchidosAtuais
+          : preenchidosSalvos.length > 0
+          ? preenchidosSalvos
+          : newNotaItens;
+
       draft.scheduleAutoSave({
         newNotaDoc,
         newNotaFornecedorId,
@@ -313,6 +364,7 @@ export const EntradasView: React.FC<EntradasViewProps> = ({
     newNotaItens,
     expandedItemIds,
     isItemPreenchido,
+    draft.draftData,
     draft.scheduleAutoSave,
   ]);
 
@@ -345,28 +397,14 @@ export const EntradasView: React.FC<EntradasViewProps> = ({
   };
 
   const handleContinuarRascunho = async () => {
-    let data = draft.draftData;
-    if (!data) {
-      data = await draft.loadDraft();
-    }
+    const latestServerData = await draft.loadDraft();
+    const data = latestServerData || draft.draftData;
     if (data) {
       restaurarDadosRascunho(data);
-      draft.applyDraft(true);
+      draft.applyDraft(true, data);
     }
     setIsNewNotaOpen(true);
   };
-
-  const hasSavedDraft = useMemo(() => {
-    const d = draft.draftData;
-    if (!d) return false;
-    return (
-      (typeof d.newNotaDoc === 'string' && d.newNotaDoc.trim().length > 0) ||
-      (typeof d.newNotaFornecedorId === 'number' && d.newNotaFornecedorId > 0) ||
-      (typeof d.newNotaCentroCustoId === 'number' && d.newNotaCentroCustoId > 0) ||
-      (typeof d.newNotaObservacao === 'string' && d.newNotaObservacao.trim().length > 0) ||
-      (Array.isArray(d.newNotaItens) && d.newNotaItens.some(isItemPreenchido))
-    );
-  }, [draft.draftData, isItemPreenchido]);
 
   // Preview de PDF
   const [pdfPreviewDoc, setPdfPreviewDoc] = useState<PdfGeneratedDocument | null>(null);
@@ -493,7 +531,7 @@ export const EntradasView: React.FC<EntradasViewProps> = ({
   const handleAbrirNovaNota = (forceBlank: boolean = false) => {
     if (!forceBlank && hasSavedDraft && draft.draftData) {
       restaurarDadosRascunho(draft.draftData);
-      draft.applyDraft(true);
+      draft.applyDraft(true, draft.draftData);
       setIsNewNotaOpen(true);
       return;
     }
@@ -1137,14 +1175,9 @@ export const EntradasView: React.FC<EntradasViewProps> = ({
                 currentPage === 1 &&
                 (filtroSituacao === 'todas' || filtroSituacao === 'RASCUNHO') && (() => {
                   const d = draft.draftData;
-                  const forn = fornecedores.find((f) => f.id === Number(d.newNotaFornecedorId));
+                  const forn = fornecedores.find((f) => Number(f.id) === Number(d.newNotaFornecedorId));
                   const qtdItensPreenchidos = Array.isArray(d.newNotaItens)
-                    ? d.newNotaItens.filter(
-                        (it) =>
-                          it.produto_id > 0 ||
-                          (it.numero_lote && it.numero_lote.trim().length > 0) ||
-                          Number(it.quantidade) > 0
-                      ).length || d.newNotaItens.length
+                    ? d.newNotaItens.filter(isItemPreenchido).length || d.newNotaItens.length
                     : 0;
 
                   return (
@@ -2042,7 +2075,7 @@ export const EntradasView: React.FC<EntradasViewProps> = ({
               <FormDraftResumeBanner
                 hasDraft={draft.hasDraft}
                 draftDate={draft.draftDate}
-                onApply={() => draft.applyDraft(false)}
+                onApply={() => draft.applyDraft(false, draft.draftData)}
                 onDiscard={() => {
                   draft.discardDraft();
                   handleAbrirNovaNota(true);
@@ -2126,12 +2159,18 @@ export const EntradasView: React.FC<EntradasViewProps> = ({
 
                   if (!item) return null;
 
-                  const prod = produtos.find((p) => p.id === item.produto_id);
+                  const prod = produtos.find((p) => Number(p.id) === Number(item.produto_id));
+                  const prodLabel = prod
+                    ? `${prod.codigo} - ${prod.nome}`
+                    : item.produto_codigo && item.produto_nome
+                    ? `${item.produto_codigo} - ${item.produto_nome}`
+                    : null;
+                  const prodUnidade = prod?.unidade_medida || item.unidade_medida || 'UN';
                   const exigeLote = prod?.controla_validade === 1;
                   const unitarioCalc =
-                    item.quantidade > 0 && item.valor_total
-                      ? item.valor_total / item.quantidade
-                      : item.valor_unitario;
+                    Number(item.quantidade) > 0 && Number(item.valor_total) > 0
+                      ? Number(item.valor_total) / Number(item.quantidade)
+                      : Number(item.valor_unitario) || 0;
 
                   return (
                     <div className="p-3.5 bg-slate-50/90 border-2 border-[#00237D]/30 rounded-xl shadow-xs space-y-3">
@@ -2141,7 +2180,7 @@ export const EntradasView: React.FC<EntradasViewProps> = ({
                             ITEM ATIVO #{actualIndex + 1}
                           </span>
                           <span className="text-xs font-bold text-slate-900">
-                            {prod ? `${prod.codigo} - ${prod.nome}` : 'Preencha os dados do produto para incluir na nota'}
+                            {prodLabel || 'Preencha os dados do produto para incluir na nota'}
                           </span>
                         </div>
 
@@ -2166,15 +2205,28 @@ export const EntradasView: React.FC<EntradasViewProps> = ({
                             options={produtosOptions}
                             value={item.produto_id}
                             onChange={(val) => {
-                              const next = [...newNotaItens];
                               const pId = Number(val);
-                              next[actualIndex].produto_id = pId;
-                              const pObj = produtos.find((p) => p.id === pId);
+                              const pObj = produtos.find((p) => Number(p.id) === pId);
                               const pUnit = round4(pObj?.valor_unitario || pObj?.custo_unitario || 0);
-                              const qtd = round4(next[actualIndex].quantidade || 1);
-                              next[actualIndex].valor_unitario = pUnit;
-                              next[actualIndex].valor_total = round4(qtd * pUnit);
-                              setNewNotaItens(next);
+                              setNewNotaItens((prev) =>
+                                prev.map((it, idx) => {
+                                  if (idx !== actualIndex) return it;
+                                  const qtd = round4(Number(it.quantidade) || 1);
+                                  const nextTotal =
+                                    Number(it.valor_total) > 0 && pUnit === 0
+                                      ? Number(it.valor_total)
+                                      : round4(qtd * pUnit);
+                                  return {
+                                    ...it,
+                                    produto_id: pId,
+                                    produto_codigo: pObj?.codigo || it.produto_codigo,
+                                    produto_nome: pObj?.nome || it.produto_nome,
+                                    unidade_medida: pObj?.unidade_medida || it.unidade_medida,
+                                    valor_unitario: pUnit,
+                                    valor_total: nextTotal > 0 ? nextTotal : ('' as any),
+                                  };
+                                })
+                              );
                             }}
                             placeholder="Digite código ou nome do produto..."
                           />
@@ -2188,9 +2240,12 @@ export const EntradasView: React.FC<EntradasViewProps> = ({
                             type="text"
                             value={item.numero_lote}
                             onChange={(e) => {
-                              const next = [...newNotaItens];
-                              next[actualIndex].numero_lote = e.target.value.toUpperCase();
-                              setNewNotaItens(next);
+                              const novoLote = e.target.value.toUpperCase();
+                              setNewNotaItens((prev) =>
+                                prev.map((it, idx) =>
+                                  idx === actualIndex ? { ...it, numero_lote: novoLote } : it
+                                )
+                              );
                             }}
                             className="w-full px-2 py-1.5 bg-white border border-slate-300 rounded font-mono text-xs uppercase"
                             placeholder={exigeLote ? 'LOTE' : 'SEM LOTE'}
@@ -2205,9 +2260,12 @@ export const EntradasView: React.FC<EntradasViewProps> = ({
                             type="date"
                             value={item.data_validade}
                             onChange={(e) => {
-                              const next = [...newNotaItens];
-                              next[actualIndex].data_validade = e.target.value;
-                              setNewNotaItens(next);
+                              const novaVal = e.target.value;
+                              setNewNotaItens((prev) =>
+                                prev.map((it, idx) =>
+                                  idx === actualIndex ? { ...it, data_validade: novaVal } : it
+                                )
+                              );
                             }}
                             className="w-full px-2 py-1.5 bg-white border border-slate-300 rounded text-xs"
                           />
@@ -2215,7 +2273,7 @@ export const EntradasView: React.FC<EntradasViewProps> = ({
 
                         <div>
                           <label className="block text-[10px] font-bold text-slate-600 uppercase tracking-wider mb-0.5">
-                            Quantidade ({prod?.unidade_medida || 'UN'}) *
+                            Quantidade ({prodUnidade}) *
                           </label>
                           <input
                             type="number"
@@ -2223,16 +2281,22 @@ export const EntradasView: React.FC<EntradasViewProps> = ({
                             step="any"
                             value={item.quantidade || ''}
                             onChange={(e) => {
-                              const next = [...newNotaItens];
                               const val = e.target.value;
                               const q = val === '' ? ('' as any) : round4(parseDecimal(val, 0));
-                              next[actualIndex].quantidade = q;
-                              if (next[actualIndex].valor_total && Number(q) > 0) {
-                                next[actualIndex].valor_unitario = round4(
-                                  Number(next[actualIndex].valor_total) / Number(q)
-                                );
-                              }
-                              setNewNotaItens(next);
+                              setNewNotaItens((prev) =>
+                                prev.map((it, idx) => {
+                                  if (idx !== actualIndex) return it;
+                                  const nextUnit =
+                                    it.valor_total && Number(q) > 0
+                                      ? round4(Number(it.valor_total) / Number(q))
+                                      : it.valor_unitario;
+                                  return {
+                                    ...it,
+                                    quantidade: q,
+                                    valor_unitario: nextUnit,
+                                  };
+                                })
+                              );
                             }}
                             placeholder="0"
                             className="w-full px-2 py-1.5 bg-white border border-slate-300 rounded font-mono font-bold text-right text-xs"
@@ -2247,9 +2311,12 @@ export const EntradasView: React.FC<EntradasViewProps> = ({
                             type="text"
                             value={item.marca}
                             onChange={(e) => {
-                              const next = [...newNotaItens];
-                              next[actualIndex].marca = e.target.value;
-                              setNewNotaItens(next);
+                              const novaMarca = e.target.value;
+                              setNewNotaItens((prev) =>
+                                prev.map((it, idx) =>
+                                  idx === actualIndex ? { ...it, marca: novaMarca } : it
+                                )
+                              );
                             }}
                             placeholder="ex: Cremer, Descarpack..."
                             className="w-full px-2 py-1.5 bg-white border border-slate-300 rounded text-xs"
@@ -2261,9 +2328,9 @@ export const EntradasView: React.FC<EntradasViewProps> = ({
                             <label className="block text-[10px] font-bold text-slate-700 uppercase tracking-wider">
                               Custo Total da NF (R$) *
                             </label>
-                            {item.quantidade > 0 && item.valor_total > 0 && (
+                            {Number(item.quantidade) > 0 && Number(item.valor_total) > 0 && (
                               <span className="text-[10px] font-mono text-[#00237D] font-bold bg-blue-50 px-1.5 py-0.5 rounded border border-blue-200">
-                                Unit.: {formatCurrency4(unitarioCalc)} / {prod?.unidade_medida || 'UN'}
+                                Unit.: {formatCurrency4(unitarioCalc)} / {prodUnidade}
                               </span>
                             )}
                           </div>
@@ -2273,13 +2340,20 @@ export const EntradasView: React.FC<EntradasViewProps> = ({
                             min="0"
                             value={item.valor_total || ''}
                             onChange={(e) => {
-                              const next = [...newNotaItens];
                               const val = e.target.value;
                               const tot = val === '' ? ('' as any) : round4(parseDecimal(val, 0));
-                              next[actualIndex].valor_total = tot;
-                              const q = round4(next[actualIndex].quantidade || 0);
-                              next[actualIndex].valor_unitario = q > 0 && tot ? round4(Number(tot) / q) : 0;
-                              setNewNotaItens(next);
+                              setNewNotaItens((prev) =>
+                                prev.map((it, idx) => {
+                                  if (idx !== actualIndex) return it;
+                                  const q = round4(Number(it.quantidade) || 0);
+                                  const nextUnit = q > 0 && tot ? round4(Number(tot) / q) : 0;
+                                  return {
+                                    ...it,
+                                    valor_total: tot,
+                                    valor_unitario: nextUnit,
+                                  };
+                                })
+                              );
                             }}
                             placeholder="0,00"
                             className="w-full px-2 py-1.5 bg-white border border-slate-300 rounded font-mono font-bold text-right text-xs text-slate-900 focus:border-[#00237D] focus:ring-1 focus:ring-[#00237D]"
@@ -2319,7 +2393,13 @@ export const EntradasView: React.FC<EntradasViewProps> = ({
 
                   <div className="space-y-2 max-h-[220px] overflow-y-auto pr-1">
                     {newNotaItens.map((item, index) => {
-                      const prod = produtos.find((p) => p.id === item.produto_id);
+                      const prod = produtos.find((p) => Number(p.id) === Number(item.produto_id));
+                      const prodLabel = prod
+                        ? `${prod.codigo} - ${prod.nome}`
+                        : item.produto_codigo && item.produto_nome
+                        ? `${item.produto_codigo} - ${item.produto_nome}`
+                        : null;
+                      const prodUnidade = prod?.unidade_medida || item.unidade_medida || 'UN';
                       const isActive = expandedItemIds[item.tempId];
 
                       return (
@@ -2340,7 +2420,7 @@ export const EntradasView: React.FC<EntradasViewProps> = ({
                             </span>
                             <div className="truncate min-w-0 flex items-center gap-1.5">
                               <span className="font-bold text-slate-800 truncate">
-                                {prod ? `${prod.codigo} - ${prod.nome}` : 'Aguardando preenchimento...'}
+                                {prodLabel || 'Aguardando preenchimento...'}
                               </span>
                               {item.marca && (
                                 <span className="text-[11px] text-slate-500 font-normal truncate hidden sm:inline">
@@ -2358,10 +2438,10 @@ export const EntradasView: React.FC<EntradasViewProps> = ({
                               Val: <strong className="text-slate-800">{item.data_validade ? formatDataValidade(item.data_validade) : '—'}</strong>
                             </span>
                             <span className="bg-slate-50 px-2 py-0.5 rounded border border-slate-200 text-slate-700">
-                              Qtd: <strong className="text-teal-900">{item.quantidade || 0} {prod?.unidade_medida || 'UN'}</strong>
+                              Qtd: <strong className="text-teal-900">{item.quantidade || 0} {prodUnidade}</strong>
                             </span>
                             <span className="bg-blue-50 text-[#00237D] px-2 py-0.5 rounded border border-blue-200 font-bold">
-                              R$ {item.valor_total ? item.valor_total.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '0,00'}
+                              R$ {item.valor_total ? Number(item.valor_total).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '0,00'}
                             </span>
 
                             <div className="flex items-center gap-1 pl-1 border-l border-slate-200">

@@ -1463,7 +1463,7 @@ apiRouter.post('/rascunhos/:modulo', (req, res) => {
 
   const { modulo } = req.params;
   const areaSigla = ((req.headers['x-area-sigla'] as string) || user.area_sigla || 'ALM').trim().toUpperCase();
-  const { dados } = req.body || {};
+  const { dados, forcar_sobrescrita } = req.body || {};
 
   if (!dados || typeof dados !== 'object') {
     res.status(400).json({ error: 'Os dados do formulário são obrigatórios para salvar rascunho.' });
@@ -1472,7 +1472,56 @@ apiRouter.post('/rascunhos/:modulo', (req, res) => {
 
   try {
     const centralDb = getCentralDb();
-    const dadosJson = JSON.stringify(dados);
+    let finalDados = { ...dados };
+
+    if (modulo === 'entradas_nota') {
+      const existingRow = centralDb.prepare(`
+        SELECT dados_json
+        FROM rascunhos_formularios
+        WHERE UPPER(area_sigla) = UPPER(?) AND modulo = ?
+        ORDER BY atualizado_em DESC
+        LIMIT 1
+      `).get(areaSigla, modulo) as any;
+
+      if (existingRow?.dados_json) {
+        try {
+          const prevDados = JSON.parse(existingRow.dados_json);
+          const isItemValid = (it: any) =>
+            it &&
+            (Number(it.produto_id) > 0 ||
+              (typeof it.numero_lote === 'string' && it.numero_lote.trim().length > 0) ||
+              Number(it.quantidade) > 0 ||
+              Number(it.valor_total) > 0);
+
+          const prevFilledItems = Array.isArray(prevDados?.newNotaItens)
+            ? prevDados.newNotaItens.filter(isItemValid)
+            : [];
+          const incomingFilledItems = Array.isArray(finalDados?.newNotaItens)
+            ? finalDados.newNotaItens.filter(isItemValid)
+            : [];
+
+          // Se for auto-save sem itens preenchidos mas o banco já possuía itens preenchidos, preserva os itens e campos existentes
+          if (!forcar_sobrescrita && prevFilledItems.length > 0 && incomingFilledItems.length === 0) {
+            finalDados = {
+              ...prevDados,
+              ...finalDados,
+              newNotaCentroCustoId: Number(finalDados.newNotaCentroCustoId) || Number(prevDados.newNotaCentroCustoId) || 0,
+              newNotaObservacao:
+                (typeof finalDados.newNotaObservacao === 'string' && finalDados.newNotaObservacao.trim()) ||
+                prevDados.newNotaObservacao ||
+                '',
+              newNotaItens: prevDados.newNotaItens,
+              expandedItemIds: prevDados.expandedItemIds || finalDados.expandedItemIds || {},
+            };
+          }
+        } catch {
+          // ignore parse error
+        }
+      }
+    }
+
+    const dadosJson = JSON.stringify(finalDados);
+    const nowIso = new Date().toISOString();
 
     centralDb.prepare(`
       INSERT INTO rascunhos_formularios (usuario_id, area_sigla, modulo, dados_json, atualizado_em)
@@ -1481,10 +1530,20 @@ apiRouter.post('/rascunhos/:modulo', (req, res) => {
       DO UPDATE SET dados_json = excluded.dados_json, atualizado_em = CURRENT_TIMESTAMP
     `).run(user.id, areaSigla, modulo, dadosJson);
 
+    if (modulo === 'entradas_nota') {
+      // Mantém rascunhos da mesma área sincronizados para evitar divergência entre sessões
+      centralDb.prepare(`
+        UPDATE rascunhos_formularios
+        SET dados_json = ?, atualizado_em = CURRENT_TIMESTAMP
+        WHERE UPPER(area_sigla) = UPPER(?) AND modulo = ?
+      `).run(dadosJson, areaSigla, modulo);
+    }
+
     res.json({
       success: true,
       mensagem: 'Rascunho salvo com sucesso.',
-      atualizado_em: new Date().toISOString(),
+      atualizado_em: nowIso,
+      dados: finalDados,
     });
   } catch (err: any) {
     res.status(500).json({ error: 'Erro ao salvar rascunho: ' + err.message });
