@@ -30,6 +30,7 @@ interface ConsumoViewProps {
   activeAreaNome?: string;
   centrosCusto: CentroCusto[];
   produtos: Produto[];
+  onRefresh?: () => void;
 }
 
 interface NewConsumoItem {
@@ -51,8 +52,10 @@ export const ConsumoView: React.FC<ConsumoViewProps> = ({
   activeAreaNome = 'Almoxarifado',
   centrosCusto,
   produtos,
+  onRefresh,
 }) => {
   const [consumos, setConsumos] = useState<Consumo[]>([]);
+  const [catalogoProdutos, setCatalogoProdutos] = useState<Produto[]>(produtos);
   const [loading, setLoading] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
@@ -126,15 +129,51 @@ export const ConsumoView: React.FC<ConsumoViewProps> = ({
   };
 
   useEffect(() => {
+    setCatalogoProdutos(produtos);
+  }, [produtos]);
+
+  const fetchCatalogoProdutos = async () => {
+    try {
+      const res = await fetch('/api/produtos?apenas_ativos=false', {
+        headers: getAuthHeaders({ 'X-Area-Sigla': activeAreaSigla }),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        if (Array.isArray(data)) {
+          setCatalogoProdutos(data);
+        }
+      }
+    } catch {
+      // fallback silencioso ao estado atual
+    }
+  };
+
+  useEffect(() => {
     fetchConsumos();
+    fetchCatalogoProdutos();
   }, [activeAreaSigla, filtroCcId, dataInicio, dataFim]);
+
+  useEffect(() => {
+    if (isNovoModalOpen) {
+      fetchCatalogoProdutos();
+      if (onRefresh) onRefresh();
+    }
+  }, [isNovoModalOpen, activeAreaSigla]);
 
   const filterRealLotes = (rawLotes: LoteEstoque[] | undefined | null): LoteEstoque[] => {
     if (!Array.isArray(rawLotes)) return [];
-    // Filtra registros reais de lote (ignora placeholders 'SEM LOTE' sem validade criados na importação de itens sem lote)
+    // Filtra apenas lotes reais que possuam saldo positivo (> 0). Lotes zerados nunca devem aparecer.
     const reais = rawLotes.filter((l) => {
+      const saldo = round4(parseDecimal(l.quantidade_atual, 0));
+      if (saldo <= 0) return false;
       const num = String(l.numero_lote || '').trim().toUpperCase();
-      const hasRealNum = num !== '' && num !== 'SEM LOTE' && num !== 'S/L' && num !== 'N/A';
+      const hasRealNum =
+        num !== '' &&
+        num !== 'SEM LOTE' &&
+        num !== 'S/ LOTE' &&
+        num !== 'S/L' &&
+        num !== 'N/A' &&
+        num !== 'LOTE-PADRAO';
       const hasValidade = Boolean(l.data_validade && String(l.data_validade).trim() !== '');
       return hasRealNum || hasValidade;
     });
@@ -160,7 +199,7 @@ export const ConsumoView: React.FC<ConsumoViewProps> = ({
     }
 
     const hojeStr = new Date().toISOString().slice(0, 10);
-    const prodLocal = produtos.find((p) => Number(p.id) === Number(prodSelectId));
+    const prodLocal = catalogoProdutos.find((p) => Number(p.id) === Number(prodSelectId));
     const lotesLocais = filterRealLotes(prodLocal?.lotes);
 
     if (lotesLocais.length > 0) {
@@ -170,21 +209,22 @@ export const ConsumoView: React.FC<ConsumoViewProps> = ({
           (l) =>
             parseDecimal(l.quantidade_atual, 0) > 0 &&
             (!l.data_validade || String(l.data_validade).slice(0, 10) >= hojeStr)
-        ) ||
-        lotesLocais.find((l) => !l.data_validade || String(l.data_validade).slice(0, 10) >= hojeStr) ||
-        lotesLocais[0];
+        ) || lotesLocais[0];
       setLoteSelectId(primeiroValido ? Number(primeiroValido.id) : 0);
+    } else {
+      setLotesProduto([]);
+      setLoteSelectId(0);
     }
 
     let cancelled = false;
     const loadLotes = async () => {
       setLoadingLotes(true);
       try {
-        let res = await fetch(`/api/produtos/${prodSelectId}/lotes`, {
+        let res = await fetch(`/api/produtos/${prodSelectId}/lotes?apenas_com_saldo=true`, {
           headers: getAuthHeaders({ 'X-Area-Sigla': activeAreaSigla }),
         });
         if (!res.ok) {
-          res = await fetch(`/api/lotes?produto_id=${prodSelectId}&apenas_com_saldo=false`, {
+          res = await fetch(`/api/lotes?produto_id=${prodSelectId}&apenas_com_saldo=true`, {
             headers: getAuthHeaders({ 'X-Area-Sigla': activeAreaSigla }),
           });
         }
@@ -198,9 +238,7 @@ export const ConsumoView: React.FC<ConsumoViewProps> = ({
                 (l) =>
                   parseDecimal(l.quantidade_atual, 0) > 0 &&
                   (!l.data_validade || String(l.data_validade).slice(0, 10) >= hojeStr)
-              ) ||
-              reais.find((l) => !l.data_validade || String(l.data_validade).slice(0, 10) >= hojeStr) ||
-              reais[0];
+              ) || reais[0];
             setLoteSelectId(primeiroValido ? Number(primeiroValido.id) : 0);
           } else {
             setLoteSelectId(0);
@@ -222,7 +260,7 @@ export const ConsumoView: React.FC<ConsumoViewProps> = ({
     return () => {
       cancelled = true;
     };
-  }, [prodSelectId, activeAreaSigla, produtos]);
+  }, [prodSelectId, activeAreaSigla, catalogoProdutos]);
 
   const handleAddItem = () => {
     setErrorMsg(null);
@@ -235,7 +273,7 @@ export const ConsumoView: React.FC<ConsumoViewProps> = ({
       return;
     }
 
-    const prod = produtos.find((p) => Number(p.id) === Number(prodSelectId));
+    const prod = catalogoProdutos.find((p) => Number(p.id) === Number(prodSelectId));
     if (!prod) return;
 
     let lote: LoteEstoque | undefined;
@@ -252,17 +290,14 @@ export const ConsumoView: React.FC<ConsumoViewProps> = ({
         return;
       }
 
-      // Valida saldo disponível no lote (ou no estoque geral se o lote foi cadastrado sem saldo individualizado)
+      // Valida saldo disponível exclusivamente no lote selecionado
       const jaAdicionado = round4(
         itensNovoConsumo
           .filter((i) => Number(i.lote_id) === Number(lote!.id))
           .reduce((acc, curr) => acc + curr.quantidade, 0)
       );
 
-      const baseSaldo =
-        parseDecimal(lote.quantidade_atual, 0) > 0
-          ? parseDecimal(lote.quantidade_atual, 0)
-          : parseDecimal(prod.quantidade_atual, 0);
+      const baseSaldo = round4(parseDecimal(lote.quantidade_atual, 0));
       const saldoReal = round4(baseSaldo - jaAdicionado);
       const qtdNorm = round4(parseDecimal(itemQuantidade, 0));
 
@@ -295,10 +330,9 @@ export const ConsumoView: React.FC<ConsumoViewProps> = ({
       lote_id: lote ? lote.id : 0,
       numero_lote: lote ? lote.numero_lote : 'SEM LOTE',
       data_validade: lote ? (lote.data_validade || null) : null,
-      saldo_disponivel:
-        lote && parseDecimal(lote.quantidade_atual, 0) > 0
-          ? round4(lote.quantidade_atual)
-          : round4(prod.quantidade_atual || 0),
+      saldo_disponivel: lote
+        ? round4(parseDecimal(lote.quantidade_atual, 0))
+        : round4(parseDecimal(prod.quantidade_atual, 0)),
       quantidade: round4(parseDecimal(itemQuantidade, 0)),
       custo_unitario: round4(prod.valor_unitario || prod.custo_unitario || 0),
     };
@@ -367,6 +401,8 @@ export const ConsumoView: React.FC<ConsumoViewProps> = ({
       setIsPrintModalOpen(true);
 
       fetchConsumos();
+      fetchCatalogoProdutos();
+      if (onRefresh) onRefresh();
     } catch (err: any) {
       setErrorMsg(err.message || 'Erro ao registrar consumo.');
     } finally {
@@ -430,6 +466,8 @@ export const ConsumoView: React.FC<ConsumoViewProps> = ({
       setIsEstornoModalOpen(false);
       setJustificativaEstorno('');
       fetchConsumos();
+      fetchCatalogoProdutos();
+      if (onRefresh) onRefresh();
     } catch (err: any) {
       alert(err.message || 'Erro ao estornar.');
     } finally {
@@ -441,7 +479,7 @@ export const ConsumoView: React.FC<ConsumoViewProps> = ({
     window.print();
   };
 
-  const productOptions: SearchableOption[] = produtos
+  const productOptions: SearchableOption[] = catalogoProdutos
     .filter((p) => p.ativo)
     .map((p) => {
       const lotesReais = filterRealLotes(p.lotes);
@@ -818,11 +856,7 @@ export const ConsumoView: React.FC<ConsumoViewProps> = ({
                       className="w-full px-2.5 py-1.5 bg-white border border-slate-300 rounded text-xs focus:outline-none focus:border-[#00237D]"
                     >
                       {lotesProduto.map((l) => {
-                        const prodAtual = produtos.find((p) => Number(p.id) === Number(prodSelectId));
-                        const saldoExibido =
-                          parseDecimal(l.quantidade_atual, 0) > 0
-                            ? round4(l.quantidade_atual)
-                            : round4(prodAtual?.quantidade_atual || 0);
+                        const saldoExibido = round4(parseDecimal(l.quantidade_atual, 0));
                         return (
                           <option key={l.id} value={l.id}>
                             Lote: {l.numero_lote} | Val: {formatValidadeShort(l.data_validade)} | Saldo: {saldoExibido}

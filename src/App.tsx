@@ -719,6 +719,7 @@ export default function App() {
                   activeAreaNome={currentUser?.area_nome || 'Almoxarifado'}
                   centrosCusto={centrosCusto}
                   produtos={produtos}
+                  onRefresh={loadData}
                 />
               )}
 

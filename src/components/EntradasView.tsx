@@ -215,20 +215,72 @@ export const EntradasView: React.FC<EntradasViewProps> = ({
     expandedItemIds: Record<string, boolean>;
   }
 
+  const isItemPreenchido = useCallback((it: any) => {
+    if (!it) return false;
+    return (
+      Number(it.produto_id) > 0 ||
+      (typeof it.numero_lote === 'string' && it.numero_lote.trim().length > 0) ||
+      Number(it.quantidade) > 0 ||
+      Number(it.valor_total) > 0 ||
+      (typeof it.marca === 'string' && it.marca.trim().length > 0) ||
+      (typeof it.nomenclatura_fornecedor === 'string' && it.nomenclatura_fornecedor.trim().length > 0)
+    );
+  }, []);
+
+  const restaurarDadosRascunho = useCallback(
+    (data: EntradasNotaDraftData) => {
+      if (!data) return;
+      setNewNotaDoc(typeof data.newNotaDoc === 'string' ? data.newNotaDoc : '');
+      setNewNotaFornecedorId(Number(data.newNotaFornecedorId) || 0);
+      setNewNotaCentroCustoId(Number(data.newNotaCentroCustoId) || 0);
+      setNewNotaObservacao(typeof data.newNotaObservacao === 'string' ? data.newNotaObservacao : '');
+
+      if (Array.isArray(data.newNotaItens) && data.newNotaItens.length > 0) {
+        const preenchidos = data.newNotaItens.filter(isItemPreenchido);
+        const baseItens = preenchidos.length > 0 ? preenchidos : [data.newNotaItens[0]];
+        const itensNormalizados = baseItens.map((it, idx) => ({
+          tempId: String(it.tempId || `${Date.now()}_${idx}`),
+          produto_id: Number(it.produto_id) || 0,
+          numero_lote: typeof it.numero_lote === 'string' ? it.numero_lote : '',
+          data_validade: typeof it.data_validade === 'string' ? it.data_validade : '',
+          quantidade:
+            it.quantidade !== ('' as any) && it.quantidade !== null && it.quantidade !== undefined && Number(it.quantidade) > 0
+              ? Number(it.quantidade)
+              : ('' as any),
+          valor_total:
+            it.valor_total !== ('' as any) && it.valor_total !== null && it.valor_total !== undefined && Number(it.valor_total) > 0
+              ? Number(it.valor_total)
+              : ('' as any),
+          valor_unitario: Number(it.valor_unitario) || 0,
+          marca: typeof it.marca === 'string' ? it.marca : '',
+          nomenclatura_fornecedor: typeof it.nomenclatura_fornecedor === 'string' ? it.nomenclatura_fornecedor : '',
+        }));
+
+        setNewNotaItens(itensNormalizados);
+
+        const savedExpanded = data.expandedItemIds || {};
+        const hasValidExpanded = itensNormalizados.some((it) => savedExpanded[it.tempId]);
+        if (hasValidExpanded) {
+          setExpandedItemIds(savedExpanded);
+        } else {
+          const lastId = itensNormalizados[itensNormalizados.length - 1]?.tempId;
+          setExpandedItemIds(lastId ? { [lastId]: true } : {});
+        }
+      }
+    },
+    [isItemPreenchido]
+  );
+
   const draft = useFormDraft<EntradasNotaDraftData>({
     modulo: 'entradas_nota',
     isOpen: isNewNotaOpen,
-    onRestore: (data) => {
-      if (typeof data.newNotaDoc === 'string') setNewNotaDoc(data.newNotaDoc);
-      if (typeof data.newNotaFornecedorId === 'number') setNewNotaFornecedorId(data.newNotaFornecedorId);
-      if (typeof data.newNotaCentroCustoId === 'number') setNewNotaCentroCustoId(data.newNotaCentroCustoId);
-      if (typeof data.newNotaObservacao === 'string') setNewNotaObservacao(data.newNotaObservacao);
-      if (Array.isArray(data.newNotaItens) && data.newNotaItens.length > 0) {
-        setNewNotaItens(data.newNotaItens);
-      }
-      if (data.expandedItemIds) setExpandedItemIds(data.expandedItemIds);
-    },
+    onRestore: restaurarDadosRascunho,
   });
+
+  // Recarrega rascunho se a área ativa mudar
+  useEffect(() => {
+    draft.loadDraft();
+  }, [currentUser?.area_sigla, draft.loadDraft]);
 
   // Salva rascunho de nota fiscal automaticamente com debounce
   useEffect(() => {
@@ -238,21 +290,17 @@ export const EntradasView: React.FC<EntradasViewProps> = ({
       newNotaFornecedorId > 0 ||
       newNotaCentroCustoId > 0 ||
       newNotaObservacao.trim().length > 0 ||
-      newNotaItens.some(
-        (it) =>
-          it.produto_id > 0 ||
-          it.numero_lote.trim().length > 0 ||
-          Number(it.quantidade) > 0 ||
-          Number(it.valor_total) > 0
-      );
+      newNotaItens.some(isItemPreenchido);
 
     if (hasAnyContent) {
+      const preenchidos = newNotaItens.filter(isItemPreenchido);
+      const itensParaRascunho = preenchidos.length > 0 ? preenchidos : newNotaItens;
       draft.scheduleAutoSave({
         newNotaDoc,
         newNotaFornecedorId,
         newNotaCentroCustoId,
         newNotaObservacao,
-        newNotaItens,
+        newNotaItens: itensParaRascunho,
         expandedItemIds,
       });
     }
@@ -264,18 +312,29 @@ export const EntradasView: React.FC<EntradasViewProps> = ({
     newNotaObservacao,
     newNotaItens,
     expandedItemIds,
+    isItemPreenchido,
     draft.scheduleAutoSave,
   ]);
 
   const handleSalvarRascunhoManual = async () => {
+    const preenchidos = newNotaItens.filter(isItemPreenchido);
+    const itensParaSalvar = preenchidos.length > 0 ? preenchidos : newNotaItens;
+    const lastId = itensParaSalvar[itensParaSalvar.length - 1]?.tempId;
+    const expandedParaSalvar =
+      itensParaSalvar.some((it) => expandedItemIds[it.tempId])
+        ? expandedItemIds
+        : lastId
+        ? { [lastId]: true }
+        : expandedItemIds;
+
     const ok = await draft.saveDraft(
       {
         newNotaDoc,
         newNotaFornecedorId,
         newNotaCentroCustoId,
         newNotaObservacao,
-        newNotaItens,
-        expandedItemIds,
+        newNotaItens: itensParaSalvar,
+        expandedItemIds: expandedParaSalvar,
       },
       true
     );
@@ -285,21 +344,16 @@ export const EntradasView: React.FC<EntradasViewProps> = ({
     }
   };
 
-  const handleContinuarRascunho = () => {
-    const data = draft.draftData;
+  const handleContinuarRascunho = async () => {
+    let data = draft.draftData;
+    if (!data) {
+      data = await draft.loadDraft();
+    }
     if (data) {
-      setNewNotaDoc(typeof data.newNotaDoc === 'string' ? data.newNotaDoc : '');
-      setNewNotaFornecedorId(typeof data.newNotaFornecedorId === 'number' ? data.newNotaFornecedorId : 0);
-      setNewNotaCentroCustoId(typeof data.newNotaCentroCustoId === 'number' ? data.newNotaCentroCustoId : 0);
-      setNewNotaObservacao(typeof data.newNotaObservacao === 'string' ? data.newNotaObservacao : '');
-      if (Array.isArray(data.newNotaItens) && data.newNotaItens.length > 0) {
-        setNewNotaItens(data.newNotaItens);
-        const firstId = data.newNotaItens[0]?.tempId;
-        setExpandedItemIds(data.expandedItemIds || (firstId ? { [firstId]: true } : {}));
-      }
+      restaurarDadosRascunho(data);
+      draft.applyDraft(true);
     }
     setIsNewNotaOpen(true);
-    if (setIsCreateModalOpen) setIsCreateModalOpen(true);
   };
 
   const hasSavedDraft = useMemo(() => {
@@ -310,26 +364,20 @@ export const EntradasView: React.FC<EntradasViewProps> = ({
       (typeof d.newNotaFornecedorId === 'number' && d.newNotaFornecedorId > 0) ||
       (typeof d.newNotaCentroCustoId === 'number' && d.newNotaCentroCustoId > 0) ||
       (typeof d.newNotaObservacao === 'string' && d.newNotaObservacao.trim().length > 0) ||
-      (Array.isArray(d.newNotaItens) &&
-        d.newNotaItens.some(
-          (it) =>
-            it.produto_id > 0 ||
-            (it.numero_lote && it.numero_lote.trim().length > 0) ||
-            Number(it.quantidade) > 0 ||
-            Number(it.valor_total) > 0
-        ))
+      (Array.isArray(d.newNotaItens) && d.newNotaItens.some(isItemPreenchido))
     );
-  }, [draft.draftData]);
+  }, [draft.draftData, isItemPreenchido]);
 
   // Preview de PDF
   const [pdfPreviewDoc, setPdfPreviewDoc] = useState<PdfGeneratedDocument | null>(null);
   const [isGeneratingPdf, setIsGeneratingPdf] = useState(false);
   const [isProcessingAction, setIsProcessingAction] = useState(false);
 
-  // Sincroniza abertura do modal externo se passado via prop
+  // Sincroniza abertura do modal externo se passado via prop (ex: botão "+ Criar" da TopBar)
   useEffect(() => {
     if (isCreateModalOpen) {
-      handleAbrirNovaNota();
+      handleAbrirNovaNota(false);
+      if (setIsCreateModalOpen) setIsCreateModalOpen(false);
     }
   }, [isCreateModalOpen]);
 
@@ -380,7 +428,7 @@ export const EntradasView: React.FC<EntradasViewProps> = ({
       setDetalheItens(data.itens || []);
       setDetalheHistorico(data.historico || []);
       setSelectedNotaId(notaId);
-      setIsEditingNota(false);
+      setIsEditingNota(data.nota?.situacao === 'ABERTA' && !autoPromptReopen);
       setIsConfirmingImpacto(false);
       setIsConfirmingFechar(false);
       setIsConfirmingReabrir(autoPromptReopen && data.nota?.situacao === 'FECHADA');
@@ -441,8 +489,15 @@ export const EntradasView: React.FC<EntradasViewProps> = ({
     return notasList.slice(start, start + pageSize);
   }, [notasList, currentPage, pageSize]);
 
-  // Abertura do formulário de criação de nova nota fiscal em branco
-  const handleAbrirNovaNota = () => {
+  // Abertura do formulário de criação de nova nota fiscal (ou retomada do rascunho ativo)
+  const handleAbrirNovaNota = (forceBlank: boolean = false) => {
+    if (!forceBlank && hasSavedDraft && draft.draftData) {
+      restaurarDadosRascunho(draft.draftData);
+      draft.applyDraft(true);
+      setIsNewNotaOpen(true);
+      return;
+    }
+
     setNewNotaDoc('');
     setNewNotaFornecedorId(0);
     setNewNotaCentroCustoId(0);
@@ -466,7 +521,6 @@ export const EntradasView: React.FC<EntradasViewProps> = ({
     setExpandedItemIds({ [initialTempId]: true });
 
     setIsNewNotaOpen(true);
-    if (setIsCreateModalOpen) setIsCreateModalOpen(true);
   };
 
   const handleAddNewItemToNewNota = () => {
@@ -513,13 +567,18 @@ export const EntradasView: React.FC<EntradasViewProps> = ({
       toast.error('Campo Obrigatório', 'Selecione o Centro de Custo (Local de Estocagem).');
       return;
     }
-    if (newNotaItens.length === 0) {
+
+    // Se houver itens preenchidos e algum item extra totalmente em branco (adicionado pelo botão "+ Incluir..."), ignora o item em branco
+    const itensPreenchidos = newNotaItens.filter(isItemPreenchido);
+    const itensParaValidar = itensPreenchidos.length > 0 ? itensPreenchidos : newNotaItens;
+
+    if (itensParaValidar.length === 0) {
       toast.error('Itens Obrigatórios', 'Adicione ao menos um item à Nota Fiscal.');
       return;
     }
 
     // Valida cada item
-    for (const [idx, it] of newNotaItens.entries()) {
+    for (const [idx, it] of itensParaValidar.entries()) {
       if (!it.produto_id) {
         toast.error('Item Inválido', `Selecione o produto no Item #${idx + 1}.`);
         return;
@@ -544,7 +603,7 @@ export const EntradasView: React.FC<EntradasViewProps> = ({
           fornecedor_id: newNotaFornecedorId,
           centro_custo_id: newNotaCentroCustoId || null,
           observacao: newNotaObservacao.trim() || null,
-          itens: newNotaItens.map((it) => {
+          itens: itensParaValidar.map((it) => {
             const qtd = Number(it.quantidade) || 1;
             const valTotal = Number(it.valor_total) || 0;
             const valUnit = valTotal > 0 ? valTotal / qtd : (Number(it.valor_unitario) || 0);
@@ -569,7 +628,7 @@ export const EntradasView: React.FC<EntradasViewProps> = ({
 
       toast.success(
         'Nota Fiscal Registrada (ABERTA)',
-        `Documento ${newNotaDoc.trim().toUpperCase()} registrado com ${newNotaItens.length} item(ns).`
+        `Documento ${newNotaDoc.trim().toUpperCase()} registrado com ${itensParaValidar.length} item(ns).`
       );
 
       await draft.clearDraftOnSubmit();
@@ -953,7 +1012,7 @@ export const EntradasView: React.FC<EntradasViewProps> = ({
 
           <button
             type="button"
-            onClick={handleAbrirNovaNota}
+            onClick={() => handleAbrirNovaNota(false)}
             className="bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800 text-white font-medium px-4 py-2 rounded-lg text-xs flex items-center gap-1.5 transition-all shadow-sm uppercase tracking-wide cursor-pointer"
           >
             <Plus className="w-4 h-4" />
@@ -1907,11 +1966,11 @@ export const EntradasView: React.FC<EntradasViewProps> = ({
                     <button
                       type="button"
                       disabled={isProcessingAction}
-                      onClick={handlePrepararImpacto}
+                      onClick={isConfirmingImpacto ? handleSalvarCorrecaoNota : handlePrepararImpacto}
                       className="px-4 py-2 bg-teal-600 hover:bg-teal-700 text-white rounded text-xs font-bold shadow flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
                     >
                       <Save className="w-4 h-4" />
-                      <span>Verificar Impacto e Gravar</span>
+                      <span>{isConfirmingImpacto ? 'Confirmar e Gravar Correções' : 'Verificar Impacto e Gravar'}</span>
                     </button>
                   </>
                 ) : (
@@ -1947,17 +2006,34 @@ export const EntradasView: React.FC<EntradasViewProps> = ({
               </div>
             </div>
 
-            <button
-              type="button"
-              onClick={() => {
-                setIsNewNotaOpen(false);
-                if (setIsCreateModalOpen) setIsCreateModalOpen(false);
-              }}
-              className="px-3.5 py-2 text-xs font-semibold text-slate-700 bg-white hover:bg-slate-100 rounded-lg border border-slate-300 inline-flex items-center gap-1.5 cursor-pointer"
-            >
-              <ArrowLeft className="w-4 h-4" />
-              <span>Voltar para Listagem</span>
-            </button>
+            <div className="flex items-center gap-2">
+              {hasSavedDraft && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    draft.discardDraft();
+                    handleAbrirNovaNota(true);
+                  }}
+                  className="px-3 py-2 text-xs font-semibold text-rose-700 bg-rose-50 hover:bg-rose-100 rounded-lg border border-rose-200 inline-flex items-center gap-1.5 cursor-pointer"
+                  title="Limpar rascunho atual e iniciar nova nota em branco"
+                >
+                  <Trash2 className="w-3.5 h-3.5" />
+                  <span>Limpar Rascunho</span>
+                </button>
+              )}
+
+              <button
+                type="button"
+                onClick={() => {
+                  setIsNewNotaOpen(false);
+                  if (setIsCreateModalOpen) setIsCreateModalOpen(false);
+                }}
+                className="px-3.5 py-2 text-xs font-semibold text-slate-700 bg-white hover:bg-slate-100 rounded-lg border border-slate-300 inline-flex items-center gap-1.5 cursor-pointer"
+              >
+                <ArrowLeft className="w-4 h-4" />
+                <span>Voltar para Listagem</span>
+              </button>
+            </div>
           </div>
 
           <form onSubmit={handleSalvarNovaNota} className="flex-1 flex flex-col justify-between text-xs">
@@ -1966,10 +2042,10 @@ export const EntradasView: React.FC<EntradasViewProps> = ({
               <FormDraftResumeBanner
                 hasDraft={draft.hasDraft}
                 draftDate={draft.draftDate}
-                onApply={draft.applyDraft}
+                onApply={() => draft.applyDraft(false)}
                 onDiscard={() => {
                   draft.discardDraft();
-                  handleAbrirNovaNota();
+                  handleAbrirNovaNota(true);
                 }}
                 formTitle="lançamento de nota fiscal"
               />

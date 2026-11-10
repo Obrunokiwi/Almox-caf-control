@@ -370,34 +370,86 @@ export const InventarioView: React.FC<InventarioViewProps> = ({
     const prod = produtos.find((p) => p.id === Number(manualProdutoId));
     if (!prod) return;
 
-    const qtdFis = typeof manualQuantidadeFisica === 'number' ? manualQuantidadeFisica : 0;
+    const existingForProd = formItens.find((it) => Number(it.produto_id) === Number(prod.id));
+    const qtdFis = typeof manualQuantidadeFisica === 'number' ? round4(manualQuantidadeFisica) : 0;
+    const loteNumNorm = manualNumeroLote ? manualNumeroLote.trim().toUpperCase() : 'LOTE-AVULSO';
+    const validadeNorm = manualDataValidade ? manualDataValidade.slice(0, 10) : null;
+
     const novoItem: ItemInventario = {
       produto_id: prod.id,
       produto_codigo: prod.codigo,
       produto_nome: prod.nome,
+      grupo_id: prod.grupo_id ?? existingForProd?.grupo_id,
+      grupo_nome: prod.grupo_nome ?? existingForProd?.grupo_nome,
       unidade_medida: prod.unidade_medida,
       produto_tipo: prod.tipo,
       lote_id: null,
-      numero_lote: manualNumeroLote ? manualNumeroLote.trim().toUpperCase() : 'LOTE-AVULSO',
-      data_validade: manualDataValidade ? manualDataValidade.slice(0, 10) : null,
+      numero_lote: loteNumNorm,
+      data_validade: validadeNorm,
       quantidade_sistema: 0, // Item encontrado que não constava no saldo
       quantidade_fisica: qtdFis,
       diferenca: qtdFis, // Diferença é exatamente a quantidade física encontrada
     };
 
-    setFormItens((prev) => [novoItem, ...prev]);
+    const newKey = getItemKey(novoItem);
+    setRawContagens((prev) => ({
+      ...prev,
+      [newKey]: String(qtdFis),
+    }));
+
+    setFormItens((prev) => {
+      // Verifica se já existe linha para este mesmo produto + número de lote
+      const idxSameLote = prev.findIndex(
+        (it) =>
+          Number(it.produto_id) === Number(prod.id) &&
+          String(it.numero_lote || '').trim().toUpperCase() === loteNumNorm
+      );
+      if (idxSameLote >= 0) {
+        return prev.map((it, idx) => {
+          if (idx === idxSameLote) {
+            const sis = round4(it.quantidade_sistema || 0);
+            return {
+              ...it,
+              data_validade: validadeNorm || it.data_validade,
+              quantidade_fisica: qtdFis,
+              diferenca: round4(qtdFis - sis),
+            };
+          }
+          return it;
+        });
+      }
+
+      // Ao adicionar lote real para um produto que estava apenas como 'S/ LOTE', zera o placeholder 'S/ LOTE'
+      const adjusted = prev.map((it) => {
+        if (
+          Number(it.produto_id) === Number(prod.id) &&
+          !it.lote_id &&
+          (!it.numero_lote || it.numero_lote === 'S/ LOTE')
+        ) {
+          return {
+            ...it,
+            quantidade_fisica: 0,
+            diferenca: round4(0 - (it.quantidade_sistema || 0)),
+          };
+        }
+        return it;
+      });
+
+      return [novoItem, ...adjusted];
+    });
+
     setIsAddManualModalOpen(false);
     setManualProdutoId('');
     setManualNumeroLote('');
     setManualDataValidade('');
     setManualQuantidadeFisica(0);
-    toast.success('Item Adicionado', `O item ${prod.codigo} - ${prod.nome} foi incluído na grade de recontagem.`);
+    toast.success('Item Adicionado', `O item ${prod.codigo} - ${prod.nome} (Lote: ${loteNumNorm}) foi incluído na grade de recontagem.`);
   };
 
   // Remover item manual da contagem (apenas itens não finalizados)
-  const handleRemoverItem = (index: number) => {
+  const handleRemoverItem = (itemKeyToRemove: string) => {
     if (formFinalizado === 1) return;
-    setFormItens((prev) => prev.filter((_, i) => i !== index));
+    setFormItens((prev) => prev.filter((it) => getItemKey(it) !== itemKeyToRemove));
     toast.info('Item Removido', 'Item removido da grade deste inventário.');
   };
 
@@ -1470,7 +1522,7 @@ export const InventarioView: React.FC<InventarioViewProps> = ({
                                 <td className="py-2 px-3 text-center">
                                   <button
                                     type="button"
-                                    onClick={() => handleRemoverItem(idx)}
+                                    onClick={() => handleRemoverItem(itemKey)}
                                     title="Remover item da contagem"
                                     className="p-1 text-slate-400 hover:text-rose-600 transition-colors"
                                   >

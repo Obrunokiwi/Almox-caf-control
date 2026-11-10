@@ -116,14 +116,24 @@ export function upsertLoteEstoque(params: {
     ? String(params.data_validade).trim().slice(0, 10)
     : null;
 
-  const existente = db.prepare(`
+  let existente = db.prepare(`
     SELECT id, numero_lote, data_validade, centro_custo_id, quantidade_atual, quantidade_inicial
     FROM lotes_estoque
     WHERE produto_id = ?
-      AND UPPER(numero_lote) = ?
+      AND UPPER(TRIM(numero_lote)) = ?
       AND COALESCE(data_validade, '') = COALESCE(?, '')
     LIMIT 1
   `).get(params.produto_id, loteNorm, validadeNorm || '') as { id: number; numero_lote: string; data_validade: string | null; centro_custo_id: number | null; quantidade_atual: number; quantidade_inicial: number } | undefined;
+
+  if (!existente) {
+    existente = db.prepare(`
+      SELECT id, numero_lote, data_validade, centro_custo_id, quantidade_atual, quantidade_inicial
+      FROM lotes_estoque
+      WHERE produto_id = ?
+        AND UPPER(TRIM(numero_lote)) = ?
+      LIMIT 1
+    `).get(params.produto_id, loteNorm) as { id: number; numero_lote: string; data_validade: string | null; centro_custo_id: number | null; quantidade_atual: number; quantidade_inicial: number } | undefined;
+  }
 
   if (existente) {
     const novaQtdAtual = safeAddStock(existente.quantidade_atual, qtdNorm);
@@ -132,6 +142,7 @@ export function upsertLoteEstoque(params: {
       UPDATE lotes_estoque
       SET quantidade_atual = ?,
           quantidade_inicial = ?,
+          data_validade = COALESCE(?, data_validade),
           fornecedor_id = COALESCE(?, fornecedor_id),
           documento_referencia = COALESCE(?, documento_referencia),
           marca = COALESCE(?, marca),
@@ -141,6 +152,7 @@ export function upsertLoteEstoque(params: {
     `).run(
       novaQtdAtual,
       novaQtdInicial,
+      validadeNorm,
       params.fornecedor_id || null,
       params.documento_referencia || null,
       params.marca || null,
@@ -148,7 +160,11 @@ export function upsertLoteEstoque(params: {
       params.centro_custo_id || null,
       existente.id
     );
-    return existente;
+    return {
+      id: existente.id,
+      numero_lote: existente.numero_lote,
+      data_validade: validadeNorm || existente.data_validade,
+    };
   }
 
   const info = db.prepare(`
@@ -717,17 +733,11 @@ apiRouter.post('/consumos', (req, res) => {
               `BLOQUEIO DE VENCIMENTO: O lote "${loteUsado.numero_lote}" do item "${prod.nome}" está VENCIDO (${loteUsado.data_validade}) e não pode ser dispensado para consumo.`
             );
           }
-          if (parseDecimal(loteUsado.quantidade_atual, 0) > 0) {
-            if (!hasSufficientStock(loteUsado.quantidade_atual, qtd)) {
-              throw new Error(`Saldo insuficiente no lote "${loteUsado.numero_lote}" (${prod.nome}). Disponível: ${round4(loteUsado.quantidade_atual)}, Solicitado: ${qtd}.`);
-            }
-            const novoSaldoLote = safeSubtractStock(loteUsado.quantidade_atual, qtd);
-            db.prepare('UPDATE lotes_estoque SET quantidade_atual = ? WHERE id = ?').run(novoSaldoLote, loteUsado.id);
-          } else {
-            if (!hasSufficientStock(prod.quantidade_atual, qtd)) {
-              throw new Error(`Estoque insuficiente para o produto "${prod.nome}" (Lote ${loteUsado.numero_lote}). Disponível: ${round4(prod.quantidade_atual)}, Solicitado: ${qtd}.`);
-            }
+          if (!hasSufficientStock(loteUsado.quantidade_atual, qtd)) {
+            throw new Error(`Saldo insuficiente no lote "${loteUsado.numero_lote}" (${prod.nome}). Disponível: ${round4(loteUsado.quantidade_atual)}, Solicitado: ${qtd}.`);
           }
+          const novoSaldoLote = safeSubtractStock(loteUsado.quantidade_atual, qtd);
+          db.prepare('UPDATE lotes_estoque SET quantidade_atual = ? WHERE id = ?').run(novoSaldoLote, loteUsado.id);
         } else {
           // Tenta FEFO automático se houver lotes com saldo
           const lotesConsumidos = consumirLotesValidosFEFO(prodId, qtd);
@@ -1396,15 +1406,27 @@ apiRouter.get('/rascunhos/:modulo', (req, res) => {
   }
 
   const { modulo } = req.params;
-  const areaSigla = (req.headers['x-area-sigla'] as string) || user.area_sigla || 'ALM';
+  const areaSigla = ((req.headers['x-area-sigla'] as string) || user.area_sigla || 'ALM').trim().toUpperCase();
 
   try {
     const centralDb = getCentralDb();
-    const row = centralDb.prepare(`
+    let row = centralDb.prepare(`
       SELECT id, usuario_id, area_sigla, modulo, dados_json, atualizado_em
       FROM rascunhos_formularios
       WHERE usuario_id = ? AND UPPER(area_sigla) = UPPER(?) AND modulo = ?
+      ORDER BY atualizado_em DESC
+      LIMIT 1
     `).get(user.id, areaSigla, modulo) as any;
+
+    if (!row && modulo === 'entradas_nota') {
+      row = centralDb.prepare(`
+        SELECT id, usuario_id, area_sigla, modulo, dados_json, atualizado_em
+        FROM rascunhos_formularios
+        WHERE UPPER(area_sigla) = UPPER(?) AND modulo = ?
+        ORDER BY atualizado_em DESC
+        LIMIT 1
+      `).get(areaSigla, modulo) as any;
+    }
 
     if (!row) {
       res.json({ rascunho: null });
@@ -1440,7 +1462,7 @@ apiRouter.post('/rascunhos/:modulo', (req, res) => {
   }
 
   const { modulo } = req.params;
-  const areaSigla = (req.headers['x-area-sigla'] as string) || user.area_sigla || 'ALM';
+  const areaSigla = ((req.headers['x-area-sigla'] as string) || user.area_sigla || 'ALM').trim().toUpperCase();
   const { dados } = req.body || {};
 
   if (!dados || typeof dados !== 'object') {
@@ -1457,7 +1479,7 @@ apiRouter.post('/rascunhos/:modulo', (req, res) => {
       VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
       ON CONFLICT(usuario_id, area_sigla, modulo)
       DO UPDATE SET dados_json = excluded.dados_json, atualizado_em = CURRENT_TIMESTAMP
-    `).run(user.id, areaSigla.toUpperCase(), modulo, dadosJson);
+    `).run(user.id, areaSigla, modulo, dadosJson);
 
     res.json({
       success: true,
@@ -1477,14 +1499,21 @@ apiRouter.delete('/rascunhos/:modulo', (req, res) => {
   }
 
   const { modulo } = req.params;
-  const areaSigla = (req.headers['x-area-sigla'] as string) || user.area_sigla || 'ALM';
+  const areaSigla = ((req.headers['x-area-sigla'] as string) || user.area_sigla || 'ALM').trim().toUpperCase();
 
   try {
     const centralDb = getCentralDb();
-    centralDb.prepare(`
-      DELETE FROM rascunhos_formularios
-      WHERE usuario_id = ? AND UPPER(area_sigla) = UPPER(?) AND modulo = ?
-    `).run(user.id, areaSigla, modulo);
+    if (modulo === 'entradas_nota') {
+      centralDb.prepare(`
+        DELETE FROM rascunhos_formularios
+        WHERE UPPER(area_sigla) = UPPER(?) AND modulo = ?
+      `).run(areaSigla, modulo);
+    } else {
+      centralDb.prepare(`
+        DELETE FROM rascunhos_formularios
+        WHERE usuario_id = ? AND UPPER(area_sigla) = UPPER(?) AND modulo = ?
+      `).run(user.id, areaSigla, modulo);
+    }
 
     res.json({ success: true, mensagem: 'Rascunho descartado com sucesso.' });
   } catch (err: any) {
@@ -2717,12 +2746,208 @@ apiRouter.delete('/fornecedores/:id', (req, res) => {
 // 6. CATÁLOGO DE PRODUTOS E LOTES (CÓDIGO ÚNICO DE ESTOQUE)
 // ============================================================================
 
+/**
+ * Reconcilia de forma idempotente lotes criados ou ajustados em inventários finalizados
+ * (corrige lotes adicionados manualmente que ficaram sem lote_id ou que foram zerados indevidamente por zera_por_lote,
+ * remove registros artificiais SINCRONIZADO-MOV inválidos e sincroniza o saldo de produtos com seus lotes reais).
+ */
+export function reconciliarLotesInventario(customDb?: any) {
+  const targetDb = customDb || db;
+  try {
+    // 1. Remove lotes artificiais 'SINCRONIZADO-MOV' sem número real de lote ou quando o produto já possui lotes reais
+    targetDb.prepare(`
+      DELETE FROM lotes_estoque
+      WHERE documento_referencia = 'SINCRONIZADO-MOV'
+        AND (
+          UPPER(TRIM(COALESCE(numero_lote, ''))) IN ('', 'SEM LOTE', 'S/ LOTE', 'S/L', 'N/A', 'LOTE-PADRAO')
+          OR EXISTS (
+            SELECT 1 FROM lotes_estoque le2
+            WHERE le2.produto_id = lotes_estoque.produto_id
+              AND le2.id != lotes_estoque.id
+              AND COALESCE(le2.documento_referencia, '') != 'SINCRONIZADO-MOV'
+          )
+        )
+    `).run();
+
+    // 2. Verifica inventários finalizados para garantir que lotes novos e quantidades ajustadas estejam refletidos em lotes_estoque
+    const invsFinalizados = targetDb.prepare(`
+      SELECT id, codigo, centro_custo_id, zera_por_lote, zera_nao_listados
+      FROM inventarios_estoque
+      WHERE finalizado = 1
+      ORDER BY id ASC
+    `).all() as any[];
+
+    if (invsFinalizados.length === 0) return;
+
+    const latestInvByLotKey = new Map<string, { inv: any; item: any; docRef: string; maxMovIdInv: number }>();
+    const affectedProdIds = new Set<number>();
+
+    for (const inv of invsFinalizados) {
+      const docRef = `Inventário Nº ${inv.codigo}`;
+      const maxMovRow = targetDb.prepare(`
+        SELECT COALESCE(MAX(id), 0) as max_id
+        FROM movimentacoes
+        WHERE documento_referencia = ?
+      `).get(docRef) as any;
+      const maxMovIdInv = Number(maxMovRow?.max_id || 0);
+
+      const itens = targetDb.prepare(`
+        SELECT * FROM itens_inventario WHERE inventario_id = ? ORDER BY id ASC
+      `).all(inv.id) as any[];
+
+      for (const item of itens) {
+        const prodId = Number(item.produto_id);
+        affectedProdIds.add(prodId);
+        const numLoteNorm = String(item.numero_lote || '').trim().toUpperCase();
+        const isRealLote =
+          Boolean(item.lote_id) ||
+          (numLoteNorm !== '' && !['S/ LOTE', 'SEM LOTE', 'S/L', 'N/A', 'LOTE-PADRAO'].includes(numLoteNorm));
+
+        if (!isRealLote) continue;
+
+        // Procura o lote em lotes_estoque
+        let loteRow: any = null;
+        if (item.lote_id) {
+          loteRow = targetDb.prepare('SELECT * FROM lotes_estoque WHERE id = ? AND produto_id = ?').get(Number(item.lote_id), prodId);
+        }
+        if (!loteRow && numLoteNorm) {
+          const valNorm = item.data_validade ? String(item.data_validade).trim().slice(0, 10) : '';
+          loteRow = targetDb.prepare(`
+            SELECT * FROM lotes_estoque
+            WHERE produto_id = ?
+              AND UPPER(TRIM(numero_lote)) = ?
+              AND COALESCE(data_validade, '') = ?
+            LIMIT 1
+          `).get(prodId, numLoteNorm, valNorm);
+          if (!loteRow) {
+            loteRow = targetDb.prepare(`
+              SELECT * FROM lotes_estoque
+              WHERE produto_id = ?
+                AND UPPER(TRIM(numero_lote)) = ?
+              LIMIT 1
+            `).get(prodId, numLoteNorm);
+          }
+        }
+
+        const qtdFisica = Math.max(0, round4(parseDecimal(item.quantidade_fisica, 0)));
+        const validadeNorm = item.data_validade ? String(item.data_validade).trim().slice(0, 10) : null;
+
+        if (!loteRow && numLoteNorm) {
+          // Lote adicionado no inventário que ainda não existia em lotes_estoque
+          const info = targetDb.prepare(`
+            INSERT INTO lotes_estoque (
+              produto_id, numero_lote, data_validade, quantidade_inicial, quantidade_atual,
+              documento_referencia, centro_custo_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+          `).run(
+            prodId,
+            numLoteNorm,
+            validadeNorm,
+            qtdFisica,
+            qtdFisica,
+            docRef,
+            inv.centro_custo_id || null
+          );
+          const newId = Number(info.lastInsertRowid);
+          loteRow = targetDb.prepare('SELECT * FROM lotes_estoque WHERE id = ?').get(newId);
+        }
+
+        if (loteRow) {
+          const loteId = Number(loteRow.id);
+          if (!item.lote_id || Number(item.lote_id) !== loteId) {
+            targetDb.prepare('UPDATE itens_inventario SET lote_id = ? WHERE id = ?').run(loteId, item.id);
+            item.lote_id = loteId;
+          }
+          if (validadeNorm && !loteRow.data_validade) {
+            targetDb.prepare('UPDATE lotes_estoque SET data_validade = ? WHERE id = ?').run(validadeNorm, loteId);
+          }
+
+          // Remove eventual zeramento indevido gerado no mesmo inventário para lote recém-adicionado
+          targetDb.prepare(`
+            DELETE FROM movimentacoes
+            WHERE documento_referencia = ?
+              AND produto_id = ?
+              AND (lote_id = ? OR UPPER(TRIM(COALESCE(numero_lote, ''))) = ?)
+              AND observacao LIKE 'Zeramento por lote não contado no inventário%'
+          `).run(docRef, prodId, loteId, String(loteRow.numero_lote || numLoteNorm).trim().toUpperCase());
+
+          latestInvByLotKey.set(`lote:${loteId}`, { inv, item: { ...item, lote_id: loteId }, docRef, maxMovIdInv });
+        }
+      }
+    }
+
+    // 3. Para o último inventário finalizado de cada lote, garante que quantidade_atual reflita
+    // exatamente a quantidade_fisica apurada + movimentações posteriores ao inventário
+    for (const { item, docRef, maxMovIdInv } of latestInvByLotKey.values()) {
+      const loteId = Number(item.lote_id);
+      const prodId = Number(item.produto_id);
+      const loteRow = targetDb.prepare('SELECT * FROM lotes_estoque WHERE id = ?').get(loteId) as any;
+      if (!loteRow) continue;
+
+      const numLoteNorm = String(loteRow.numero_lote || item.numero_lote || '').trim().toUpperCase();
+      const movsAfter = targetDb.prepare(`
+        SELECT tipo, quantidade
+        FROM movimentacoes
+        WHERE produto_id = ?
+          AND id > ?
+          AND COALESCE(documento_referencia, '') != ?
+          AND (lote_id = ? OR (lote_id IS NULL AND UPPER(TRIM(COALESCE(numero_lote, ''))) = ?))
+      `).all(prodId, maxMovIdInv, docRef, loteId, numLoteNorm) as any[];
+
+      let netAfter = 0;
+      for (const m of movsAfter) {
+        const q = parseDecimal(m.quantidade, 0);
+        if (m.tipo === 'entrada' || m.tipo === 'estorno_saida') {
+          netAfter = round4(netAfter + q);
+        } else if (m.tipo === 'saida' || m.tipo === 'estorno_entrada') {
+          netAfter = round4(netAfter - q);
+        }
+      }
+
+      const qtdFisica = Math.max(0, round4(parseDecimal(item.quantidade_fisica, 0)));
+      const expectedSaldo = Math.max(0, round4(qtdFisica + netAfter));
+      const currentSaldo = round4(parseDecimal(loteRow.quantidade_atual, 0));
+
+      if (currentSaldo !== expectedSaldo) {
+        targetDb.prepare('UPDATE lotes_estoque SET quantidade_atual = ? WHERE id = ?').run(expectedSaldo, loteId);
+      }
+    }
+
+    // 4. Sincroniza produtos.quantidade_atual com a soma dos lotes reais para os produtos afetados que possuem lotes reais
+    for (const prodId of affectedProdIds) {
+      const lotesReaisInfo = targetDb.prepare(`
+        SELECT COUNT(*) as total_lotes,
+               COALESCE(SUM(CASE WHEN quantidade_atual > 0 THEN quantidade_atual ELSE 0 END), 0) as soma_saldo
+        FROM lotes_estoque
+        WHERE produto_id = ?
+          AND UPPER(TRIM(COALESCE(numero_lote, ''))) NOT IN ('', 'SEM LOTE', 'S/ LOTE', 'S/L', 'N/A', 'LOTE-PADRAO')
+      `).get(prodId) as any;
+
+      if (lotesReaisInfo && Number(lotesReaisInfo.total_lotes) > 0) {
+        const somaReal = round4(parseDecimal(lotesReaisInfo.soma_saldo, 0));
+        targetDb.prepare('UPDATE produtos SET quantidade_atual = ? WHERE id = ?').run(somaReal, prodId);
+        // Zera eventuais lotes placeholders 'SEM LOTE' do mesmo produto para evitar duplicidade
+        targetDb.prepare(`
+          UPDATE lotes_estoque
+          SET quantidade_atual = 0
+          WHERE produto_id = ?
+            AND UPPER(TRIM(COALESCE(numero_lote, ''))) IN ('', 'SEM LOTE', 'S/ LOTE', 'S/L', 'N/A', 'LOTE-PADRAO')
+        `).run(prodId);
+      }
+    }
+  } catch (err) {
+    console.error('[reconciliarLotesInventario] Aviso:', err);
+  }
+}
+
 apiRouter.get('/lotes', (req, res) => {
   const user = authenticateRequest(req);
   if (user && user.perfil === 'requisitante') {
     res.status(403).json({ error: 'Acesso negado: Requisitantes não possuem autorização para consultar lotes e saldos de estoque.' });
     return;
   }
+
+  reconciliarLotesInventario(db);
 
   const { produto_id, apenas_com_saldo, filtro_validade } = req.query;
 
@@ -2736,7 +2961,7 @@ apiRouter.get('/lotes', (req, res) => {
     FROM lotes_estoque le
     JOIN produtos p ON le.produto_id = p.id
     LEFT JOIN fornecedores f ON le.fornecedor_id = f.id
-    WHERE 1=1
+    WHERE UPPER(TRIM(COALESCE(le.numero_lote, ''))) NOT IN ('', 'SEM LOTE', 'S/ LOTE', 'S/L', 'N/A', 'LOTE-PADRAO')
   `;
   const params: any[] = [];
 
@@ -2749,7 +2974,7 @@ apiRouter.get('/lotes', (req, res) => {
     params.push(Number(produto_id));
   }
 
-  sql += ' ORDER BY CASE WHEN le.data_validade IS NULL THEN 1 ELSE 0 END ASC, le.data_validade ASC, le.id ASC';
+  sql += ' ORDER BY CASE WHEN le.data_validade IS NULL OR le.data_validade = \'\' THEN 1 ELSE 0 END ASC, le.data_validade ASC, le.id ASC';
 
   const rows = db.prepare(sql).all(...params) as any[];
   const enriched = rows
@@ -2757,6 +2982,8 @@ apiRouter.get('/lotes', (req, res) => {
       const info = classifyLoteValidade(l.data_validade);
       return {
         ...l,
+        quantidade_atual: round4(l.quantidade_atual),
+        quantidade_inicial: round4(l.quantidade_inicial),
         dias_para_vencer: info.dias_para_vencer,
         status_validade: info.status_validade,
       };
@@ -2783,33 +3010,9 @@ apiRouter.get('/produtos/:id/lotes', (req, res) => {
   }
 
   try {
-    // Caso existam lotes registrados em movimentações que ainda não estejam na tabela lotes_estoque, sincroniza automaticamente
-    try {
-      const movLotes = db.prepare(`
-        SELECT DISTINCT TRIM(numero_lote) as numero_lote, data_validade
-        FROM movimentacoes
-        WHERE produto_id = ?
-          AND numero_lote IS NOT NULL
-          AND TRIM(numero_lote) != ''
-          AND UPPER(TRIM(numero_lote)) NOT IN ('SEM LOTE', 'S/L', 'N/A')
-      `).all(prodId) as any[];
+    reconciliarLotesInventario(db);
 
-      for (const ml of movLotes) {
-        const exists = db.prepare(`
-          SELECT id FROM lotes_estoque
-          WHERE produto_id = ? AND UPPER(TRIM(numero_lote)) = UPPER(TRIM(?))
-          LIMIT 1
-        `).get(prodId, ml.numero_lote);
-        if (!exists) {
-          const prodRow = db.prepare('SELECT quantidade_atual FROM produtos WHERE id = ?').get(prodId) as any;
-          const saldoProd = parseDecimal(prodRow?.quantidade_atual, 0);
-          db.prepare(`
-            INSERT INTO lotes_estoque (produto_id, numero_lote, data_validade, quantidade_inicial, quantidade_atual, documento_referencia)
-            VALUES (?, ?, ?, ?, ?, 'SINCRONIZADO-MOV')
-          `).run(prodId, ml.numero_lote, ml.data_validade || null, saldoProd, saldoProd);
-        }
-      }
-    } catch {}
+    const incluirZerados = req.query.apenas_com_saldo === 'false' || req.query.incluir_zerados === 'true';
 
     const rows = db.prepare(`
       SELECT 
@@ -2823,10 +3026,8 @@ apiRouter.get('/produtos/:id/lotes', (req, res) => {
       JOIN produtos p ON le.produto_id = p.id
       LEFT JOIN fornecedores f ON le.fornecedor_id = f.id
       WHERE le.produto_id = ?
-        AND (
-          le.quantidade_atual > 0
-          OR UPPER(TRIM(COALESCE(le.numero_lote, ''))) NOT IN ('', 'SEM LOTE', 'S/L', 'N/A')
-        )
+        AND UPPER(TRIM(COALESCE(le.numero_lote, ''))) NOT IN ('', 'SEM LOTE', 'S/ LOTE', 'S/L', 'N/A', 'LOTE-PADRAO')
+        ${incluirZerados ? '' : 'AND le.quantidade_atual > 0'}
       ORDER BY
         CASE WHEN le.quantidade_atual > 0 THEN 0 ELSE 1 END ASC,
         CASE WHEN le.data_validade IS NULL OR le.data_validade = '' THEN 1 ELSE 0 END ASC,
@@ -3185,6 +3386,8 @@ apiRouter.get('/produtos/sugestao-codigo', (_req, res) => {
 });
 
 apiRouter.get('/produtos', (req, res) => {
+  reconciliarLotesInventario(db);
+
   const { tipo, busca, codigo, nome, grupo_id, subgrupo_id, estoque_baixo, apenas_ativos } = req.query;
 
   let query = `
@@ -3276,9 +3479,8 @@ apiRouter.get('/produtos', (req, res) => {
       LEFT JOIN centros_custo cc ON le.centro_custo_id = cc.id
       LEFT JOIN fornecedores f ON le.fornecedor_id = f.id
       WHERE le.quantidade_atual > 0
-         OR UPPER(TRIM(COALESCE(le.numero_lote, ''))) NOT IN ('', 'SEM LOTE', 'S/L', 'N/A')
+        AND UPPER(TRIM(COALESCE(le.numero_lote, ''))) NOT IN ('', 'SEM LOTE', 'S/ LOTE', 'S/L', 'N/A', 'LOTE-PADRAO')
       ORDER BY
-        CASE WHEN le.quantidade_atual > 0 THEN 0 ELSE 1 END ASC,
         CASE WHEN le.data_validade IS NULL OR le.data_validade = '' THEN 1 ELSE 0 END ASC,
         le.data_validade ASC,
         le.id ASC
@@ -3290,6 +3492,8 @@ apiRouter.get('/produtos', (req, res) => {
       const list = lotesByProd.get(l.produto_id) || [];
       list.push({
         ...l,
+        quantidade_atual: round4(l.quantidade_atual),
+        quantidade_inicial: round4(l.quantidade_inicial),
         dias_para_vencer: info.dias_para_vencer,
         status_validade: info.status_validade,
       });
@@ -3868,14 +4072,14 @@ apiRouter.post('/entradas', (req, res) => {
                   codigo_referencia_fornecedor = COALESCE(?, codigo_referencia_fornecedor),
                   ultima_compra = CURRENT_TIMESTAMP
               WHERE id = ?
-            `).run(valUnit, itemCodRef, existingLink.id);
+            `).run(finalValUnit || valUnit, itemCodRef, existingLink.id);
           } else {
             db.prepare(`
               INSERT INTO produto_fornecedores (
                 produto_id, fornecedor_id, marca, nomenclatura_fornecedor,
                 codigo_referencia_fornecedor, ultimo_valor_unitario, ultima_compra
               ) VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-            `).run(prodId, fornRow.id, itemMarca, itemNomenclatura, itemCodRef, valUnit);
+            `).run(prodId, fornRow.id, itemMarca, itemNomenclatura, itemCodRef, finalValUnit || valUnit);
           }
         }
 
@@ -3901,7 +4105,7 @@ apiRouter.post('/entradas', (req, res) => {
           docRefUpper,
           loteReg.numero_lote,
           loteReg.data_validade,
-          valUnit,
+          finalValUnit || valUnit,
           itemMarca,
           itemNomenclatura,
           obsFinal,
@@ -3975,10 +4179,24 @@ function obterQuantidadeConsumidaLote(
 
 /**
  * Reconcilia de forma idempotente eventuais estornos de entrada gerados em duplicidade
- * quando uma movimentação já estornada permanecia visível na tela de edição da NF.
+ * ou itens marcados como inativos quando uma movimentação já estornada permanecia visível na tela de edição da NF.
  */
 function reconciliarEstornosDuplicadosNota(notaFiscalId: number) {
   try {
+    const nfRow = db.prepare('SELECT id, numero_documento FROM notas_fiscais WHERE id = ?').get(notaFiscalId) as
+      | { id: number; numero_documento: string }
+      | undefined;
+
+    if (nfRow?.numero_documento) {
+      db.prepare(`
+        UPDATE movimentacoes
+        SET nota_fiscal_id = ?
+        WHERE nota_fiscal_id IS NULL
+          AND tipo = 'entrada'
+          AND UPPER(TRIM(COALESCE(documento_referencia, ''))) = UPPER(TRIM(?))
+      `).run(notaFiscalId, nfRow.numero_documento);
+    }
+
     const movsNota = db.prepare(`
       SELECT id, tipo, motivo_diverso, produto_id, lote_id, quantidade
       FROM movimentacoes
@@ -3993,9 +4211,19 @@ function reconciliarEstornosDuplicadosNota(notaFiscalId: number) {
       quantidade: number;
     }>;
 
+    // Verifica se a Nota Fiscal ficou com 0 entradas ativas devido à remoção de linha duplicada na versão anterior
+    const entradasAtivasTotal = movsNota.filter(
+      (m) =>
+        m.tipo === 'entrada' &&
+        m.motivo_diverso !== 'Entrada corrigida (estornada)' &&
+        m.motivo_diverso !== 'Entrada corrigida (item removido)'
+    );
+
     const grupos = new Map<string, {
       produto_id: number;
       lote_id: number | null;
+      ativas: Array<{ id: number; quantidade: number; motivo_diverso: string | null }>;
+      inativas: Array<{ id: number; quantidade: number; motivo_diverso: string | null }>;
       inativasQtd: number;
       estornos: Array<{ id: number; quantidade: number }>;
     }>();
@@ -4006,19 +4234,48 @@ function reconciliarEstornosDuplicadosNota(notaFiscalId: number) {
         grupos.set(key, {
           produto_id: m.produto_id,
           lote_id: m.lote_id || null,
+          ativas: [],
+          inativas: [],
           inativasQtd: 0,
           estornos: [],
         });
       }
       const g = grupos.get(key)!;
-      if (
-        m.tipo === 'entrada' &&
-        (m.motivo_diverso === 'Entrada corrigida (estornada)' ||
-          m.motivo_diverso === 'Entrada corrigida (item removido)')
-      ) {
-        g.inativasQtd = round4(g.inativasQtd + Number(m.quantidade || 0));
+      if (m.tipo === 'entrada') {
+        if (
+          m.motivo_diverso === 'Entrada corrigida (estornada)' ||
+          m.motivo_diverso === 'Entrada corrigida (item removido)'
+        ) {
+          g.inativas.push({ id: m.id, quantidade: round4(Number(m.quantidade || 0)), motivo_diverso: m.motivo_diverso });
+          g.inativasQtd = round4(g.inativasQtd + Number(m.quantidade || 0));
+        } else {
+          g.ativas.push({ id: m.id, quantidade: round4(Number(m.quantidade || 0)), motivo_diverso: m.motivo_diverso });
+        }
       } else if (m.tipo === 'estorno_entrada') {
         g.estornos.push({ id: m.id, quantidade: round4(Number(m.quantidade || 0)) });
+      }
+    }
+
+    // Se a nota inteira ficou sem nenhum item ativo (ou se um mesmo lote teve 'estornada' + 'item removido' sem ativo),
+    // restaura a última entrada do grupo como ativa antes de reconciliar os estornos.
+    for (const g of grupos.values()) {
+      const teveEstornadaERemovida =
+        g.inativas.some((i) => i.motivo_diverso === 'Entrada corrigida (estornada)') &&
+        g.inativas.some((i) => i.motivo_diverso === 'Entrada corrigida (item removido)');
+
+      if (g.ativas.length === 0 && g.inativas.length > 0 && (entradasAtivasTotal.length === 0 || teveEstornadaERemovida)) {
+        const ultimaInativa = g.inativas[g.inativas.length - 1];
+        runInTransaction(() => {
+          db.prepare("UPDATE movimentacoes SET motivo_diverso = 'Entrada por Nota Fiscal (Corrigida)' WHERE id = ?")
+            .run(ultimaInativa.id);
+        });
+        g.inativas.pop();
+        g.inativasQtd = round4(Math.max(0, g.inativasQtd - ultimaInativa.quantidade));
+        g.ativas.push({
+          id: ultimaInativa.id,
+          quantidade: ultimaInativa.quantidade,
+          motivo_diverso: 'Entrada por Nota Fiscal (Corrigida)',
+        });
       }
     }
 
@@ -4028,8 +4285,12 @@ function reconciliarEstornosDuplicadosNota(notaFiscalId: number) {
       if (excesso > 0.0001) {
         runInTransaction(() => {
           if (g.lote_id) {
-            db.prepare('UPDATE lotes_estoque SET quantidade_atual = ROUND(quantidade_atual + ?, 4) WHERE id = ?')
-              .run(excesso, g.lote_id);
+            db.prepare(`
+              UPDATE lotes_estoque
+              SET quantidade_atual = ROUND(quantidade_atual + ?, 4),
+                  quantidade_inicial = MAX(quantidade_inicial, ROUND(quantidade_atual + ?, 4))
+              WHERE id = ?
+            `).run(excesso, excesso, g.lote_id);
           }
           db.prepare('UPDATE produtos SET quantidade_atual = ROUND(quantidade_atual + ?, 4) WHERE id = ?')
             .run(excesso, g.produto_id);
@@ -4065,14 +4326,10 @@ apiRouter.get('/notas-fiscais', (req, res) => {
 
   try {
     try {
-      const nfsComEstorno = db.prepare(`
-        SELECT DISTINCT nota_fiscal_id
-        FROM movimentacoes
-        WHERE nota_fiscal_id IS NOT NULL AND tipo = 'estorno_entrada'
-      `).all() as Array<{ nota_fiscal_id: number }>;
-      for (const row of nfsComEstorno) {
-        if (row.nota_fiscal_id) {
-          reconciliarEstornosDuplicadosNota(Number(row.nota_fiscal_id));
+      const todasNfs = db.prepare('SELECT id FROM notas_fiscais ORDER BY id DESC LIMIT 100').all() as Array<{ id: number }>;
+      for (const row of todasNfs) {
+        if (row.id) {
+          reconciliarEstornosDuplicadosNota(Number(row.id));
         }
       }
     } catch {}
@@ -11257,6 +11514,8 @@ apiRouter.get('/inventarios/sugestao-codigo', (req, res) => {
 // 2. Consulta de itens base para contagem física de um Centro de Custo
 apiRouter.get('/inventarios/itens-base', (req, res) => {
   try {
+    reconciliarLotesInventario(db);
+
     const { centro_custo_id, grupo_id, incluir_zerados_vencidos } = req.query;
     const permitirZeradosVencidos = incluir_zerados_vencidos === '1' || incluir_zerados_vencidos === 'true';
     const hojeStr = new Date().toISOString().slice(0, 10);
@@ -11282,12 +11541,13 @@ apiRouter.get('/inventarios/itens-base', (req, res) => {
     const itensBase: any[] = [];
 
     for (const prod of produtos) {
-      // Busca lotes existentes para o produto
+      // Busca lotes reais existentes para o produto (ignora placeholders SEM LOTE / S/ LOTE)
       const lotes = db.prepare(`
         SELECT id, numero_lote, data_validade, quantidade_atual
         FROM lotes_estoque
         WHERE produto_id = ?
-        ORDER BY CASE WHEN data_validade IS NULL THEN 1 ELSE 0 END ASC, data_validade ASC, id ASC
+          AND UPPER(TRIM(COALESCE(numero_lote, ''))) NOT IN ('', 'SEM LOTE', 'S/ LOTE', 'S/L', 'N/A', 'LOTE-PADRAO')
+        ORDER BY CASE WHEN data_validade IS NULL OR data_validade = '' THEN 1 ELSE 0 END ASC, data_validade ASC, id ASC
       `).all(prod.id) as any[];
 
       if (lotes.length > 0) {
@@ -11314,11 +11574,30 @@ apiRouter.get('/inventarios/itens-base', (req, res) => {
             lote_id: lot.id,
             numero_lote: lot.numero_lote,
             data_validade: lot.data_validade,
-            quantidade_sistema: Number(lot.quantidade_atual || 0),
-            quantidade_fisica: Number(lot.quantidade_atual || 0),
+            quantidade_sistema: round4(Number(lot.quantidade_atual || 0)),
+            quantidade_fisica: round4(Number(lot.quantidade_atual || 0)),
             diferenca: 0,
           });
           lotesAdicionados++;
+        }
+
+        if (lotesAdicionados === 0) {
+          itensBase.push({
+            produto_id: prod.id,
+            produto_codigo: prod.codigo,
+            produto_nome: prod.nome,
+            grupo_id: prod.grupo_id,
+            grupo_nome: prod.grupo_nome,
+            grupo_codigo: prod.grupo_codigo,
+            unidade_medida: prod.unidade_medida,
+            produto_tipo: prod.tipo,
+            lote_id: null,
+            numero_lote: 'S/ LOTE',
+            data_validade: null,
+            quantidade_sistema: round4(Number(prod.quantidade_atual || 0)),
+            quantidade_fisica: round4(Number(prod.quantidade_atual || 0)),
+            diferenca: 0,
+          });
         }
       } else {
         itensBase.push({
@@ -11333,8 +11612,8 @@ apiRouter.get('/inventarios/itens-base', (req, res) => {
           lote_id: null,
           numero_lote: 'S/ LOTE',
           data_validade: null,
-          quantidade_sistema: Number(prod.quantidade_atual || 0),
-          quantidade_fisica: Number(prod.quantidade_atual || 0),
+          quantidade_sistema: round4(Number(prod.quantidade_atual || 0)),
+          quantidade_fisica: round4(Number(prod.quantidade_atual || 0)),
           diferenca: 0,
         });
       }
@@ -11471,114 +11750,282 @@ function executarFechamentoInventario(invId: number, usuario: any) {
     FROM itens_inventario ii
     JOIN produtos p ON ii.produto_id = p.id
     WHERE ii.inventario_id = ?
+    ORDER BY ii.id ASC
   `).all(invId) as any[];
 
   const docRef = `Inventário Nº ${inv.codigo}`;
   const now = new Date().toISOString();
 
+  const countedLoteIds = new Set<number>();
+  const countedProdIds = new Set<number>();
+  const prodsWithRealLotesInInv = new Set<number>();
+
+  for (const item of itens) {
+    const prodId = Number(item.produto_id);
+    countedProdIds.add(prodId);
+    const numLoteNorm = String(item.numero_lote || '').trim().toUpperCase();
+    const isRealLote =
+      Boolean(item.lote_id) ||
+      (numLoteNorm !== '' && !['S/ LOTE', 'SEM LOTE', 'S/L', 'N/A', 'LOTE-PADRAO'].includes(numLoteNorm));
+    if (isRealLote) {
+      prodsWithRealLotesInInv.add(prodId);
+    }
+  }
+
   // 1. Ajuste Direto de Estoque para cada item contado
   for (const item of itens) {
-    const qtdSistema = Number(item.quantidade_sistema || 0);
-    const qtdFisica = Number(item.quantidade_fisica || 0);
-    const diferenca = qtdFisica - qtdSistema;
+    const prodId = Number(item.produto_id);
+    const qtdFisica = Math.max(0, round4(parseDecimal(item.quantidade_fisica, 0)));
+    const numLoteNorm = String(item.numero_lote || '').trim().toUpperCase();
+    const validadeNorm = item.data_validade && String(item.data_validade).trim()
+      ? String(item.data_validade).trim().slice(0, 10)
+      : null;
+    const isRealLote =
+      Boolean(item.lote_id) ||
+      (numLoteNorm !== '' && !['S/ LOTE', 'SEM LOTE', 'S/L', 'N/A', 'LOTE-PADRAO'].includes(numLoteNorm));
 
-    // Atualiza a diferença na tabela do item
-    db.prepare('UPDATE itens_inventario SET diferenca = ? WHERE id = ?').run(diferenca, item.id);
-
-    if (diferenca > 0) {
-      // Contagem Física > Estoque Sistema: Entrada por Ajuste de Inventário (+)
-      const qtdEntrada = diferenca;
-      db.prepare(`
-        INSERT INTO movimentacoes (
-          tipo, motivo_diverso, produto_id, lote_id, quantidade,
-          centro_custo_id, usuario_id, responsavel_nome, documento_referencia,
-          numero_lote, data_validade, observacao, data_movimentacao
-        ) VALUES (
-          'entrada', 'Ajuste de Inventário (+)', ?, ?, ?,
-          ?, ?, ?, ?,
-          ?, ?, ?, ?
-        )
-      `).run(
-        item.produto_id,
-        item.lote_id || null,
-        qtdEntrada,
-        inv.centro_custo_id,
-        usuario.id,
-        usuario.nome,
-        docRef,
-        item.numero_lote || null,
-        item.data_validade || null,
-        `Ajuste de inventário físico (+): Contagem física ${qtdFisica} ${item.unidade_medida} (Saldo sistema anterior: ${qtdSistema})`,
-        now
-      );
-
-      // Atualiza lote de estoque
+    if (isRealLote) {
+      // Resolve lote existente em lotes_estoque (por id ou por produto_id + numero_lote)
+      let loteRow: any = null;
       if (item.lote_id) {
-        db.prepare('UPDATE lotes_estoque SET quantidade_atual = quantidade_atual + ? WHERE id = ?').run(qtdEntrada, item.lote_id);
-      } else if (item.numero_lote && item.numero_lote !== 'S/ LOTE') {
-        upsertLoteEstoque({
-          produto_id: item.produto_id,
-          numero_lote: item.numero_lote,
-          data_validade: item.data_validade,
-          quantidade: qtdEntrada,
-          documento_referencia: docRef,
-        });
+        loteRow = db.prepare('SELECT * FROM lotes_estoque WHERE id = ? AND produto_id = ?').get(Number(item.lote_id), prodId);
+      }
+      if (!loteRow && numLoteNorm) {
+        loteRow = db.prepare(`
+          SELECT * FROM lotes_estoque
+          WHERE produto_id = ?
+            AND UPPER(TRIM(numero_lote)) = ?
+            AND COALESCE(data_validade, '') = COALESCE(?, '')
+          LIMIT 1
+        `).get(prodId, numLoteNorm, validadeNorm || '');
+        if (!loteRow) {
+          loteRow = db.prepare(`
+            SELECT * FROM lotes_estoque
+            WHERE produto_id = ?
+              AND UPPER(TRIM(numero_lote)) = ?
+            LIMIT 1
+          `).get(prodId, numLoteNorm);
+        }
       }
 
-      // Atualiza saldo total do produto
-      db.prepare('UPDATE produtos SET quantidade_atual = quantidade_atual + ? WHERE id = ?').run(qtdEntrada, item.produto_id);
+      if (loteRow) {
+        const loteId = Number(loteRow.id);
+        const qtdSistemaReal = round4(parseDecimal(loteRow.quantidade_atual, 0));
+        const diferenca = round4(qtdFisica - qtdSistemaReal);
 
-    } else if (diferenca < 0) {
-      // Contagem Física < Estoque Sistema: Saída por Ajuste de Inventário (-)
-      const qtdSaida = Math.abs(diferenca);
-      db.prepare(`
-        INSERT INTO movimentacoes (
-          tipo, motivo_diverso, produto_id, lote_id, quantidade,
-          centro_custo_id, usuario_id, responsavel_nome, documento_referencia,
-          numero_lote, data_validade, observacao, data_movimentacao
-        ) VALUES (
-          'saida', 'Ajuste de Inventário (-)', ?, ?, ?,
-          ?, ?, ?, ?,
-          ?, ?, ?, ?
-        )
-      `).run(
-        item.produto_id,
-        item.lote_id || null,
-        qtdSaida,
-        inv.centro_custo_id,
-        usuario.id,
-        usuario.nome,
-        docRef,
-        item.numero_lote || null,
-        item.data_validade || null,
-        `Ajuste de inventário físico (-): Contagem física ${qtdFisica} ${item.unidade_medida} (Saldo sistema anterior: ${qtdSistema})`,
-        now
-      );
+        // Atualiza item do inventário com o lote_id resolvido e diferença real aplicada
+        db.prepare(`
+          UPDATE itens_inventario
+          SET lote_id = ?, numero_lote = ?, data_validade = COALESCE(?, data_validade),
+              quantidade_sistema = ?, quantidade_fisica = ?, diferenca = ?
+          WHERE id = ?
+        `).run(loteId, loteRow.numero_lote || numLoteNorm, validadeNorm, qtdSistemaReal, qtdFisica, diferenca, item.id);
 
-      // Atualiza lote de estoque
-      if (item.lote_id) {
-        db.prepare('UPDATE lotes_estoque SET quantidade_atual = MAX(0, quantidade_atual - ?) WHERE id = ?').run(qtdSaida, item.lote_id);
+        // Define diretamente o saldo físico apurado no lote
+        db.prepare(`
+          UPDATE lotes_estoque
+          SET quantidade_atual = ?,
+              data_validade = COALESCE(?, data_validade),
+              centro_custo_id = COALESCE(?, centro_custo_id)
+          WHERE id = ?
+        `).run(qtdFisica, validadeNorm, inv.centro_custo_id || null, loteId);
+
+        countedLoteIds.add(loteId);
+        item.lote_id = loteId;
+
+        if (diferenca > 0) {
+          db.prepare(`
+            INSERT INTO movimentacoes (
+              tipo, motivo_diverso, produto_id, lote_id, quantidade,
+              centro_custo_id, usuario_id, responsavel_nome, documento_referencia,
+              numero_lote, data_validade, observacao, data_movimentacao
+            ) VALUES (
+              'entrada', 'Ajuste de Inventário (+)', ?, ?, ?,
+              ?, ?, ?, ?,
+              ?, ?, ?, ?
+            )
+          `).run(
+            prodId,
+            loteId,
+            diferenca,
+            inv.centro_custo_id,
+            usuario.id,
+            usuario.nome,
+            docRef,
+            loteRow.numero_lote || numLoteNorm,
+            validadeNorm || loteRow.data_validade || null,
+            `Ajuste de inventário físico (+): Contagem física ${qtdFisica} ${item.unidade_medida} (Saldo sistema anterior: ${qtdSistemaReal})`,
+            now
+          );
+        } else if (diferenca < 0) {
+          const qtdSaida = round4(Math.abs(diferenca));
+          db.prepare(`
+            INSERT INTO movimentacoes (
+              tipo, motivo_diverso, produto_id, lote_id, quantidade,
+              centro_custo_id, usuario_id, responsavel_nome, documento_referencia,
+              numero_lote, data_validade, observacao, data_movimentacao
+            ) VALUES (
+              'saida', 'Ajuste de Inventário (-)', ?, ?, ?,
+              ?, ?, ?, ?,
+              ?, ?, ?, ?
+            )
+          `).run(
+            prodId,
+            loteId,
+            qtdSaida,
+            inv.centro_custo_id,
+            usuario.id,
+            usuario.nome,
+            docRef,
+            loteRow.numero_lote || numLoteNorm,
+            validadeNorm || loteRow.data_validade || null,
+            `Ajuste de inventário físico (-): Contagem física ${qtdFisica} ${item.unidade_medida} (Saldo sistema anterior: ${qtdSistemaReal})`,
+            now
+          );
+        }
+      } else {
+        // Novo lote adicionado no inventário que ainda não existia em lotes_estoque
+        const loteNumFinal = numLoteNorm || 'LOTE-AVULSO';
+        const infoLote = db.prepare(`
+          INSERT INTO lotes_estoque (
+            produto_id, numero_lote, data_validade, quantidade_inicial, quantidade_atual,
+            documento_referencia, centro_custo_id
+          ) VALUES (?, ?, ?, ?, ?, ?, ?)
+        `).run(
+          prodId,
+          loteNumFinal,
+          validadeNorm,
+          qtdFisica,
+          qtdFisica,
+          docRef,
+          inv.centro_custo_id || null
+        );
+        const novoLoteId = Number(infoLote.lastInsertRowid);
+
+        db.prepare(`
+          UPDATE itens_inventario
+          SET lote_id = ?, numero_lote = ?, data_validade = ?,
+              quantidade_sistema = 0, quantidade_fisica = ?, diferenca = ?
+          WHERE id = ?
+        `).run(novoLoteId, loteNumFinal, validadeNorm, qtdFisica, qtdFisica, item.id);
+
+        countedLoteIds.add(novoLoteId);
+        item.lote_id = novoLoteId;
+
+        if (qtdFisica > 0) {
+          db.prepare(`
+            INSERT INTO movimentacoes (
+              tipo, motivo_diverso, produto_id, lote_id, quantidade,
+              centro_custo_id, usuario_id, responsavel_nome, documento_referencia,
+              numero_lote, data_validade, observacao, data_movimentacao
+            ) VALUES (
+              'entrada', 'Ajuste de Inventário (+)', ?, ?, ?,
+              ?, ?, ?, ?,
+              ?, ?, ?, ?
+            )
+          `).run(
+            prodId,
+            novoLoteId,
+            qtdFisica,
+            inv.centro_custo_id,
+            usuario.id,
+            usuario.nome,
+            docRef,
+            loteNumFinal,
+            validadeNorm,
+            `Inclusão de novo lote via inventário físico (+): Contagem física ${qtdFisica} ${item.unidade_medida}`,
+            now
+          );
+        }
+      }
+    } else {
+      // Item sem lote ('S/ LOTE')
+      // Se este produto também recebeu lotes reais neste inventário, o saldo final do produto será a soma dos lotes reais
+      if (prodsWithRealLotesInInv.has(prodId)) {
+        const qtdSistema = round4(parseDecimal(item.quantidade_sistema, 0));
+        db.prepare('UPDATE itens_inventario SET quantidade_fisica = 0, diferenca = ? WHERE id = ?').run(round4(-qtdSistema), item.id);
+        continue;
       }
 
-      // Atualiza saldo total do produto
-      db.prepare('UPDATE produtos SET quantidade_atual = MAX(0, quantidade_atual - ?) WHERE id = ?').run(qtdSaida, item.produto_id);
+      const prodRow = db.prepare('SELECT quantidade_atual FROM produtos WHERE id = ?').get(prodId) as any;
+      const qtdSistemaReal = round4(parseDecimal(prodRow?.quantidade_atual ?? item.quantidade_sistema, 0));
+      const diferenca = round4(qtdFisica - qtdSistemaReal);
+
+      db.prepare('UPDATE itens_inventario SET quantidade_sistema = ?, quantidade_fisica = ?, diferenca = ? WHERE id = ?').run(
+        qtdSistemaReal,
+        qtdFisica,
+        diferenca,
+        item.id
+      );
+
+      db.prepare('UPDATE produtos SET quantidade_atual = ? WHERE id = ?').run(qtdFisica, prodId);
+
+      if (diferenca > 0) {
+        db.prepare(`
+          INSERT INTO movimentacoes (
+            tipo, motivo_diverso, produto_id, lote_id, quantidade,
+            centro_custo_id, usuario_id, responsavel_nome, documento_referencia,
+            numero_lote, data_validade, observacao, data_movimentacao
+          ) VALUES (
+            'entrada', 'Ajuste de Inventário (+)', ?, NULL, ?,
+            ?, ?, ?, ?,
+            NULL, NULL, ?, ?
+          )
+        `).run(
+          prodId,
+          diferenca,
+          inv.centro_custo_id,
+          usuario.id,
+          usuario.nome,
+          docRef,
+          `Ajuste de inventário físico (+): Contagem física ${qtdFisica} ${item.unidade_medida} (Saldo sistema anterior: ${qtdSistemaReal})`,
+          now
+        );
+      } else if (diferenca < 0) {
+        const qtdSaida = round4(Math.abs(diferenca));
+        db.prepare(`
+          INSERT INTO movimentacoes (
+            tipo, motivo_diverso, produto_id, lote_id, quantidade,
+            centro_custo_id, usuario_id, responsavel_nome, documento_referencia,
+            numero_lote, data_validade, observacao, data_movimentacao
+          ) VALUES (
+            'saida', 'Ajuste de Inventário (-)', ?, NULL, ?,
+            ?, ?, ?, ?,
+            NULL, NULL, ?, ?
+          )
+        `).run(
+          prodId,
+          qtdSaida,
+          inv.centro_custo_id,
+          usuario.id,
+          usuario.nome,
+          docRef,
+          `Ajuste de inventário físico (-): Contagem física ${qtdFisica} ${item.unidade_medida} (Saldo sistema anterior: ${qtdSistemaReal})`,
+          now
+        );
+      }
     }
   }
 
   // 2. Efeito dos Toggles:
   // Se Zera estoque de produtos por Lote estiver ativo: lotes com saldo que não receberam contagem são zerados
   if (inv.zera_por_lote === 1) {
-    const countedLoteIds = itens.map((it) => it.lote_id).filter(Boolean);
+    const countedLoteIdsArr = Array.from(countedLoteIds);
+    const countedProdIdsArr = Array.from(countedProdIds);
     let queryLotesNaoContados = 'SELECT * FROM lotes_estoque WHERE quantidade_atual > 0';
     const paramsLotes: any[] = [];
-    if (countedLoteIds.length > 0) {
-      queryLotesNaoContados += ` AND id NOT IN (${countedLoteIds.map(() => '?').join(',')})`;
-      paramsLotes.push(...countedLoteIds);
+    if (countedLoteIdsArr.length > 0) {
+      queryLotesNaoContados += ` AND id NOT IN (${countedLoteIdsArr.map(() => '?').join(',')})`;
+      paramsLotes.push(...countedLoteIdsArr);
+    }
+    if (inv.zera_nao_listados !== 1 && countedProdIdsArr.length > 0) {
+      queryLotesNaoContados += ` AND produto_id IN (${countedProdIdsArr.map(() => '?').join(',')})`;
+      paramsLotes.push(...countedProdIdsArr);
     }
     const lotesNaoContados = db.prepare(queryLotesNaoContados).all(...paramsLotes) as any[];
 
     for (const lot of lotesNaoContados) {
-      const saldoZerar = Number(lot.quantidade_atual);
+      const saldoZerar = round4(parseDecimal(lot.quantidade_atual, 0));
       if (saldoZerar > 0) {
         db.prepare(`
           INSERT INTO movimentacoes (
@@ -11605,24 +12052,24 @@ function executarFechamentoInventario(invId: number, usuario: any) {
         );
 
         db.prepare('UPDATE lotes_estoque SET quantidade_atual = 0 WHERE id = ?').run(lot.id);
-        db.prepare('UPDATE produtos SET quantidade_atual = MAX(0, quantidade_atual - ?) WHERE id = ?').run(saldoZerar, lot.produto_id);
+        countedProdIds.add(Number(lot.produto_id));
       }
     }
   }
 
   // Se Zera estoque de produtos não listados estiver ativo: produtos que não foram incluídos na contagem têm seus saldos zerados
   if (inv.zera_nao_listados === 1) {
-    const countedProdIds = Array.from(new Set(itens.map((it) => it.produto_id)));
+    const countedProdIdsArr = Array.from(countedProdIds);
     let queryProdsNaoContados = 'SELECT * FROM produtos WHERE quantidade_atual > 0';
     const paramsProds: any[] = [];
-    if (countedProdIds.length > 0) {
-      queryProdsNaoContados += ` AND id NOT IN (${countedProdIds.map(() => '?').join(',')})`;
-      paramsProds.push(...countedProdIds);
+    if (countedProdIdsArr.length > 0) {
+      queryProdsNaoContados += ` AND id NOT IN (${countedProdIdsArr.map(() => '?').join(',')})`;
+      paramsProds.push(...countedProdIdsArr);
     }
     const prodsNaoContados = db.prepare(queryProdsNaoContados).all(...paramsProds) as any[];
 
     for (const prod of prodsNaoContados) {
-      const saldoZerar = Number(prod.quantidade_atual);
+      const saldoZerar = round4(parseDecimal(prod.quantidade_atual, 0));
       if (saldoZerar > 0) {
         db.prepare(`
           INSERT INTO movimentacoes (
@@ -11651,7 +12098,29 @@ function executarFechamentoInventario(invId: number, usuario: any) {
     }
   }
 
-  // 3. Marca o inventário como finalizado
+  // 3. Sincroniza produtos.quantidade_atual com a soma exata dos lotes reais de cada produto contado que possui lotes
+  for (const prodId of countedProdIds) {
+    const lotesReaisInfo = db.prepare(`
+      SELECT COUNT(*) as total_lotes,
+             COALESCE(SUM(CASE WHEN quantidade_atual > 0 THEN quantidade_atual ELSE 0 END), 0) as soma_saldo
+      FROM lotes_estoque
+      WHERE produto_id = ?
+        AND UPPER(TRIM(COALESCE(numero_lote, ''))) NOT IN ('', 'SEM LOTE', 'S/ LOTE', 'S/L', 'N/A', 'LOTE-PADRAO')
+    `).get(prodId) as any;
+
+    if (lotesReaisInfo && Number(lotesReaisInfo.total_lotes) > 0) {
+      const somaReal = round4(parseDecimal(lotesReaisInfo.soma_saldo, 0));
+      db.prepare('UPDATE produtos SET quantidade_atual = ? WHERE id = ?').run(somaReal, prodId);
+      db.prepare(`
+        UPDATE lotes_estoque
+        SET quantidade_atual = 0
+        WHERE produto_id = ?
+          AND UPPER(TRIM(COALESCE(numero_lote, ''))) IN ('', 'SEM LOTE', 'S/ LOTE', 'S/L', 'N/A', 'LOTE-PADRAO')
+      `).run(prodId);
+    }
+  }
+
+  // 4. Marca o inventário como finalizado
   db.prepare('UPDATE inventarios_estoque SET finalizado = 1 WHERE id = ?').run(invId);
 }
 

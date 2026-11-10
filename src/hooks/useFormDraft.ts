@@ -28,9 +28,10 @@ export function useFormDraft<T extends Record<string, any>>({
   const debounceTimerRef = useRef<any>(null);
   const lastSerializedDataRef = useRef<string>('');
   const isDiscardingRef = useRef<boolean>(false);
+  const isRestoredSessionRef = useRef<boolean>(false);
 
-  // 1. Carrega rascunho existente do servidor ao abrir o formulário
-  const loadDraft = useCallback(async () => {
+  // 1. Carrega rascunho existente do servidor
+  const loadDraft = useCallback(async (): Promise<T | null> => {
     try {
       const res = await fetch(`/api/rascunhos/${modulo}`, {
         headers: getAuthHeaders(),
@@ -38,20 +39,26 @@ export function useFormDraft<T extends Record<string, any>>({
       if (res.ok) {
         const data = await res.json();
         if (data.rascunho && data.rascunho.dados && Object.keys(data.rascunho.dados).length > 0) {
-          setHasDraft(true);
-          setDraftData(data.rascunho.dados as T);
+          const loaded = data.rascunho.dados as T;
+          setDraftData(loaded);
           setDraftDate(data.rascunho.atualizado_em);
           setLastSaved(new Date(data.rascunho.atualizado_em));
-          lastSerializedDataRef.current = JSON.stringify(data.rascunho.dados);
+          lastSerializedDataRef.current = JSON.stringify(loaded);
+          if (!isRestoredSessionRef.current) {
+            setHasDraft(true);
+          }
+          return loaded;
         } else {
           setHasDraft(false);
           setDraftData(null);
           setDraftDate(null);
+          return null;
         }
       }
     } catch (err) {
       console.warn(`[Draft] Aviso ao carregar rascunho de ${modulo}:`, err);
     }
+    return null;
   }, [modulo]);
 
   useEffect(() => {
@@ -63,17 +70,28 @@ export function useFormDraft<T extends Record<string, any>>({
       isDiscardingRef.current = false;
       loadDraft();
     } else {
+      isRestoredSessionRef.current = false;
       if (debounceTimerRef.current) {
         clearTimeout(debounceTimerRef.current);
+        debounceTimerRef.current = null;
       }
       setDraftStatus('idle');
+      loadDraft();
     }
   }, [isOpen, loadDraft]);
 
   // 2. Função de salvamento real na API
   const saveDraft = useCallback(
     async (formData: T, isManual: boolean = false): Promise<boolean> => {
+      if (isManual) {
+        isDiscardingRef.current = false;
+      }
       if (isDiscardingRef.current) return false;
+
+      if (debounceTimerRef.current) {
+        clearTimeout(debounceTimerRef.current);
+        debounceTimerRef.current = null;
+      }
 
       // Não salva rascunho vazio
       if (!formData || Object.keys(formData).length === 0) {
@@ -98,9 +116,11 @@ export function useFormDraft<T extends Record<string, any>>({
         const now = new Date();
         setDraftStatus('salvo');
         setLastSaved(now);
-        setDraftDate(now.toISOString());
+        setDraftDate(data.atualizado_em || now.toISOString());
         setDraftData(formData);
-        setHasDraft(true);
+        if (!isRestoredSessionRef.current) {
+          setHasDraft(true);
+        }
         lastSerializedDataRef.current = JSON.stringify(formData);
 
         if (isManual) {
@@ -147,8 +167,10 @@ export function useFormDraft<T extends Record<string, any>>({
   // 4. Descartar rascunho manualmente
   const discardDraft = useCallback(async () => {
     isDiscardingRef.current = true;
+    isRestoredSessionRef.current = false;
     if (debounceTimerRef.current) {
       clearTimeout(debounceTimerRef.current);
+      debounceTimerRef.current = null;
     }
 
     try {
@@ -164,23 +186,33 @@ export function useFormDraft<T extends Record<string, any>>({
       toast.info('Rascunho Descartado', 'O formulário foi limpo e o rascunho removido.');
     } catch (err) {
       console.warn(`[Draft] Erro ao descartar rascunho de ${modulo}:`, err);
+    } finally {
+      isDiscardingRef.current = false;
     }
   }, [modulo, toast]);
 
   // 5. Aplicar o rascunho carregado no estado do formulário
-  const applyDraft = useCallback(() => {
-    if (draftData && onRestore) {
-      onRestore(draftData);
+  const applyDraft = useCallback(
+    (silent: boolean = false) => {
+      isRestoredSessionRef.current = true;
       setHasDraft(false); // Oculta a barra de alerta após aplicar
-      toast.success('Rascunho Restaurado', 'Campos e itens preenchidos anteriormente foram recuperados com sucesso.');
-    }
-  }, [draftData, onRestore, toast]);
+      if (draftData && onRestore) {
+        onRestore(draftData);
+        if (!silent) {
+          toast.success('Rascunho Restaurado', 'Campos e itens preenchidos anteriormente foram recuperados com sucesso.');
+        }
+      }
+    },
+    [draftData, onRestore, toast]
+  );
 
   // 6. Limpar rascunho silenciosamente após envio definitivo do formulário com sucesso
   const clearDraftOnSubmit = useCallback(async () => {
     isDiscardingRef.current = true;
+    isRestoredSessionRef.current = false;
     if (debounceTimerRef.current) {
       clearTimeout(debounceTimerRef.current);
+      debounceTimerRef.current = null;
     }
     setHasDraft(false);
     setDraftData(null);
@@ -193,7 +225,9 @@ export function useFormDraft<T extends Record<string, any>>({
         method: 'DELETE',
         headers: getAuthHeaders(),
       });
-    } catch {}
+    } catch {} finally {
+      isDiscardingRef.current = false;
+    }
   }, [modulo]);
 
   const lastSavedFormatted = lastSaved
@@ -208,6 +242,7 @@ export function useFormDraft<T extends Record<string, any>>({
     draftData,
     draftDate,
     errorMessage,
+    loadDraft,
     saveDraft,
     scheduleAutoSave,
     discardDraft,
