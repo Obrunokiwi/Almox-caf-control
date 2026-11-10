@@ -2746,194 +2746,230 @@ apiRouter.delete('/fornecedores/:id', (req, res) => {
 // 6. CATÁLOGO DE PRODUTOS E LOTES (CÓDIGO ÚNICO DE ESTOQUE)
 // ============================================================================
 
+const reconciledInventoryStateByDb = new WeakMap<object, string>();
+
 /**
  * Reconcilia de forma idempotente lotes criados ou ajustados em inventários finalizados
  * (corrige lotes adicionados manualmente que ficaram sem lote_id ou que foram zerados indevidamente por zera_por_lote,
  * remove registros artificiais SINCRONIZADO-MOV inválidos e sincroniza o saldo de produtos com seus lotes reais).
  */
-export function reconciliarLotesInventario(customDb?: any) {
-  const targetDb = customDb || db;
+export function reconciliarLotesInventario(customDb?: any, force = false) {
+  const targetDb =
+    customDb && customDb !== db
+      ? customDb
+      : currentAreaStorage.getStore()?.db || db;
   try {
-    // 1. Remove lotes artificiais 'SINCRONIZADO-MOV' sem número real de lote ou quando o produto já possui lotes reais
-    targetDb.prepare(`
-      DELETE FROM lotes_estoque
-      WHERE documento_referencia = 'SINCRONIZADO-MOV'
-        AND (
-          UPPER(TRIM(COALESCE(numero_lote, ''))) IN ('', 'SEM LOTE', 'S/ LOTE', 'S/L', 'N/A', 'LOTE-PADRAO')
-          OR EXISTS (
-            SELECT 1 FROM lotes_estoque le2
-            WHERE le2.produto_id = lotes_estoque.produto_id
-              AND le2.id != lotes_estoque.id
-              AND COALESCE(le2.documento_referencia, '') != 'SINCRONIZADO-MOV'
-          )
-        )
-    `).run();
-
-    // 2. Verifica inventários finalizados para garantir que lotes novos e quantidades ajustadas estejam refletidos em lotes_estoque
-    const invsFinalizados = targetDb.prepare(`
-      SELECT id, codigo, centro_custo_id, zera_por_lote, zera_nao_listados
+    const statsRow = targetDb.prepare(`
+      SELECT COUNT(*) as total_invs,
+             COALESCE(MAX(id), 0) as max_inv_id,
+             (SELECT COUNT(*) FROM itens_inventario ii JOIN inventarios_estoque ie ON ie.id = ii.inventario_id WHERE ie.finalizado = 1) as total_itens
       FROM inventarios_estoque
       WHERE finalizado = 1
-      ORDER BY id ASC
-    `).all() as any[];
+    `).get() as any;
 
-    if (invsFinalizados.length === 0) return;
+    const stateSignature = `${statsRow?.total_invs || 0}:${statsRow?.max_inv_id || 0}:${statsRow?.total_itens || 0}`;
+    if (!force && typeof targetDb === 'object' && targetDb !== null && reconciledInventoryStateByDb.get(targetDb) === stateSignature) {
+      return;
+    }
 
-    const latestInvByLotKey = new Map<string, { inv: any; item: any; docRef: string; maxMovIdInv: number }>();
-    const affectedProdIds = new Set<number>();
+    const executeReconciliation = () => {
+      // 1. Remove lotes artificiais 'SINCRONIZADO-MOV' sem número real de lote ou quando o produto já possui lotes reais
+      targetDb.prepare(`
+        DELETE FROM lotes_estoque
+        WHERE documento_referencia = 'SINCRONIZADO-MOV'
+          AND (
+            UPPER(TRIM(COALESCE(numero_lote, ''))) IN ('', 'SEM LOTE', 'S/ LOTE', 'S/L', 'N/A', 'LOTE-PADRAO')
+            OR EXISTS (
+              SELECT 1 FROM lotes_estoque le2
+              WHERE le2.produto_id = lotes_estoque.produto_id
+                AND le2.id != lotes_estoque.id
+                AND COALESCE(le2.documento_referencia, '') != 'SINCRONIZADO-MOV'
+            )
+          )
+      `).run();
 
-    for (const inv of invsFinalizados) {
-      const docRef = `Inventário Nº ${inv.codigo}`;
-      const maxMovRow = targetDb.prepare(`
-        SELECT COALESCE(MAX(id), 0) as max_id
-        FROM movimentacoes
-        WHERE documento_referencia = ?
-      `).get(docRef) as any;
-      const maxMovIdInv = Number(maxMovRow?.max_id || 0);
+      // 2. Verifica inventários finalizados para garantir que lotes novos e quantidades ajustadas estejam refletidos em lotes_estoque
+      const invsFinalizados = targetDb.prepare(`
+        SELECT id, codigo, centro_custo_id, zera_por_lote, zera_nao_listados
+        FROM inventarios_estoque
+        WHERE finalizado = 1
+        ORDER BY id ASC
+      `).all() as any[];
 
-      const itens = targetDb.prepare(`
-        SELECT * FROM itens_inventario WHERE inventario_id = ? ORDER BY id ASC
-      `).all(inv.id) as any[];
+      if (invsFinalizados.length === 0) return;
 
-      for (const item of itens) {
-        const prodId = Number(item.produto_id);
-        affectedProdIds.add(prodId);
-        const numLoteNorm = String(item.numero_lote || '').trim().toUpperCase();
-        const isRealLote =
-          Boolean(item.lote_id) ||
-          (numLoteNorm !== '' && !['S/ LOTE', 'SEM LOTE', 'S/L', 'N/A', 'LOTE-PADRAO'].includes(numLoteNorm));
+      const latestInvByLotKey = new Map<string, { inv: any; item: any; docRef: string; maxMovIdInv: number }>();
+      const affectedProdIds = new Set<number>();
 
-        if (!isRealLote) continue;
+      for (const inv of invsFinalizados) {
+        const docRef = `Inventário Nº ${inv.codigo}`;
+        const maxMovRow = targetDb.prepare(`
+          SELECT COALESCE(MAX(id), 0) as max_id
+          FROM movimentacoes
+          WHERE documento_referencia = ?
+        `).get(docRef) as any;
+        const maxMovIdInv = Number(maxMovRow?.max_id || 0);
 
-        // Procura o lote em lotes_estoque
-        let loteRow: any = null;
-        if (item.lote_id) {
-          loteRow = targetDb.prepare('SELECT * FROM lotes_estoque WHERE id = ? AND produto_id = ?').get(Number(item.lote_id), prodId);
-        }
-        if (!loteRow && numLoteNorm) {
-          const valNorm = item.data_validade ? String(item.data_validade).trim().slice(0, 10) : '';
-          loteRow = targetDb.prepare(`
-            SELECT * FROM lotes_estoque
-            WHERE produto_id = ?
-              AND UPPER(TRIM(numero_lote)) = ?
-              AND COALESCE(data_validade, '') = ?
-            LIMIT 1
-          `).get(prodId, numLoteNorm, valNorm);
-          if (!loteRow) {
+        const itens = targetDb.prepare(`
+          SELECT * FROM itens_inventario
+          WHERE inventario_id = ?
+            AND (
+              lote_id IS NOT NULL
+              OR UPPER(TRIM(COALESCE(numero_lote, ''))) NOT IN ('', 'S/ LOTE', 'SEM LOTE', 'S/L', 'N/A', 'LOTE-PADRAO')
+            )
+          ORDER BY id ASC
+        `).all(inv.id) as any[];
+
+        for (const item of itens) {
+          const prodId = Number(item.produto_id);
+          affectedProdIds.add(prodId);
+          const numLoteNorm = String(item.numero_lote || '').trim().toUpperCase();
+          const isRealLote =
+            Boolean(item.lote_id) ||
+            (numLoteNorm !== '' && !['S/ LOTE', 'SEM LOTE', 'S/L', 'N/A', 'LOTE-PADRAO'].includes(numLoteNorm));
+
+          if (!isRealLote) continue;
+
+          // Procura o lote em lotes_estoque
+          let loteRow: any = null;
+          if (item.lote_id) {
+            loteRow = targetDb.prepare('SELECT * FROM lotes_estoque WHERE id = ? AND produto_id = ?').get(Number(item.lote_id), prodId);
+          }
+          if (!loteRow && numLoteNorm) {
+            const valNorm = item.data_validade ? String(item.data_validade).trim().slice(0, 10) : '';
             loteRow = targetDb.prepare(`
               SELECT * FROM lotes_estoque
               WHERE produto_id = ?
                 AND UPPER(TRIM(numero_lote)) = ?
+                AND COALESCE(data_validade, '') = ?
               LIMIT 1
-            `).get(prodId, numLoteNorm);
+            `).get(prodId, numLoteNorm, valNorm);
+            if (!loteRow) {
+              loteRow = targetDb.prepare(`
+                SELECT * FROM lotes_estoque
+                WHERE produto_id = ?
+                  AND UPPER(TRIM(numero_lote)) = ?
+                LIMIT 1
+              `).get(prodId, numLoteNorm);
+            }
+          }
+
+          const qtdFisica = Math.max(0, round4(parseDecimal(item.quantidade_fisica, 0)));
+          const validadeNorm = item.data_validade ? String(item.data_validade).trim().slice(0, 10) : null;
+
+          if (!loteRow && numLoteNorm) {
+            // Lote adicionado no inventário que ainda não existia em lotes_estoque
+            const info = targetDb.prepare(`
+              INSERT INTO lotes_estoque (
+                produto_id, numero_lote, data_validade, quantidade_inicial, quantidade_atual,
+                documento_referencia, centro_custo_id
+              ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            `).run(
+              prodId,
+              numLoteNorm,
+              validadeNorm,
+              qtdFisica,
+              qtdFisica,
+              docRef,
+              inv.centro_custo_id || null
+            );
+            const newId = Number(info.lastInsertRowid);
+            loteRow = targetDb.prepare('SELECT * FROM lotes_estoque WHERE id = ?').get(newId);
+          }
+
+          if (loteRow) {
+            const loteId = Number(loteRow.id);
+            if (!item.lote_id || Number(item.lote_id) !== loteId) {
+              targetDb.prepare('UPDATE itens_inventario SET lote_id = ? WHERE id = ?').run(loteId, item.id);
+              item.lote_id = loteId;
+            }
+            if (validadeNorm && !loteRow.data_validade) {
+              targetDb.prepare('UPDATE lotes_estoque SET data_validade = ? WHERE id = ?').run(validadeNorm, loteId);
+            }
+
+            // Remove eventual zeramento indevido gerado no mesmo inventário para lote recém-adicionado
+            targetDb.prepare(`
+              DELETE FROM movimentacoes
+              WHERE documento_referencia = ?
+                AND produto_id = ?
+                AND (lote_id = ? OR UPPER(TRIM(COALESCE(numero_lote, ''))) = ?)
+                AND observacao LIKE 'Zeramento por lote não contado no inventário%'
+            `).run(docRef, prodId, loteId, String(loteRow.numero_lote || numLoteNorm).trim().toUpperCase());
+
+            latestInvByLotKey.set(`lote:${loteId}`, { inv, item: { ...item, lote_id: loteId }, docRef, maxMovIdInv });
+          }
+        }
+      }
+
+      // 3. Para o último inventário finalizado de cada lote, garante que quantidade_atual reflita
+      // exatamente a quantidade_fisica apurada + movimentações posteriores ao inventário
+      for (const { item, docRef, maxMovIdInv } of latestInvByLotKey.values()) {
+        const loteId = Number(item.lote_id);
+        const prodId = Number(item.produto_id);
+        const loteRow = targetDb.prepare('SELECT * FROM lotes_estoque WHERE id = ?').get(loteId) as any;
+        if (!loteRow) continue;
+
+        const numLoteNorm = String(loteRow.numero_lote || item.numero_lote || '').trim().toUpperCase();
+        const movsAfter = targetDb.prepare(`
+          SELECT tipo, quantidade
+          FROM movimentacoes
+          WHERE produto_id = ?
+            AND id > ?
+            AND COALESCE(documento_referencia, '') != ?
+            AND (lote_id = ? OR (lote_id IS NULL AND UPPER(TRIM(COALESCE(numero_lote, ''))) = ?))
+        `).all(prodId, maxMovIdInv, docRef, loteId, numLoteNorm) as any[];
+
+        let netAfter = 0;
+        for (const m of movsAfter) {
+          const q = parseDecimal(m.quantidade, 0);
+          if (m.tipo === 'entrada' || m.tipo === 'estorno_saida') {
+            netAfter = round4(netAfter + q);
+          } else if (m.tipo === 'saida' || m.tipo === 'estorno_entrada') {
+            netAfter = round4(netAfter - q);
           }
         }
 
         const qtdFisica = Math.max(0, round4(parseDecimal(item.quantidade_fisica, 0)));
-        const validadeNorm = item.data_validade ? String(item.data_validade).trim().slice(0, 10) : null;
+        const expectedSaldo = Math.max(0, round4(qtdFisica + netAfter));
+        const currentSaldo = round4(parseDecimal(loteRow.quantidade_atual, 0));
 
-        if (!loteRow && numLoteNorm) {
-          // Lote adicionado no inventário que ainda não existia em lotes_estoque
-          const info = targetDb.prepare(`
-            INSERT INTO lotes_estoque (
-              produto_id, numero_lote, data_validade, quantidade_inicial, quantidade_atual,
-              documento_referencia, centro_custo_id
-            ) VALUES (?, ?, ?, ?, ?, ?, ?)
-          `).run(
-            prodId,
-            numLoteNorm,
-            validadeNorm,
-            qtdFisica,
-            qtdFisica,
-            docRef,
-            inv.centro_custo_id || null
-          );
-          const newId = Number(info.lastInsertRowid);
-          loteRow = targetDb.prepare('SELECT * FROM lotes_estoque WHERE id = ?').get(newId);
-        }
-
-        if (loteRow) {
-          const loteId = Number(loteRow.id);
-          if (!item.lote_id || Number(item.lote_id) !== loteId) {
-            targetDb.prepare('UPDATE itens_inventario SET lote_id = ? WHERE id = ?').run(loteId, item.id);
-            item.lote_id = loteId;
-          }
-          if (validadeNorm && !loteRow.data_validade) {
-            targetDb.prepare('UPDATE lotes_estoque SET data_validade = ? WHERE id = ?').run(validadeNorm, loteId);
-          }
-
-          // Remove eventual zeramento indevido gerado no mesmo inventário para lote recém-adicionado
-          targetDb.prepare(`
-            DELETE FROM movimentacoes
-            WHERE documento_referencia = ?
-              AND produto_id = ?
-              AND (lote_id = ? OR UPPER(TRIM(COALESCE(numero_lote, ''))) = ?)
-              AND observacao LIKE 'Zeramento por lote não contado no inventário%'
-          `).run(docRef, prodId, loteId, String(loteRow.numero_lote || numLoteNorm).trim().toUpperCase());
-
-          latestInvByLotKey.set(`lote:${loteId}`, { inv, item: { ...item, lote_id: loteId }, docRef, maxMovIdInv });
-        }
-      }
-    }
-
-    // 3. Para o último inventário finalizado de cada lote, garante que quantidade_atual reflita
-    // exatamente a quantidade_fisica apurada + movimentações posteriores ao inventário
-    for (const { item, docRef, maxMovIdInv } of latestInvByLotKey.values()) {
-      const loteId = Number(item.lote_id);
-      const prodId = Number(item.produto_id);
-      const loteRow = targetDb.prepare('SELECT * FROM lotes_estoque WHERE id = ?').get(loteId) as any;
-      if (!loteRow) continue;
-
-      const numLoteNorm = String(loteRow.numero_lote || item.numero_lote || '').trim().toUpperCase();
-      const movsAfter = targetDb.prepare(`
-        SELECT tipo, quantidade
-        FROM movimentacoes
-        WHERE produto_id = ?
-          AND id > ?
-          AND COALESCE(documento_referencia, '') != ?
-          AND (lote_id = ? OR (lote_id IS NULL AND UPPER(TRIM(COALESCE(numero_lote, ''))) = ?))
-      `).all(prodId, maxMovIdInv, docRef, loteId, numLoteNorm) as any[];
-
-      let netAfter = 0;
-      for (const m of movsAfter) {
-        const q = parseDecimal(m.quantidade, 0);
-        if (m.tipo === 'entrada' || m.tipo === 'estorno_saida') {
-          netAfter = round4(netAfter + q);
-        } else if (m.tipo === 'saida' || m.tipo === 'estorno_entrada') {
-          netAfter = round4(netAfter - q);
+        if (currentSaldo !== expectedSaldo) {
+          targetDb.prepare('UPDATE lotes_estoque SET quantidade_atual = ? WHERE id = ?').run(expectedSaldo, loteId);
         }
       }
 
-      const qtdFisica = Math.max(0, round4(parseDecimal(item.quantidade_fisica, 0)));
-      const expectedSaldo = Math.max(0, round4(qtdFisica + netAfter));
-      const currentSaldo = round4(parseDecimal(loteRow.quantidade_atual, 0));
-
-      if (currentSaldo !== expectedSaldo) {
-        targetDb.prepare('UPDATE lotes_estoque SET quantidade_atual = ? WHERE id = ?').run(expectedSaldo, loteId);
-      }
-    }
-
-    // 4. Sincroniza produtos.quantidade_atual com a soma dos lotes reais para os produtos afetados que possuem lotes reais
-    for (const prodId of affectedProdIds) {
-      const lotesReaisInfo = targetDb.prepare(`
-        SELECT COUNT(*) as total_lotes,
-               COALESCE(SUM(CASE WHEN quantidade_atual > 0 THEN quantidade_atual ELSE 0 END), 0) as soma_saldo
-        FROM lotes_estoque
-        WHERE produto_id = ?
-          AND UPPER(TRIM(COALESCE(numero_lote, ''))) NOT IN ('', 'SEM LOTE', 'S/ LOTE', 'S/L', 'N/A', 'LOTE-PADRAO')
-      `).get(prodId) as any;
-
-      if (lotesReaisInfo && Number(lotesReaisInfo.total_lotes) > 0) {
-        const somaReal = round4(parseDecimal(lotesReaisInfo.soma_saldo, 0));
-        targetDb.prepare('UPDATE produtos SET quantidade_atual = ? WHERE id = ?').run(somaReal, prodId);
-        // Zera eventuais lotes placeholders 'SEM LOTE' do mesmo produto para evitar duplicidade
-        targetDb.prepare(`
-          UPDATE lotes_estoque
-          SET quantidade_atual = 0
+      // 4. Sincroniza produtos.quantidade_atual com a soma dos lotes reais para os produtos afetados que possuem lotes reais
+      for (const prodId of affectedProdIds) {
+        const lotesReaisInfo = targetDb.prepare(`
+          SELECT COUNT(*) as total_lotes,
+                 COALESCE(SUM(CASE WHEN quantidade_atual > 0 THEN quantidade_atual ELSE 0 END), 0) as soma_saldo
+          FROM lotes_estoque
           WHERE produto_id = ?
-            AND UPPER(TRIM(COALESCE(numero_lote, ''))) IN ('', 'SEM LOTE', 'S/ LOTE', 'S/L', 'N/A', 'LOTE-PADRAO')
-        `).run(prodId);
+            AND UPPER(TRIM(COALESCE(numero_lote, ''))) NOT IN ('', 'SEM LOTE', 'S/ LOTE', 'S/L', 'N/A', 'LOTE-PADRAO')
+        `).get(prodId) as any;
+
+        if (lotesReaisInfo && Number(lotesReaisInfo.total_lotes) > 0) {
+          const somaReal = round4(parseDecimal(lotesReaisInfo.soma_saldo, 0));
+          targetDb.prepare('UPDATE produtos SET quantidade_atual = ? WHERE id = ?').run(somaReal, prodId);
+          // Zera eventuais lotes placeholders 'SEM LOTE' do mesmo produto para evitar duplicidade
+          targetDb.prepare(`
+            UPDATE lotes_estoque
+            SET quantidade_atual = 0
+            WHERE produto_id = ?
+              AND UPPER(TRIM(COALESCE(numero_lote, ''))) IN ('', 'SEM LOTE', 'S/ LOTE', 'S/L', 'N/A', 'LOTE-PADRAO')
+          `).run(prodId);
+        }
       }
+    };
+
+    if (typeof targetDb.transaction === 'function') {
+      targetDb.transaction(executeReconciliation)();
+    } else {
+      executeReconciliation();
+    }
+
+    if (typeof targetDb === 'object' && targetDb !== null) {
+      reconciledInventoryStateByDb.set(targetDb, stateSignature);
     }
   } catch (err) {
     console.error('[reconciliarLotesInventario] Aviso:', err);

@@ -156,7 +156,6 @@ export const ConsumoView: React.FC<ConsumoViewProps> = ({
   useEffect(() => {
     if (isNovoModalOpen) {
       fetchCatalogoProdutos();
-      if (onRefresh) onRefresh();
     }
   }, [isNovoModalOpen, activeAreaSigla]);
 
@@ -190,11 +189,12 @@ export const ConsumoView: React.FC<ConsumoViewProps> = ({
     return clean;
   };
 
-  // Carrega lotes válidos ao selecionar um produto no formulário
+  // Carrega lotes válidos apenas quando o produto selecionado ou a área mudarem (evita loop cíclico com polling de fundo)
   useEffect(() => {
     if (!prodSelectId) {
       setLotesProduto([]);
       setLoteSelectId(0);
+      setLoadingLotes(false);
       return;
     }
 
@@ -218,7 +218,10 @@ export const ConsumoView: React.FC<ConsumoViewProps> = ({
 
     let cancelled = false;
     const loadLotes = async () => {
-      setLoadingLotes(true);
+      // Só exibe indicador de carregamento se ainda não houver lotes locais pré-carregados
+      if (lotesLocais.length === 0) {
+        setLoadingLotes(true);
+      }
       try {
         let res = await fetch(`/api/produtos/${prodSelectId}/lotes?apenas_com_saldo=true`, {
           headers: getAuthHeaders({ 'X-Area-Sigla': activeAreaSigla }),
@@ -233,13 +236,18 @@ export const ConsumoView: React.FC<ConsumoViewProps> = ({
           const reais = filterRealLotes(data);
           setLotesProduto(reais);
           if (reais.length > 0) {
-            const primeiroValido =
-              reais.find(
-                (l) =>
-                  parseDecimal(l.quantidade_atual, 0) > 0 &&
-                  (!l.data_validade || String(l.data_validade).slice(0, 10) >= hojeStr)
-              ) || reais[0];
-            setLoteSelectId(primeiroValido ? Number(primeiroValido.id) : 0);
+            setLoteSelectId((prevId) => {
+              if (prevId && reais.some((l) => Number(l.id) === Number(prevId))) {
+                return prevId;
+              }
+              const primeiroValido =
+                reais.find(
+                  (l) =>
+                    parseDecimal(l.quantidade_atual, 0) > 0 &&
+                    (!l.data_validade || String(l.data_validade).slice(0, 10) >= hojeStr)
+                ) || reais[0];
+              return primeiroValido ? Number(primeiroValido.id) : 0;
+            });
           } else {
             setLoteSelectId(0);
           }
@@ -260,7 +268,7 @@ export const ConsumoView: React.FC<ConsumoViewProps> = ({
     return () => {
       cancelled = true;
     };
-  }, [prodSelectId, activeAreaSigla, catalogoProdutos]);
+  }, [prodSelectId, activeAreaSigla]);
 
   const handleAddItem = () => {
     setErrorMsg(null);
