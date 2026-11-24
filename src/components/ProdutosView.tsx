@@ -26,6 +26,9 @@ import {
   Layers,
   Sparkles,
   FolderTree,
+  Power,
+  ShieldAlert,
+  FileText,
   X
 } from 'lucide-react';
 import type { Produto, Fornecedor, ProdutoFornecedor, Usuario, UnidadeMedida, TipoProduto, GrupoProduto, SubgrupoProduto } from '../types/index.ts';
@@ -86,9 +89,8 @@ export const ProdutosView: React.FC<ProdutosViewProps> = ({
   useEffect(() => {
     const fetchUnidades = async () => {
       try {
-        const token = sessionStorage.getItem('multi_almox_token');
         const res = await fetch('/api/unidades-medida', {
-          headers: { 'Authorization': `Bearer ${token}` }
+          headers: getAuthHeaders(currentUser?.area_sigla ? { 'X-Area-Sigla': currentUser.area_sigla } : {}),
         });
         if (res.ok) {
           const data = await res.json();
@@ -97,7 +99,7 @@ export const ProdutosView: React.FC<ProdutosViewProps> = ({
       } catch {}
     };
     fetchUnidades();
-  }, []);
+  }, [currentUser?.area_sigla]);
 
   // Filtros de busca
   const [filtroCodigo, setFiltroCodigo] = useState('');
@@ -165,9 +167,20 @@ export const ProdutosView: React.FC<ProdutosViewProps> = ({
   const [isProcessing, setIsProcessing] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [deletingProduto, setDeletingProduto] = useState<Produto | null>(null);
+  const [deleteBlockedInfo, setDeleteBlockedInfo] = useState<{
+    produto: Produto;
+    mensagem: string;
+    detalhes: string[];
+    canInactivate: boolean;
+  } | null>(null);
 
   const { toast } = useToast();
   const canEdit = currentUser && (currentUser.perfil === 'admin' || currentUser.perfil === 'almoxarife');
+  const activeAreaSigla =
+    currentUser?.area_sigla ||
+    sessionStorage.getItem('multi_almox_area_sigla') ||
+    localStorage.getItem('multi_almox_area_sigla') ||
+    'ALM';
 
   // Carrega lista de grupos e subgrupos oficiais do backend para a área ativa
   const carregarGruposESubgrupos = async () => {
@@ -474,31 +487,143 @@ export const ProdutosView: React.FC<ProdutosViewProps> = ({
 
   const handleConfirmDelete = async () => {
     if (!deletingProduto) return;
+
+    const produtoId = Number(deletingProduto.id);
+    if (!Number.isInteger(produtoId) || produtoId <= 0) {
+      toast.error('Identificador Inválido', 'Não foi possível validar o ID numérico deste produto para exclusão.');
+      setDeletingProduto(null);
+      return;
+    }
+
     setIsProcessing(true);
     try {
-      const res = await fetch(`/api/produtos/${deletingProduto.id}`, {
+      const res = await fetch(`/api/produtos/${encodeURIComponent(String(produtoId))}`, {
         method: 'DELETE',
-        headers: getAuthHeaders(),
+        headers: getAuthHeaders({ 'X-Area-Sigla': activeAreaSigla }),
       });
-      const data = await res.json();
-      if (!res.ok) {
-        throw new Error(data.error || 'Não foi possível excluir o produto.');
+
+      let data: any = {};
+      try {
+        const rawText = await res.text();
+        data = rawText ? JSON.parse(rawText) : {};
+      } catch {
+        data = {};
       }
-      toast.success('Produto Excluído', data.message || `Produto "${deletingProduto.nome}" removido do catálogo.`);
+
+      if (!res.ok) {
+        const serverError = data?.error || 'Não foi possível excluir o produto.';
+        const errorCode = String(data?.code || '');
+        const isLinkedMovementsConflict =
+          res.status === 409 ||
+          errorCode === 'PRODUTO_COM_MOVIMENTACOES' ||
+          errorCode === 'INTEGRIDADE_REFERENCIAL' ||
+          /movimenta|empr[eé]stimo|requisi|consumo|invent[aá]rio|v[ií]nculo|foreign key|constraint/i.test(serverError);
+
+        if (isLinkedMovementsConflict) {
+          const detalhes: string[] = Array.isArray(data?.detalhes_vinculos) ? data.detalhes_vinculos : [];
+          const targetProd = deletingProduto;
+          setDeletingProduto(null);
+          setDeleteBlockedInfo({
+            produto: targetProd,
+            mensagem: serverError,
+            detalhes,
+            canInactivate: Boolean(data?.canInactivate ?? targetProd.ativo === 1),
+          });
+          if (editingId !== null && Number(editingId) === produtoId) {
+            setErrorMsg(serverError);
+          }
+          toast.warning(
+            'Exclusão Bloqueada por Movimentações',
+            `O item "${targetProd.codigo} - ${targetProd.nome}" possui movimentações ou vínculos históricos e não pode ser removido.`,
+            7000
+          );
+          return;
+        }
+
+        if (res.status === 404) {
+          setDeletingProduto(null);
+          toast.error('Produto Não Encontrado', serverError);
+          onRefresh();
+          return;
+        }
+
+        if (res.status === 403 || res.status === 401) {
+          setDeletingProduto(null);
+          toast.error('Acesso Negado', serverError);
+          return;
+        }
+
+        throw new Error(serverError);
+      }
+
+      toast.success(
+        'Produto Excluído',
+        data.message || `Produto "${deletingProduto.codigo} - ${deletingProduto.nome}" removido do catálogo.`
+      );
       setDeletingProduto(null);
-      if (editingId === deletingProduto.id) {
+      setDeleteBlockedInfo(null);
+      if (editingId !== null && Number(editingId) === produtoId) {
         setIsFormOpen(false);
+        setEditingId(null);
       }
       onRefresh();
     } catch (err: any) {
-      toast.error('Erro ao Excluir Produto', err.message || 'Não foi possível excluir o produto.');
+      const isNetworkErr = err instanceof TypeError && /fetch|network/i.test(err.message || '');
+      const friendlyMsg = isNetworkErr
+        ? 'Falha de comunicação com o servidor ao tentar excluir o produto. Verifique sua conexão e tente novamente.'
+        : err?.message || 'Não foi possível excluir o produto.';
+      setDeletingProduto(null);
+      if (editingId !== null) {
+        setErrorMsg(friendlyMsg);
+      }
+      toast.error('Erro ao Excluir Produto', friendlyMsg, 6500);
+    } finally {
+      setIsProcessing(false);
+    }
+  };
+
+  const handleInativarProdutoVinculado = async (prod: Produto) => {
+    const produtoId = Number(prod.id);
+    if (!Number.isInteger(produtoId) || produtoId <= 0) return;
+
+    setIsProcessing(true);
+    try {
+      const res = await fetch(`/api/produtos/${encodeURIComponent(String(produtoId))}/inativar`, {
+        method: 'PATCH',
+        headers: getAuthHeaders({ 'X-Area-Sigla': activeAreaSigla }),
+      });
+
+      let data: any = {};
+      try {
+        const rawText = await res.text();
+        data = rawText ? JSON.parse(rawText) : {};
+      } catch {
+        data = {};
+      }
+
+      if (!res.ok) {
+        throw new Error(data?.error || 'Não foi possível inativar o produto.');
+      }
+
+      toast.success(
+        'Produto Inativado no Catálogo',
+        data.message || `O item "${prod.codigo} - ${prod.nome}" foi inativado preservando todo o histórico de movimentações.`
+      );
+      setDeleteBlockedInfo(null);
+      if (editingId !== null && Number(editingId) === produtoId) {
+        setFormAtivo(0);
+        setErrorMsg(null);
+      }
+      onRefresh();
+    } catch (err: any) {
+      toast.error('Erro ao Inativar Produto', err?.message || 'Falha ao inativar o item no catálogo.');
     } finally {
       setIsProcessing(false);
     }
   };
 
   const editingProdutoObj = useMemo(
-    () => (editingId ? produtos.find((item) => item.id === editingId) || null : null),
+    () => (editingId ? produtos.find((item) => Number(item.id) === Number(editingId)) || null : null),
     [produtos, editingId]
   );
 
@@ -1184,8 +1309,23 @@ export const ProdutosView: React.FC<ProdutosViewProps> = ({
                   <button
                     type="button"
                     onClick={() => {
-                      const target = produtos.find((item) => item.id === editingId);
-                      if (target) setDeletingProduto(target);
+                      setDeleteBlockedInfo(null);
+                      const target = produtos.find((item) => Number(item.id) === Number(editingId));
+                      if (target) {
+                        setDeletingProduto(target);
+                      } else {
+                        setDeletingProduto({
+                          id: Number(editingId),
+                          codigo: formCodigo,
+                          nome: formNome,
+                          unidade_medida: formUnidadeMedida,
+                          tipo: formTipo,
+                          estoque_minimo: formEstoqueMinimo,
+                          estoque_maximo: formEstoqueMaximo,
+                          quantidade_atual: formQuantidadeAtual,
+                          ativo: formAtivo,
+                        } as Produto);
+                      }
                     }}
                     disabled={isProcessing}
                     className="bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 font-semibold px-4 py-2 rounded text-xs flex items-center gap-1.5 transition-all uppercase tracking-wide cursor-pointer disabled:opacity-50"
@@ -1520,7 +1660,10 @@ export const ProdutosView: React.FC<ProdutosViewProps> = ({
                           {canEdit && (
                             <button
                               type="button"
-                              onClick={() => setDeletingProduto(p)}
+                              onClick={() => {
+                                setDeleteBlockedInfo(null);
+                                setDeletingProduto(p);
+                              }}
                               className="p-1 text-rose-500 hover:text-rose-700 hover:bg-rose-50 rounded transition-all cursor-pointer"
                               title="Excluir Produto"
                             >
@@ -1594,11 +1737,130 @@ export const ProdutosView: React.FC<ProdutosViewProps> = ({
         title="Excluir Produto do Catálogo"
         entityCode={deletingProduto?.codigo}
         entityName={deletingProduto?.nome || ''}
-        description="Esta ação removerá o produto do catálogo e os registros de movimentação vinculados, desde que não existam empréstimos ativos pendentes."
+        description="A remoção definitiva só é permitida para itens sem histórico de movimentações, requisições, consumos, inventários ou empréstimos vinculados. Itens com movimentações registradas são protegidos para auditoria contábil."
         isProcessing={isProcessing}
         onConfirm={handleConfirmDelete}
         onClose={() => setDeletingProduto(null)}
       />
+
+      {deleteBlockedInfo && (
+        <div
+          role="alertdialog"
+          aria-modal="true"
+          aria-labelledby="delete-blocked-title"
+          className="fixed inset-0 z-[115] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs animate-fadeIn"
+        >
+          <div className="bg-white rounded-2xl shadow-2xl border border-slate-200 w-full max-w-lg overflow-hidden animate-scaleUp">
+            {/* Cabeçalho */}
+            <div className="bg-amber-600 px-5 py-4 text-white flex items-center justify-between">
+              <div className="flex items-center gap-2.5">
+                <div className="p-2 rounded-lg bg-white/15">
+                  <ShieldAlert className="w-5 h-5 text-white" />
+                </div>
+                <div>
+                  <h3 id="delete-blocked-title" className="text-sm font-bold uppercase tracking-wide">
+                    Exclusão Impedida — Movimentações Vinculadas
+                  </h3>
+                  <p className="text-[11px] text-amber-100">
+                    Proteção de integridade referencial e auditoria contábil
+                  </p>
+                </div>
+              </div>
+
+              <button
+                type="button"
+                onClick={() => setDeleteBlockedInfo(null)}
+                disabled={isProcessing}
+                className="p-1 rounded-lg text-white/80 hover:text-white hover:bg-white/10 transition-colors cursor-pointer"
+                title="Fechar aviso"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {/* Corpo */}
+            <div className="p-6 space-y-4">
+              <div className="p-3.5 rounded-xl bg-amber-50 border border-amber-200 flex items-start gap-3">
+                <AlertTriangle className="w-5 h-5 text-amber-600 shrink-0 mt-0.5" />
+                <div className="text-xs text-amber-950 space-y-1 min-w-0">
+                  <p className="font-bold">
+                    Produto selecionado:{' '}
+                    <span className="font-mono text-amber-900">{deleteBlockedInfo.produto.codigo}</span> —{' '}
+                    <span>{deleteBlockedInfo.produto.nome}</span>
+                  </p>
+                  <p className="text-amber-900 leading-relaxed">{deleteBlockedInfo.mensagem}</p>
+                </div>
+              </div>
+
+              {deleteBlockedInfo.detalhes.length > 0 && (
+                <div className="rounded-xl border border-slate-200 bg-slate-50 p-3.5 space-y-2">
+                  <div className="text-[11px] font-bold uppercase tracking-wider text-slate-700">
+                    Vínculos e Movimentações Identificadas:
+                  </div>
+                  <ul className="space-y-1.5 text-xs text-slate-700">
+                    {deleteBlockedInfo.detalhes.map((detalhe, idx) => (
+                      <li key={idx} className="flex items-start gap-2">
+                        <span className="w-1.5 h-1.5 rounded-full bg-amber-600 mt-1.5 shrink-0" />
+                        <span>{detalhe}</span>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+
+              <div className="p-3 rounded-lg bg-teal-50/70 border border-teal-200 text-xs text-teal-900 leading-relaxed">
+                <strong>Recomendação:</strong>{' '}
+                {deleteBlockedInfo.canInactivate && canEdit
+                  ? 'Inative este produto para impedir novas entradas ou requisições mantendo intacto o histórico do Livro Razão e Kardex.'
+                  : 'Este item já se encontra inativo ou protegido para manter a rastreabilidade histórica do estoque.'}
+              </div>
+
+              {/* Ações */}
+              <div className="pt-3 border-t border-slate-200 flex flex-wrap items-center justify-between gap-2.5">
+                <div>
+                  {onNavigate && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setDeleteBlockedInfo(null);
+                        onNavigate('kardex');
+                      }}
+                      disabled={isProcessing}
+                      className="px-3 py-2 rounded-lg border border-teal-200 bg-teal-50 hover:bg-teal-100 text-teal-800 text-xs font-semibold flex items-center gap-1.5 transition-colors cursor-pointer disabled:opacity-50"
+                    >
+                      <FileText className="w-3.5 h-3.5" />
+                      <span>Ver Kardex</span>
+                    </button>
+                  )}
+                </div>
+
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setDeleteBlockedInfo(null)}
+                    disabled={isProcessing}
+                    className="px-4 py-2 rounded-lg border border-slate-300 text-xs font-semibold text-slate-700 hover:bg-slate-100 transition-colors cursor-pointer disabled:opacity-50"
+                  >
+                    Fechar
+                  </button>
+
+                  {deleteBlockedInfo.canInactivate && canEdit && (
+                    <button
+                      type="button"
+                      disabled={isProcessing}
+                      onClick={() => handleInativarProdutoVinculado(deleteBlockedInfo.produto)}
+                      className="px-4 py-2 rounded-lg bg-amber-600 hover:bg-amber-700 active:bg-amber-800 text-white text-xs font-bold uppercase tracking-wider flex items-center gap-1.5 shadow-sm transition-all cursor-pointer disabled:opacity-50"
+                    >
+                      <Power className="w-4 h-4" />
+                      <span>{isProcessing ? 'Inativando...' : 'Inativar Produto'}</span>
+                    </button>
+                  )}
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
 
       <GruposSubgruposModal
         isOpen={isGruposModalOpen}

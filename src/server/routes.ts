@@ -3931,6 +3931,47 @@ apiRouter.put('/produtos/:id', (req, res) => {
   }
 });
 
+apiRouter.patch('/produtos/:id/inativar', (req, res) => {
+  const user = authenticateRequest(req);
+  if (!user || (user.perfil !== 'admin' && user.perfil !== 'almoxarife')) {
+    res.status(403).json({ error: 'Apenas Administradores e Almoxarifes podem inativar produtos.' });
+    return;
+  }
+
+  const produtoId = Number(req.params.id);
+  if (!Number.isInteger(produtoId) || produtoId <= 0) {
+    res.status(400).json({ error: 'ID de produto inválido.' });
+    return;
+  }
+
+  const prod = db.prepare('SELECT id, codigo, nome, ativo FROM produtos WHERE id = ?').get(produtoId) as any;
+  if (!prod) {
+    res.status(404).json({ error: 'Produto não encontrado no catálogo desta área operacional.' });
+    return;
+  }
+
+  try {
+    db.prepare('UPDATE produtos SET ativo = 0 WHERE id = ?').run(produtoId);
+    const clientIp = (req.headers['x-forwarded-for'] as string)?.split(',')[0]?.trim() || req.socket.remoteAddress || 'local';
+    const areaSigla = (req as any).areaSigla || user.area_sigla || 'ALM';
+    registrarLogAcesso(
+      user,
+      clientIp,
+      'inativar_produto',
+      `Produto "${prod.codigo} - ${prod.nome}" (ID ${produtoId}) inativado no catálogo.`,
+      areaSigla
+    );
+
+    res.json({
+      id: produtoId,
+      ativo: 0,
+      message: `Produto "${prod.codigo} - ${prod.nome}" inativado com sucesso no catálogo.`,
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: 'Erro ao inativar produto: ' + err.message });
+  }
+});
+
 apiRouter.delete('/produtos/:id', (req, res) => {
   const user = authenticateRequest(req);
   if (!user || (user.perfil !== 'admin' && user.perfil !== 'almoxarife')) {
@@ -3938,41 +3979,135 @@ apiRouter.delete('/produtos/:id', (req, res) => {
     return;
   }
 
-  const { id } = req.params;
-  const prod = db.prepare('SELECT * FROM produtos WHERE id = ?').get(id) as any;
-  if (!prod) {
-    res.status(404).json({ error: 'Produto não encontrado no catálogo' });
+  const produtoId = Number(req.params.id);
+  if (!Number.isInteger(produtoId) || produtoId <= 0) {
+    res.status(400).json({ error: 'ID de produto inválido para exclusão.' });
     return;
   }
 
-  const empAtivos = db.prepare(
-    "SELECT COUNT(*) as count FROM emprestimos WHERE produto_id = ? AND status IN ('emprestado', 'atrasado')"
-  ).get(id) as { count: number };
-  if (empAtivos.count > 0) {
-    res.status(400).json({
-      error: `Não é possível excluir "${prod.nome}" pois há ${empAtivos.count} empréstimo(s) ativo(s) deste equipamento.`,
+  const prod = db.prepare('SELECT * FROM produtos WHERE id = ?').get(produtoId) as any;
+  if (!prod) {
+    res.status(404).json({ error: 'Produto não encontrado no catálogo desta área operacional.' });
+    return;
+  }
+
+  const safeCount = (sql: string, param: number): number => {
+    try {
+      const row = db.prepare(sql).get(param) as { count?: number } | undefined;
+      return Number(row?.count || 0);
+    } catch {
+      return 0;
+    }
+  };
+
+  const movCount = safeCount('SELECT COUNT(*) as count FROM movimentacoes WHERE produto_id = ?', produtoId);
+  const consCount = safeCount('SELECT COUNT(*) as count FROM itens_consumo WHERE produto_id = ?', produtoId);
+  const reqCount = safeCount('SELECT COUNT(*) as count FROM itens_requisicao WHERE produto_id = ?', produtoId);
+  const invCount = safeCount('SELECT COUNT(*) as count FROM itens_inventario WHERE produto_id = ?', produtoId);
+  const empAtivosCount = safeCount(
+    "SELECT COUNT(*) as count FROM emprestimos WHERE produto_id = ? AND status IN ('emprestado', 'atrasado')",
+    produtoId
+  );
+  const empTotalCount = safeCount('SELECT COUNT(*) as count FROM emprestimos WHERE produto_id = ?', produtoId);
+  const empInstCount = safeCount(
+    'SELECT COUNT(*) as count FROM itens_emprestimo_institucional WHERE produto_id = ?',
+    produtoId
+  );
+
+  let saldoLotes = 0;
+  try {
+    const rowSaldo = db
+      .prepare('SELECT COALESCE(SUM(quantidade_atual), 0) as saldo FROM lotes_estoque WHERE produto_id = ? AND quantidade_atual > 0')
+      .get(produtoId) as { saldo?: number } | undefined;
+    saldoLotes = Number(rowSaldo?.saldo || 0);
+  } catch {
+    saldoLotes = 0;
+  }
+  const saldoAtual = Math.max(Number(prod.quantidade_atual || 0), saldoLotes);
+
+  const detalhesVinculos: string[] = [];
+  if (movCount > 0) {
+    detalhesVinculos.push(`${movCount} movimentação(ões) registrada(s) no Livro Razão / Kardex`);
+  }
+  if (consCount > 0) {
+    detalhesVinculos.push(`${consCount} registro(s) de saída por consumo direto`);
+  }
+  if (reqCount > 0) {
+    detalhesVinculos.push(`${reqCount} item(ns) vinculado(s) em requisição(ões)`);
+  }
+  if (invCount > 0) {
+    detalhesVinculos.push(`${invCount} registro(s) em contagem(ns) de inventário`);
+  }
+  if (empAtivosCount > 0) {
+    detalhesVinculos.push(`${empAtivosCount} empréstimo(s) ativo(s)/pendente(s) de devolução`);
+  } else if (empTotalCount > 0) {
+    detalhesVinculos.push(`${empTotalCount} registro(s) no histórico de empréstimos`);
+  }
+  if (empInstCount > 0) {
+    detalhesVinculos.push(`${empInstCount} item(ns) em empréstimo(s) institucional(is)`);
+  }
+  if (saldoAtual > 0) {
+    detalhesVinculos.push(`saldo físico positivo em estoque (${saldoAtual} ${prod.unidade_medida || 'UN'})`);
+  }
+
+  if (detalhesVinculos.length > 0) {
+    res.status(409).json({
+      error: `Não é possível excluir o produto "${prod.codigo} - ${prod.nome}" pois ele possui movimentações ou vínculos operacionais (${detalhesVinculos.join('; ')}). Para preservar a integridade contábil e a auditoria do Kardex, inative o produto no catálogo.`,
+      code: 'PRODUTO_COM_MOVIMENTACOES',
+      canInactivate: Number(prod.ativo) === 1,
+      vinculos: {
+        movimentacoes: movCount,
+        consumos: consCount,
+        requisicoes: reqCount,
+        inventarios: invCount,
+        emprestimos: empTotalCount,
+        emprestimos_ativos: empAtivosCount,
+        emprestimos_institucionais: empInstCount,
+        saldo_atual: saldoAtual,
+      },
+      detalhes_vinculos: detalhesVinculos,
     });
     return;
   }
 
   try {
     runInTransaction(() => {
-      db.prepare('DELETE FROM historico_requisicoes WHERE produto_id = ?').run(id);
-      db.prepare('DELETE FROM itens_requisicao WHERE produto_id = ?').run(id);
-      db.prepare('DELETE FROM itens_emprestimo_institucional WHERE produto_id = ?').run(id);
-      db.prepare('DELETE FROM movimentacoes WHERE produto_id = ?').run(id);
-      db.prepare('DELETE FROM lotes_estoque WHERE produto_id = ?').run(id);
-      db.prepare('DELETE FROM emprestimos WHERE produto_id = ?').run(id);
-      db.prepare('DELETE FROM produto_fornecedores WHERE produto_id = ?').run(id);
-      db.prepare('DELETE FROM produtos WHERE id = ?').run(id);
+      try {
+        db.prepare('UPDATE historico_requisicoes SET produto_id = NULL WHERE produto_id = ?').run(produtoId);
+      } catch {}
+      try {
+        db.prepare('DELETE FROM itens_lista_reposicao WHERE produto_id = ?').run(produtoId);
+      } catch {}
+      db.prepare('DELETE FROM produto_fornecedores WHERE produto_id = ?').run(produtoId);
+      db.prepare('DELETE FROM lotes_estoque WHERE produto_id = ?').run(produtoId);
+      db.prepare('DELETE FROM produtos WHERE id = ?').run(produtoId);
     });
 
+    const clientIp = (req.headers['x-forwarded-for'] as string)?.split(',')[0]?.trim() || req.socket.remoteAddress || 'local';
+    const areaSigla = (req as any).areaSigla || user.area_sigla || 'ALM';
+    registrarLogAcesso(
+      user,
+      clientIp,
+      'excluir_produto',
+      `Produto "${prod.codigo} - ${prod.nome}" (ID ${produtoId}) excluído do catálogo (sem movimentações vinculadas).`,
+      areaSigla
+    );
+
     res.json({
-      id: Number(id),
+      id: produtoId,
       message: `Produto "${prod.codigo} - ${prod.nome}" excluído com sucesso do catálogo.`,
     });
   } catch (err: any) {
-    res.status(500).json({ error: 'Erro ao excluir produto: ' + err.message });
+    const errMsg = String(err?.message || '');
+    if (errMsg.toUpperCase().includes('FOREIGN KEY') || errMsg.toUpperCase().includes('CONSTRAINT')) {
+      res.status(409).json({
+        error: `Não é possível excluir o produto "${prod.codigo} - ${prod.nome}" pois existem registros ou movimentações vinculadas no banco de dados que impedem sua remoção.`,
+        code: 'INTEGRIDADE_REFERENCIAL',
+        canInactivate: Number(prod.ativo) === 1,
+      });
+      return;
+    }
+    res.status(500).json({ error: 'Erro ao excluir produto: ' + errMsg });
   }
 });
 
