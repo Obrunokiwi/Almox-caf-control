@@ -6340,9 +6340,9 @@ apiRouter.post('/requisicoes/:id/aprovar', (req, res) => {
       const movStmt = db.prepare(`
         INSERT INTO movimentacoes (
           tipo, motivo_diverso, produto_id, lote_id, quantidade, centro_custo_id,
-          usuario_id, responsavel_nome, documento_referencia, numero_lote, data_validade, observacao
+          usuario_id, responsavel_nome, documento_referencia, numero_lote, data_validade, observacao, requisicao_id
         )
-        VALUES ('saida', 'Atendimento de Requisição', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES ('saida', 'Atendimento de Requisição', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `);
 
       const histStmt = db.prepare(`
@@ -6400,7 +6400,8 @@ apiRouter.post('/requisicoes/:id/aprovar', (req, res) => {
                 reqRow.numero_requisicao,
                 loteDb.numero_lote,
                 loteDb.data_validade,
-                `Atendimento de Requisição (Lote ${loteDb.numero_lote} conferido e dispensado por ${user.nome})`
+                `Atendimento de Requisição (Lote ${loteDb.numero_lote} conferido e dispensado por ${user.nome})`,
+                id
               );
 
               lotesConsumidos.push({
@@ -6425,7 +6426,8 @@ apiRouter.post('/requisicoes/:id/aprovar', (req, res) => {
                   reqRow.numero_requisicao,
                   lf.numero_lote,
                   lf.data_validade,
-                  `Atendimento de Requisição (Item dispensado por ${user.nome} | Lote: ${lf.numero_lote})`
+                  `Atendimento de Requisição (Item dispensado por ${user.nome} | Lote: ${lf.numero_lote})`,
+                  id
                 );
                 lotesConsumidos.push({
                   lote_id: lf.lote_id,
@@ -6446,7 +6448,8 @@ apiRouter.post('/requisicoes/:id/aprovar', (req, res) => {
                 reqRow.numero_requisicao,
                 null,
                 null,
-                `Atendimento de Requisição (Item aprovado e dispensado por ${user.nome})`
+                `Atendimento de Requisição (Item aprovado e dispensado por ${user.nome})`,
+                id
               );
             }
           }
@@ -13203,43 +13206,147 @@ apiRouter.get('/lista-compras/calcular', (req, res) => {
       allowedTiposArr = tipos_saida.split(',').map((t) => t.trim());
     }
 
+    const reqConditionSql = `(
+      motivo_diverso = 'Atendimento de Requisição'
+      OR requisicao_id IS NOT NULL
+      OR UPPER(TRIM(COALESCE(documento_referencia, ''))) LIKE 'REQ%'
+      OR LOWER(TRIM(COALESCE(motivo_diverso, ''))) LIKE '%requisi%'
+      OR LOWER(TRIM(COALESCE(motivo_diverso, ''))) LIKE '%atendimento%'
+      OR motivo_diverso = 'Saída / Requisição Padrão'
+      OR motivo_diverso IS NULL
+      OR TRIM(motivo_diverso) = ''
+    )`;
+
+    const includeAllTipos = allowedTiposArr.length === 0;
+    let includeRequisicoes = includeAllTipos;
+    let includeConsumoDireto = includeAllTipos;
+    const expandedManualMotivos: string[] = [];
+
+    if (!includeAllTipos) {
+      for (const t of allowedTiposArr) {
+        if (t === 'Atendimento de Requisição') {
+          includeRequisicoes = true;
+        } else if (t === 'Consumo Direto') {
+          includeConsumoDireto = true;
+          expandedManualMotivos.push('Consumo', 'Consumo Direto');
+        } else if (t === 'Avaria / Perda') {
+          expandedManualMotivos.push('Avaria/Quebra', 'Perda/Extravio', 'Quebra', 'Avaria');
+        } else if (t === 'Saída por Vencimento/Descarte') {
+          expandedManualMotivos.push('Vencimento/Descarte', 'Saída por Vencimento/Descarte', 'Descarte');
+        } else {
+          expandedManualMotivos.push(t);
+        }
+      }
+    }
+
     const itensCalculados: any[] = [];
 
     for (const p of produtos) {
-      let querySaidas = `
-        SELECT COALESCE(SUM(quantidade), 0) as total
-        FROM movimentacoes
-        WHERE produto_id = ? AND tipo = 'saida'
-          AND datetime(data_movimentacao) >= datetime(?)
-          AND datetime(data_movimentacao) <= datetime(?)
-      `;
-      const paramsSaidas: any[] = [p.id, startTs, endTs];
+      let saidasRequisicoesMov = 0;
+      let saidasRequisicoesFallback = 0;
+      let saidasManuais = 0;
 
-      if (allowedTiposArr.length > 0) {
-        querySaidas += ` AND (motivo_diverso IN (${allowedTiposArr.map(() => '?').join(',')}) OR motivo_diverso IS NULL)`;
-        paramsSaidas.push(...allowedTiposArr);
+      if (includeRequisicoes) {
+        const rowReqMov = db.prepare(`
+          SELECT COALESCE(SUM(quantidade), 0) as total
+          FROM movimentacoes
+          WHERE produto_id = ? AND tipo = 'saida'
+            AND datetime(data_movimentacao) >= datetime(?)
+            AND datetime(data_movimentacao) <= datetime(?)
+            AND ${reqConditionSql}
+        `).get(p.id, startTs, endTs) as { total: number };
+        saidasRequisicoesMov = round4(Number(rowReqMov?.total || 0));
+
+        const rowReqFallback = db.prepare(`
+          SELECT COALESCE(SUM(ir.quantidade_atendida), 0) as total
+          FROM itens_requisicao ir
+          JOIN requisicoes r ON ir.requisicao_id = r.id
+          WHERE ir.produto_id = ?
+            AND r.status IN ('atendida', 'aprovada_atendida', 'em_separacao')
+            AND ir.quantidade_atendida > 0
+            AND datetime(COALESCE(r.data_atendimento, r.data_solicitacao)) >= datetime(?)
+            AND datetime(COALESCE(r.data_atendimento, r.data_solicitacao)) <= datetime(?)
+            AND NOT EXISTS (
+              SELECT 1 FROM movimentacoes m
+              WHERE m.produto_id = ir.produto_id
+                AND m.tipo = 'saida'
+                AND (
+                  m.requisicao_id = r.id
+                  OR (
+                    r.numero_requisicao IS NOT NULL
+                    AND TRIM(r.numero_requisicao) <> ''
+                    AND UPPER(TRIM(COALESCE(m.documento_referencia, ''))) = UPPER(TRIM(r.numero_requisicao))
+                  )
+                )
+            )
+        `).get(p.id, startTs, endTs) as { total: number };
+        saidasRequisicoesFallback = round4(Number(rowReqFallback?.total || 0));
       }
 
-      const rowSaidas = db.prepare(querySaidas).get(...paramsSaidas) as { total: number };
-      const saidasBrutas = Number(rowSaidas?.total || 0);
+      if (includeAllTipos) {
+        const rowManualAll = db.prepare(`
+          SELECT COALESCE(SUM(quantidade), 0) as total
+          FROM movimentacoes
+          WHERE produto_id = ? AND tipo = 'saida'
+            AND datetime(data_movimentacao) >= datetime(?)
+            AND datetime(data_movimentacao) <= datetime(?)
+            AND NOT ${reqConditionSql}
+        `).get(p.id, startTs, endTs) as { total: number };
+        saidasManuais = round4(Number(rowManualAll?.total || 0));
+      } else {
+        const manualConds: string[] = [];
+        const manualParams: any[] = [p.id, startTs, endTs];
+        if (includeConsumoDireto) {
+          manualConds.push('consumo_id IS NOT NULL');
+        }
+        if (expandedManualMotivos.length > 0) {
+          manualConds.push(`motivo_diverso IN (${expandedManualMotivos.map(() => '?').join(',')})`);
+          manualParams.push(...expandedManualMotivos);
+        }
+        if (manualConds.length > 0) {
+          const rowManualSel = db.prepare(`
+            SELECT COALESCE(SUM(quantidade), 0) as total
+            FROM movimentacoes
+            WHERE produto_id = ? AND tipo = 'saida'
+              AND datetime(data_movimentacao) >= datetime(?)
+              AND datetime(data_movimentacao) <= datetime(?)
+              AND NOT ${reqConditionSql}
+              AND (${manualConds.join(' OR ')})
+          `).get(...manualParams) as { total: number };
+          saidasManuais = round4(Number(rowManualSel?.total || 0));
+        }
+      }
+
+      const saidasRequisicoes = round4(saidasRequisicoesMov + saidasRequisicoesFallback);
+      const saidasBrutas = round4(saidasRequisicoes + saidasManuais);
 
       const rowDev = db.prepare(`
         SELECT COALESCE(SUM(quantidade), 0) as total
         FROM movimentacoes
-        WHERE produto_id = ? AND tipo = 'entrada' AND motivo_diverso = 'Devolução de Setor'
+        WHERE produto_id = ?
+          AND (
+            tipo = 'estorno_saida'
+            OR (
+              tipo = 'entrada'
+              AND (
+                TRIM(COALESCE(motivo_diverso, '')) IN ('Devolução de Setor', 'DEVOLUÇÃO DE SETOR', 'devolução de setor', 'Devolucao de Setor')
+                OR LOWER(TRIM(COALESCE(motivo_diverso, ''))) LIKE 'devolu%de setor%'
+              )
+            )
+          )
           AND datetime(data_movimentacao) >= datetime(?)
           AND datetime(data_movimentacao) <= datetime(?)
       `).get(p.id, startTs, endTs) as { total: number };
-      const devolucoes = Number(rowDev?.total || 0);
+      const devolucoes = round4(Number(rowDev?.total || 0));
 
-      const saidasLiquidas = Math.max(0, saidasBrutas - devolucoes);
+      const saidasLiquidas = Math.max(0, round4(saidasBrutas - devolucoes));
 
       if (saidasLiquidas <= 0 && saidasBrutas <= 0) {
         continue;
       }
 
-      const saldoAtual = Number(p.quantidade_atual || 0);
-      const quantidadeSugerida = Math.max(0, saidasLiquidas - saldoAtual);
+      const saldoAtual = round4(Number(p.quantidade_atual || 0));
+      const quantidadeSugerida = Math.max(0, round4(saidasLiquidas - saldoAtual));
 
       if (apenasSugeridos && quantidadeSugerida <= 0) {
         continue;
@@ -13252,6 +13359,9 @@ apiRouter.get('/lista-compras/calcular', (req, res) => {
         unidade_medida: p.unidade_medida,
         grupo_nome: p.grupo_nome,
         saldo_atual: saldoAtual,
+        saidas_manuais: saidasManuais,
+        saidas_requisicoes: saidasRequisicoes,
+        devolucoes_estornos: devolucoes,
         saidas_periodo: saidasLiquidas,
         quantidade_sugerida: quantidadeSugerida,
         quantidade_repor: quantidadeSugerida

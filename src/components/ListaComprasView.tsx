@@ -3,6 +3,7 @@ import {
   ShoppingBag, 
   Search, 
   Printer, 
+  Download,
   FileSpreadsheet, 
   FileText, 
   Save, 
@@ -23,14 +24,16 @@ import {
   X
 } from 'lucide-react';
 import * as XLSX from 'xlsx';
-import type { Usuario, Produto, CentroCusto } from '../types/index.ts';
+import type { Usuario, Produto, EmpresaUnidade } from '../types/index.ts';
 import { AutocompleteSelect, type AutocompleteOption } from './AutocompleteSelect.tsx';
 import { useToast } from '../context/ToastContext.tsx';
 import { formatDateTimeBrasilia } from '../utils/dateUtils.ts';
+import { generateRelatorioListaReposicaoPDF, type PdfOutputMode } from '../utils/pdfGenerator.ts';
 
 interface ListaComprasViewProps {
   produtos: Produto[];
   currentUser: Usuario | null;
+  activeUnidade?: EmpresaUnidade | null;
   onVoltar: () => void;
   onNavigate?: (tab: string) => void;
 }
@@ -42,6 +45,9 @@ interface ItemReposicao {
   unidade_medida: string;
   grupo_nome?: string;
   saldo_atual: number;
+  saidas_manuais?: number;
+  saidas_requisicoes?: number;
+  devolucoes_estornos?: number;
   saidas_periodo: number;
   quantidade_sugerida: number;
   quantidade_repor: number;
@@ -65,9 +71,11 @@ interface ListaSalva {
 export const ListaComprasView: React.FC<ListaComprasViewProps> = ({
   produtos = [],
   currentUser,
+  activeUnidade,
   onVoltar,
 }) => {
   const { toast } = useToast();
+  const [isGeneratingPdf, setIsGeneratingPdf] = useState<boolean>(false);
 
   const get30DaysAgo = () => {
     const d = new Date();
@@ -401,9 +409,40 @@ export const ListaComprasView: React.FC<ListaComprasViewProps> = ({
     setItens(newItens);
   };
 
-  // Imprimir Relatório
-  const handlePrint = () => {
-    window.print();
+  // Gerar / Imprimir Relatório Oficial em PDF
+  const handleGerarPDF = async (mode: PdfOutputMode) => {
+    if (itens.length === 0 || isGeneratingPdf) return;
+
+    setIsGeneratingPdf(true);
+    try {
+      const areaSigla =
+        sessionStorage.getItem('multi_almox_area_sigla') ||
+        localStorage.getItem('multi_almox_area_sigla') ||
+        currentUser?.area_sigla ||
+        'ALM';
+
+      await generateRelatorioListaReposicaoPDF({
+        itens,
+        periodo: { data_inicio: dataInicio, data_fim: dataFim },
+        areaSigla: areaSigla.toUpperCase(),
+        documentoNumero: currentNumeroDoc || undefined,
+        status: currentStatus,
+        observacao,
+        currentUser,
+        activeUnidade,
+        mode,
+      });
+
+      if (mode === 'print') {
+        toast.success('Impressão PDF Solicitada', 'Relatório de reposição em PDF enviado para impressão.');
+      } else {
+        toast.success('PDF Baixado', 'Relatório de estimativa e sugestão de reposição baixado em PDF.');
+      }
+    } catch (err: any) {
+      toast.error('Erro ao Gerar PDF', err?.message || 'Não foi possível gerar o documento PDF.');
+    } finally {
+      setIsGeneratingPdf(false);
+    }
   };
 
   // Exportar para CSV
@@ -677,12 +716,12 @@ export const ListaComprasView: React.FC<ListaComprasViewProps> = ({
                 </div>
               </div>
 
-              <div className="flex items-center gap-2 print:hidden">
+              <div className="flex flex-wrap items-center gap-2 print:hidden">
                 <button
                   type="button"
                   onClick={handleExportCSV}
                   disabled={itens.length === 0}
-                  className="px-3 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-semibold rounded-lg transition-colors flex items-center gap-1 cursor-pointer"
+                  className="px-3 py-1.5 bg-slate-100 hover:bg-slate-200 disabled:opacity-50 text-slate-700 text-xs font-semibold rounded-lg transition-colors flex items-center gap-1 cursor-pointer"
                 >
                   <FileText className="w-3.5 h-3.5" />
                   <span>CSV</span>
@@ -692,7 +731,7 @@ export const ListaComprasView: React.FC<ListaComprasViewProps> = ({
                   type="button"
                   onClick={handleExportXLSX}
                   disabled={itens.length === 0}
-                  className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-semibold rounded-lg transition-colors flex items-center gap-1 cursor-pointer"
+                  className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white text-xs font-semibold rounded-lg transition-colors flex items-center gap-1 cursor-pointer"
                 >
                   <FileSpreadsheet className="w-3.5 h-3.5" />
                   <span>Excel (.xlsx)</span>
@@ -700,12 +739,22 @@ export const ListaComprasView: React.FC<ListaComprasViewProps> = ({
 
                 <button
                   type="button"
-                  onClick={handlePrint}
-                  disabled={itens.length === 0}
-                  className="px-3 py-1.5 bg-[#00237D] hover:bg-[#001858] text-white text-xs font-semibold rounded-lg transition-colors flex items-center gap-1 cursor-pointer"
+                  onClick={() => handleGerarPDF('download')}
+                  disabled={itens.length === 0 || isGeneratingPdf}
+                  className="px-3 py-1.5 bg-slate-800 hover:bg-slate-900 disabled:opacity-50 text-white text-xs font-semibold rounded-lg transition-colors flex items-center gap-1 cursor-pointer"
+                >
+                  <Download className="w-3.5 h-3.5" />
+                  <span>Baixar PDF</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => handleGerarPDF('print')}
+                  disabled={itens.length === 0 || isGeneratingPdf}
+                  className="px-3 py-1.5 bg-[#00237D] hover:bg-[#001858] disabled:opacity-50 text-white text-xs font-semibold rounded-lg transition-colors flex items-center gap-1 cursor-pointer"
                 >
                   <Printer className="w-3.5 h-3.5" />
-                  <span>Imprimir</span>
+                  <span>Imprimir PDF</span>
                 </button>
               </div>
             </div>
@@ -740,7 +789,7 @@ export const ListaComprasView: React.FC<ListaComprasViewProps> = ({
                     <th className="py-2.5 px-3 min-w-[240px]">Descrição Completa do Produto</th>
                     <th className="py-2.5 px-3 text-center">UND</th>
                     <th className="py-2.5 px-3 text-right">Saldo Atual</th>
-                    <th className="py-2.5 px-3 text-right">Saídas no Período</th>
+                    <th className="py-2.5 px-3 text-right">Saídas (Manual + Req)</th>
                     <th className="py-2.5 px-3 text-right text-slate-500">Qtd Sugerida</th>
                     <th className="py-2.5 px-3 text-right text-[#00237D] font-extrabold">
                       Quantidade a Repor *
@@ -778,7 +827,12 @@ export const ListaComprasView: React.FC<ListaComprasViewProps> = ({
                           {it.saldo_atual}
                         </td>
                         <td className="py-2.5 px-3 text-right font-semibold text-rose-700">
-                          {it.saidas_periodo}
+                          <div>{it.saidas_periodo}</div>
+                          {(typeof it.saidas_manuais === 'number' || typeof it.saidas_requisicoes === 'number') && (
+                            <div className="text-[10px] text-slate-400 font-normal whitespace-nowrap">
+                              Man: {it.saidas_manuais ?? 0} · Req: {it.saidas_requisicoes ?? 0}
+                            </div>
+                          )}
                         </td>
                         <td className="py-2.5 px-3 text-right font-medium text-slate-400">
                           {it.quantidade_sugerida}

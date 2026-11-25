@@ -668,6 +668,7 @@ export default function App() {
                 <ListaComprasView
                   produtos={produtos}
                   currentUser={currentUser}
+                  activeUnidade={activeUnidade}
                   onVoltar={handleReturnToGrid}
                   onNavigate={(tab) => setCurrentTab(tab)}
                 />

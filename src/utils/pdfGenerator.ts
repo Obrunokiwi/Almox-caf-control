@@ -1969,4 +1969,176 @@ export async function generateComprovanteEmprestimoInstitucionalPDF(params: {
   return finalizeJsPDF(doc, filename, titulo, mode);
 }
 
+// ============================================================================
+// RELATÓRIO DE ESTIMATIVA E SUGESTÃO DE REPOSIÇÃO (LISTA DE COMPRAS)
+// ============================================================================
+export async function generateRelatorioListaReposicaoPDF(params: {
+  itens: Array<{
+    produto_id: number;
+    produto_codigo: string;
+    produto_nome: string;
+    unidade_medida: string;
+    grupo_nome?: string;
+    saldo_atual: number;
+    saidas_manuais?: number;
+    saidas_requisicoes?: number;
+    saidas_periodo: number;
+    quantidade_sugerida: number;
+    quantidade_repor: number;
+  }>;
+  periodo: { data_inicio: string; data_fim: string };
+  areaSigla: string;
+  documentoNumero?: string;
+  status?: 'RASCUNHO' | 'FECHADA' | string;
+  observacao?: string;
+  currentUser?: Usuario | null;
+  activeUnidade?: EmpresaUnidade | null;
+  mode: PdfOutputMode;
+}): Promise<PdfGeneratedDocument> {
+  const {
+    itens,
+    periodo,
+    areaSigla,
+    documentoNumero,
+    status,
+    observacao,
+    currentUser,
+    activeUnidade,
+    mode,
+  } = params;
+  const doc = new jsPDF({
+    orientation: 'portrait',
+    unit: 'mm',
+    format: 'a4',
+  });
+
+  const pageWidth = doc.internal.pageSize.getWidth();
+  const pageHeight = doc.internal.pageSize.getHeight();
+  const titulo = 'Relatório de Estimativa e Sugestão de Reposição (Lista de Compras)';
+  const protocolo = documentoNumero ? documentoNumero : `PREVIA-${areaSigla}-${Date.now().toString().slice(-6)}`;
+  const roundVal = (n: number) => Math.round((Number(n || 0) + Number.EPSILON) * 10000) / 10000;
+
+  let currentY = await drawInstitutionalHeader(doc, {
+    titulo,
+    subtitulo: `Período Analisado: ${periodo.data_inicio.split('-').reverse().join('/')} a ${periodo.data_fim.split('-').reverse().join('/')} • Área: ${areaSigla}`,
+    protocolo,
+    activeUnidade,
+    currentUser,
+  });
+
+  const totalSaldo = roundVal(itens.reduce((acc, i) => acc + Number(i.saldo_atual || 0), 0));
+  const totalSaidas = roundVal(itens.reduce((acc, i) => acc + Number(i.saidas_periodo || 0), 0));
+  const totalSugerida = roundVal(itens.reduce((acc, i) => acc + Number(i.quantidade_sugerida || 0), 0));
+  const totalRepor = roundVal(itens.reduce((acc, i) => acc + Number(i.quantidade_repor || 0), 0));
+
+  doc.setFillColor(248, 250, 252);
+  doc.setDrawColor(203, 213, 225);
+  doc.roundedRect(12, currentY, pageWidth - 24, 12, 1.5, 1.5, 'FD');
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(7.5);
+  doc.setTextColor(71, 85, 105);
+  doc.text(`DOCUMENTO: ${documentoNumero || 'Prévia (Não Salvo)'}`, 15, currentY + 4.8);
+  doc.text(`SITUAÇÃO: ${status === 'FECHADA' ? 'FECHADA (DEFINITIVA)' : 'RASCUNHO'}`, 92, currentY + 4.8);
+  doc.setTextColor(0, 35, 125);
+  doc.text(`ITENS: ${itens.length}   |   TOTAL A REPOR: ${totalRepor}`, pageWidth - 15, currentY + 4.8, { align: 'right' });
+  doc.setFont('helvetica', 'normal');
+  doc.setFontSize(7);
+  doc.setTextColor(100, 116, 139);
+  doc.text(
+    'Consolidação automática de saídas manuais (consumo direto, avarias, descartes) e atendimentos de requisições no período.',
+    15,
+    currentY + 9.5
+  );
+
+  currentY += 16;
+
+  const bodyRows = itens.map((i) => {
+    const hasBreakdown = typeof i.saidas_manuais === 'number' || typeof i.saidas_requisicoes === 'number';
+    const saidasLabel = hasBreakdown
+      ? `${roundVal(i.saidas_periodo)}\n(Man: ${roundVal(i.saidas_manuais || 0)} | Req: ${roundVal(i.saidas_requisicoes || 0)})`
+      : String(roundVal(i.saidas_periodo));
+    const descLabel = i.grupo_nome ? `${i.produto_nome || ''}\nGrupo: ${i.grupo_nome}` : (i.produto_nome || '');
+    return [
+      i.produto_codigo || '',
+      descLabel,
+      i.unidade_medida || 'UN',
+      String(roundVal(i.saldo_atual)),
+      saidasLabel,
+      String(roundVal(i.quantidade_sugerida)),
+      String(roundVal(i.quantidade_repor)),
+    ];
+  });
+
+  autoTable(doc, {
+    startY: currentY,
+    head: [['Código', 'Descrição do Produto', 'UND', 'Saldo Atual', 'Saídas (Manual + Req)', 'Qtd Sugerida', 'Qtd a Repor']],
+    body: bodyRows.length > 0 ? bodyRows : [['—', 'Nenhum item na lista de reposição', '—', '0', '0', '0', '0']],
+    foot: itens.length > 0 ? [['', 'TOTAL GERAL CONSOLIDADO', `${itens.length} it.`, String(totalSaldo), String(totalSaidas), String(totalSugerida), String(totalRepor)]] : undefined,
+    margin: { left: 12, right: 12 },
+    theme: 'grid',
+    styles: { fontSize: 7.5, cellPadding: 2, textColor: [30, 41, 59], valign: 'middle' },
+    headStyles: { fillColor: [0, 35, 125], textColor: [255, 255, 255], fontStyle: 'bold', fontSize: 7.5 },
+    footStyles: { fillColor: [241, 245, 249], textColor: [0, 35, 125], fontStyle: 'bold', fontSize: 8 },
+    columnStyles: {
+      0: { cellWidth: 20, fontStyle: 'bold' },
+      1: { cellWidth: 'auto' },
+      2: { cellWidth: 13, halign: 'center' },
+      3: { cellWidth: 20, halign: 'right' },
+      4: { cellWidth: 32, halign: 'right' },
+      5: { cellWidth: 22, halign: 'right' },
+      6: { cellWidth: 22, halign: 'right', fontStyle: 'bold', textColor: [0, 35, 125] },
+    },
+  });
+
+  currentY = ((doc as any).lastAutoTable?.finalY || currentY + 40) + 6;
+
+  if (observacao && observacao.trim()) {
+    const obsLines = doc.splitTextToSize(observacao.trim(), pageWidth - 30);
+    const obsBoxHeight = Math.max(13, 8 + obsLines.length * 3.8);
+    if (currentY + obsBoxHeight > pageHeight - 30) {
+      doc.addPage();
+      currentY = 20;
+    }
+    doc.setFillColor(248, 250, 252);
+    doc.setDrawColor(203, 213, 225);
+    doc.roundedRect(12, currentY, pageWidth - 24, obsBoxHeight, 1, 1, 'FD');
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(7);
+    doc.setTextColor(100, 116, 139);
+    doc.text('OBSERVAÇÕES GERENCIAIS DO RELATÓRIO:', 15, currentY + 4.5);
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(7.5);
+    doc.setTextColor(30, 41, 59);
+    doc.text(obsLines, 15, currentY + 9);
+    currentY += obsBoxHeight + 5;
+  }
+
+  if (currentY + 18 > pageHeight - 22) {
+    doc.addPage();
+    currentY = 20;
+  }
+
+  doc.setFillColor(255, 251, 235);
+  doc.setDrawColor(252, 211, 77);
+  doc.roundedRect(12, currentY, pageWidth - 24, 16, 1, 1, 'FD');
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(7);
+  doc.setTextColor(146, 64, 14);
+  doc.text('AVISO DE DIRETRIZ DO SISTEMA:', 15, currentY + 4.5);
+  doc.setFont('helvetica', 'normal');
+  doc.setFontSize(7.5);
+  doc.setTextColor(120, 53, 15);
+  doc.text(
+    'A Lista de Compras é um relatório de estimativa gerencial que consolida saídas manuais e requisições. O sistema NÃO executa pedidos de compra nem possui integração com fornecedores externos. A aquisição é realizada fora do sistema.',
+    15,
+    currentY + 9.5,
+    { maxWidth: pageWidth - 30 }
+  );
+
+  drawInstitutionalFooters(doc, protocolo);
+
+  const filename = `lista_reposicao_${areaSigla.toLowerCase()}_${Date.now()}.pdf`;
+  return finalizeJsPDF(doc, filename, titulo, mode);
+}
+
 
