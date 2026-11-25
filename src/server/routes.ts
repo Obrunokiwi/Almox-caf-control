@@ -7894,6 +7894,180 @@ apiRouter.post('/emprestimos-institucionais/:id/lancar', (req, res) => {
   }
 });
 
+apiRouter.post('/emprestimos-institucionais/:id/devolver', (req, res) => {
+  const user = authenticateRequest(req);
+  if (!user || (user.perfil !== 'admin' && user.perfil !== 'almoxarife')) {
+    res.status(403).json({ error: 'Apenas Almoxarifes e Administradores podem registrar devoluções de empréstimos institucionais' });
+    return;
+  }
+
+  const { id } = req.params;
+  const { responsavel_entidade_parceira, observacao, itens_devolucao } = req.body || {};
+
+  if (!Array.isArray(itens_devolucao) || itens_devolucao.length === 0) {
+    res.status(400).json({ error: 'Informe ao menos um item com quantidade a devolver' });
+    return;
+  }
+
+  try {
+    const updatedLoan = runInTransaction(() => {
+      const emp = getEmprestimoInstitucionalCompleto(Number(id));
+      if (!emp) {
+        throw new Error('Empréstimo institucional não encontrado');
+      }
+
+      if (emp.status === 'quitado' || emp.status === 'cancelado') {
+        throw new Error(`Este empréstimo já está com status "${emp.status}" e não pode receber novas devoluções.`);
+      }
+
+      const entidade = db.prepare('SELECT * FROM fornecedores WHERE id = ?').get(emp.entidade_id) as any;
+      const nomeEntidadeLabel = entidade ? `${entidade.codigo} - ${entidade.nome_fantasia || entidade.razao_social}` : emp.entidade_nome;
+
+      const movStmt = db.prepare(`
+        INSERT INTO movimentacoes (
+          tipo, motivo_diverso, produto_id, lote_id, quantidade, centro_custo_id,
+          fornecedor_id, emprestimo_institucional_id, usuario_id, responsavel_nome,
+          documento_referencia, numero_lote, data_validade, valor_unitario, observacao, data_movimentacao
+        ) VALUES (?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `);
+
+      for (const devItem of itens_devolucao) {
+        const itemId = Number(devItem.item_id);
+        const qtdDev = Number(devItem.quantidade);
+        if (!itemId || isNaN(qtdDev) || qtdDev <= 0) continue;
+
+        const itemDb = db.prepare('SELECT * FROM itens_emprestimo_institucional WHERE id = ? AND emprestimo_id = ?').get(itemId, emp.id) as any;
+        if (!itemDb) {
+          throw new Error(`Item ID #${itemId} não encontrado neste empréstimo`);
+        }
+
+        const qtdTotal = Number(itemDb.quantidade);
+        const qtdJaDevolvida = Number(itemDb.quantidade_devolvida || 0);
+        const pendente = Math.max(0, qtdTotal - qtdJaDevolvida);
+
+        if (qtdDev > pendente) {
+          throw new Error(`Quantidade a devolver (${qtdDev}) excede o saldo pendente (${pendente}) do item.`);
+        }
+
+        const prodId = Number(itemDb.produto_id);
+        const prod = db.prepare('SELECT * FROM produtos WHERE id = ? AND ativo = 1').get(prodId) as any;
+        if (!prod) {
+          throw new Error(`Produto #${prodId} não encontrado no estoque`);
+        }
+
+        const valorUnitario = Number(itemDb.valor_unitario || prod.valor_unitario || prod.custo_unitario || 0);
+        const numLoteDev = devItem.numero_lote ? String(devItem.numero_lote).trim().toUpperCase() : (itemDb.numero_lote || `LT-${emp.numero_documento}`);
+        const dtValidadeDev = devItem.data_validade ? String(devItem.data_validade).trim().slice(0, 10) : (itemDb.data_validade || null);
+
+        if (emp.tipo === 'concedido') {
+          const exigeValidade = prod.controla_validade === undefined ? prod.tipo === 'consumivel' : prod.controla_validade === 1;
+          if (exigeValidade && !dtValidadeDev) {
+            throw new Error(`Informe a Data de Validade do lote devolvido para o item "${prod.codigo} - ${prod.nome}".`);
+          }
+
+          const loteReg = upsertLoteEstoque({
+            produto_id: prodId,
+            numero_lote: numLoteDev,
+            data_validade: dtValidadeDev,
+            quantidade: qtdDev,
+            fornecedor_id: emp.entidade_id,
+            documento_referencia: emp.numero_documento,
+          });
+
+          db.prepare('UPDATE produtos SET quantidade_atual = quantidade_atual + ? WHERE id = ?').run(qtdDev, prodId);
+
+          db.prepare('UPDATE itens_emprestimo_institucional SET quantidade_devolvida = quantidade_devolvida + ? WHERE id = ?').run(
+            qtdDev,
+            itemId
+          );
+
+          movStmt.run(
+            'entrada',
+            'Recebimento de Devolução de Empréstimo',
+            prodId,
+            loteReg.id,
+            qtdDev,
+            emp.entidade_id,
+            emp.id,
+            user.id,
+            user.nome,
+            `DEV-${emp.numero_documento}`,
+            loteReg.numero_lote,
+            loteReg.data_validade,
+            valorUnitario,
+            `Recebimento de Devolução de Empréstimo concedido a ${nomeEntidadeLabel}${observacao ? ` | Obs: ${observacao}` : ''}`,
+            new Date().toISOString().replace('T', ' ').slice(0, 19)
+          );
+        } else {
+          if (prod.quantidade_atual < qtdDev) {
+            throw new Error(
+              `Saldo insuficiente em estoque para devolver o item "${prod.codigo} - ${prod.nome}". ` +
+              `Disponível: ${prod.quantidade_atual} ${prod.unidade_medida}, Solicitado: ${qtdDev} ${prod.unidade_medida}.`
+            );
+          }
+
+          const loteIdPreferencial = itemDb.lote_id ? Number(itemDb.lote_id) : null;
+          const lotesConsumidos = consumirLotesValidosFEFO(prodId, qtdDev, loteIdPreferencial);
+          const lotePrincipal = lotesConsumidos[0] || { lote_id: null, numero_lote: numLoteDev, data_validade: dtValidadeDev };
+
+          db.prepare('UPDATE produtos SET quantidade_atual = quantidade_atual - ? WHERE id = ? AND quantidade_atual >= ?').run(qtdDev, prodId, qtdDev);
+
+          db.prepare('UPDATE itens_emprestimo_institucional SET quantidade_devolvida = quantidade_devolvida + ? WHERE id = ?').run(
+            qtdDev,
+            itemId
+          );
+
+          movStmt.run(
+            'saida',
+            'Devolução de Empréstimo a Terceiros',
+            prodId,
+            lotePrincipal.lote_id,
+            qtdDev,
+            emp.entidade_id,
+            emp.id,
+            user.id,
+            user.nome,
+            `DEV-${emp.numero_documento}`,
+            lotePrincipal.numero_lote,
+            lotePrincipal.data_validade,
+            valorUnitario,
+            `Devolução de Empréstimo a Terceiros (${nomeEntidadeLabel})${observacao ? ` | Obs: ${observacao}` : ''}`,
+            new Date().toISOString().replace('T', ' ').slice(0, 19)
+          );
+        }
+      }
+
+      const itensAtualizados = db.prepare('SELECT * FROM itens_emprestimo_institucional WHERE emprestimo_id = ?').all(emp.id) as any[];
+      const todosQuitados = itensAtualizados.every((it) => Number(it.quantidade_devolvida || 0) >= Number(it.quantidade));
+
+      const novoStatus = todosQuitados ? 'quitado' : 'pendente_devolucao';
+      const dataQuitacaoVal = todosQuitados ? new Date().toISOString().replace('T', ' ').slice(0, 19) : null;
+      const respNomeVal = responsavel_entidade_parceira ? String(responsavel_entidade_parceira).trim() : emp.responsavel_entidade_nome;
+      const obsFinal = observacao && String(observacao).trim()
+        ? `${emp.observacao || ''} | Devolução (${new Date().toLocaleDateString('pt-BR')}): ${String(observacao).trim()}`
+        : emp.observacao;
+
+      db.prepare(`
+        UPDATE emprestimos_institucionais
+        SET status = ?,
+            data_quitacao = ?,
+            responsavel_entidade_nome = ?,
+            observacao = ?
+        WHERE id = ?
+      `).run(novoStatus, dataQuitacaoVal, respNomeVal, obsFinal, emp.id);
+
+      return getEmprestimoInstitucionalCompleto(emp.id);
+    });
+
+    res.json({
+      message: `Devolução registrada com sucesso! Termo ${updatedLoan.numero_documento} atualizado (Status: ${updatedLoan.status}).`,
+      data: updatedLoan,
+    });
+  } catch (err: any) {
+    res.status(400).json({ error: err.message || 'Erro ao registrar devolução de empréstimo' });
+  }
+});
+
 apiRouter.post('/emprestimos-institucionais/:id/desfazer', (req, res) => {
   const user = authenticateRequest(req);
   if (!user || (user.perfil !== 'admin' && user.perfil !== 'almoxarife')) {

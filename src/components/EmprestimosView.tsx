@@ -224,6 +224,8 @@ export const EmprestimosView: React.FC<EmprestimosViewProps> = ({
   const [devolucaoRespParceiro, setDevolucaoRespParceiro] = useState<string>('');
   const [devolucaoObs, setDevolucaoObs] = useState<string>('');
   const [devolucaoQuantidades, setDevolucaoQuantidades] = useState<Record<number, number>>({});
+  const [devolucaoLotes, setDevolucaoLotes] = useState<Record<number, string>>({});
+  const [devolucaoValidades, setDevolucaoValidades] = useState<Record<number, string>>({});
   const [devolucaoError, setDevolucaoError] = useState<string | null>(null);
 
   // Modal de Ficha de Empréstimo / Devolução para Impressão
@@ -610,11 +612,17 @@ export const EmprestimosView: React.FC<EmprestimosViewProps> = ({
         : 'Recebimento de Devolução de Empréstimo concedido à entidade parceira'
     );
     const mapQtd: Record<number, number> = {};
+    const mapLotes: Record<number, string> = {};
+    const mapValidades: Record<number, string> = {};
     for (const it of loan.itens || []) {
       const pendente = Math.max(0, Number(it.quantidade) - Number(it.quantidade_devolvida || 0));
       mapQtd[it.id] = pendente;
+      mapLotes[it.id] = it.numero_lote || '';
+      mapValidades[it.id] = it.data_validade ? String(it.data_validade).slice(0, 10) : '';
     }
     setDevolucaoQuantidades(mapQtd);
+    setDevolucaoLotes(mapLotes);
+    setDevolucaoValidades(mapValidades);
     setDevolucaoError(null);
   };
 
@@ -630,8 +638,8 @@ export const EmprestimosView: React.FC<EmprestimosViewProps> = ({
         .map((it) => ({
           item_id: it.id,
           quantidade: Number(devolucaoQuantidades[it.id] || 0),
-          numero_lote: it.numero_lote,
-          data_validade: it.data_validade,
+          numero_lote: devolucaoLotes[it.id] ? String(devolucaoLotes[it.id]).trim().toUpperCase() : it.numero_lote,
+          data_validade: devolucaoValidades[it.id] ? String(devolucaoValidades[it.id]).trim().slice(0, 10) : it.data_validade,
           lote_id: it.lote_id,
         }))
         .filter((d) => d.quantidade > 0);
@@ -1706,7 +1714,8 @@ export const EmprestimosView: React.FC<EmprestimosViewProps> = ({
                   <thead className="bg-slate-100 font-bold uppercase text-slate-700">
                     <tr>
                       <th className="p-2.5">Produto (Cód. Único)</th>
-                      <th className="p-2.5 text-center">Lote</th>
+                      <th className="p-2.5 text-center">Lote do Produto Devolvido</th>
+                      <th className="p-2.5 text-center">Validade do Lote</th>
                       <th className="p-2.5 text-right">Pendente</th>
                       <th className="p-2.5 text-right">Qtd a Devolver Agora</th>
                     </tr>
@@ -1720,7 +1729,33 @@ export const EmprestimosView: React.FC<EmprestimosViewProps> = ({
                             <span className="font-mono font-bold text-teal-800">[{it.produto_codigo}]</span>{' '}
                             <span className="font-medium">{it.produto_nome}</span>
                           </td>
-                          <td className="p-2.5 text-center font-mono">{it.numero_lote || '—'}</td>
+                          <td className="p-2.5 text-center">
+                            <input
+                              type="text"
+                              value={devolucaoLotes[it.id] ?? ''}
+                              onChange={(e) =>
+                                setDevolucaoLotes((prev) => ({
+                                  ...prev,
+                                  [it.id]: e.target.value.toUpperCase(),
+                                }))
+                              }
+                              placeholder="Nº Lote..."
+                              className="w-32 px-2 py-1 border border-slate-300 rounded text-center font-mono text-xs uppercase bg-white"
+                            />
+                          </td>
+                          <td className="p-2.5 text-center">
+                            <input
+                              type="date"
+                              value={devolucaoValidades[it.id] ?? ''}
+                              onChange={(e) =>
+                                setDevolucaoValidades((prev) => ({
+                                  ...prev,
+                                  [it.id]: e.target.value,
+                                }))
+                              }
+                              className="w-32 px-2 py-1 border border-slate-300 rounded text-center font-mono text-xs bg-white"
+                            />
+                          </td>
                           <td className="p-2.5 text-right font-mono font-bold">
                             {pendente} {it.unidade_medida}
                           </td>
@@ -1736,7 +1771,7 @@ export const EmprestimosView: React.FC<EmprestimosViewProps> = ({
                                   [it.id]: Math.min(pendente, Math.max(0, Number(e.target.value))),
                                 }))
                               }
-                              className="w-24 px-2 py-1 border border-slate-300 rounded text-right font-mono font-bold"
+                              className="w-20 px-2 py-1 border border-slate-300 rounded text-right font-mono font-bold bg-white"
                             />
                           </td>
                         </tr>
