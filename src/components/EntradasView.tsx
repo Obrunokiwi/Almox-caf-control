@@ -1,4 +1,4 @@
-import React, { useState, useMemo, useEffect, useCallback } from 'react';
+import React, { useState, useMemo, useEffect, useCallback, useRef } from 'react';
 import {
   PackagePlus,
   Plus,
@@ -108,6 +108,14 @@ function formatDataValidade(dateStr?: string | null): string {
   }
 }
 
+function normalizeText(text: string): string {
+  return (text || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .trim();
+}
+
 export const EntradasView: React.FC<EntradasViewProps> = ({
   produtos,
   fornecedores = [],
@@ -130,21 +138,50 @@ export const EntradasView: React.FC<EntradasViewProps> = ({
 
   // Filtros de busca da tela
   const [filtroDoc, setFiltroDoc] = useState('');
-  const [filtroProduto, setFiltroProduto] = useState('');
+  const [filtroProdutoTexto, setFiltroProdutoTexto] = useState('');
+  const [filtroProdutoId, setFiltroProdutoId] = useState<number | null>(null);
+  const [isProdutoDropdownOpen, setIsProdutoDropdownOpen] = useState(false);
+  const produtoInputRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const handleOutsideClick = (e: PointerEvent) => {
+      if (produtoInputRef.current && !produtoInputRef.current.contains(e.target as Node)) {
+        setIsProdutoDropdownOpen(false);
+      }
+    };
+    document.addEventListener('pointerdown', handleOutsideClick);
+    return () => document.removeEventListener('pointerdown', handleOutsideClick);
+  }, []);
+
+  const filteredProdutosForSuggestions = useMemo(() => {
+    const activeProds = produtos.filter((p) => p.ativo === 1);
+    if (!filtroProdutoTexto.trim() || filtroProdutoId !== null) {
+      return activeProds.slice(0, 30);
+    }
+    const termNorm = normalizeText(filtroProdutoTexto);
+    const tokens = termNorm.split(/\s+/).filter(Boolean);
+    return activeProds.filter((p) => {
+      const target = normalizeText(`${p.codigo} ${p.nome} ${p.descricao || ''}`);
+      return tokens.every((token) => target.includes(token));
+    });
+  }, [produtos, filtroProdutoTexto, filtroProdutoId]);
+
   const [filtroSituacao, setFiltroSituacao] = useState<'todas' | 'RASCUNHO' | 'ABERTA' | 'FECHADA'>('todas');
   const [isFilterOpen, setIsFilterOpen] = useState(false);
 
   const activeFiltersCount = useMemo(() => {
     let count = 0;
     if (filtroDoc.trim()) count++;
-    if (filtroProduto.trim()) count++;
+    if (filtroProdutoTexto.trim() || filtroProdutoId !== null) count++;
     if (filtroSituacao !== 'todas') count++;
     return count;
-  }, [filtroDoc, filtroProduto, filtroSituacao]);
+  }, [filtroDoc, filtroProdutoTexto, filtroProdutoId, filtroSituacao]);
 
   const handleLimparFiltros = () => {
     setFiltroDoc('');
-    setFiltroProduto('');
+    setFiltroProdutoTexto('');
+    setFiltroProdutoId(null);
+    setIsProdutoDropdownOpen(false);
     setFiltroSituacao('todas');
     setCurrentPage(1);
   };
@@ -426,7 +463,11 @@ export const EntradasView: React.FC<EntradasViewProps> = ({
     try {
       const params = new URLSearchParams();
       if (filtroDoc.trim()) params.append('busca', filtroDoc.trim());
-      if (filtroProduto.trim()) params.append('produto_busca', filtroProduto.trim());
+      if (filtroProdutoId !== null) {
+        params.append('produto_id', String(filtroProdutoId));
+      } else if (filtroProdutoTexto.trim()) {
+        params.append('produto_busca', filtroProdutoTexto.trim());
+      }
       if (filtroSituacao !== 'todas' && filtroSituacao !== 'RASCUNHO') {
         params.append('situacao', filtroSituacao);
       }
@@ -443,7 +484,7 @@ export const EntradasView: React.FC<EntradasViewProps> = ({
     } finally {
       setIsLoadingNotas(false);
     }
-  }, [canManage, filtroDoc, filtroProduto, filtroSituacao]);
+  }, [canManage, filtroDoc, filtroProdutoId, filtroProdutoTexto, filtroSituacao]);
 
   useEffect(() => {
     carregarNotas();
@@ -1090,20 +1131,113 @@ export const EntradasView: React.FC<EntradasViewProps> = ({
               />
             </div>
 
-            <div>
-              <label className="block text-[11px] font-bold text-slate-500 uppercase tracking-wider mb-1">
-                Produto contido na Nota
-              </label>
-              <input
-                type="text"
-                value={filtroProduto}
-                onChange={(e) => {
-                  setFiltroProduto(e.target.value);
-                  setCurrentPage(1);
-                }}
-                placeholder="Código ou nome do produto na NF..."
-                className="w-full px-3 py-2 bg-slate-50 border border-slate-300 rounded text-xs text-slate-800 focus:bg-white focus:border-teal-500 shadow-inner"
-              />
+            <div className="relative" ref={produtoInputRef}>
+              <div className="flex items-center justify-between mb-1">
+                <label className="block text-[11px] font-bold text-slate-500 uppercase tracking-wider">
+                  Produto contido na Nota
+                </label>
+                {filtroProdutoId !== null ? (
+                  <span className="text-[10px] font-bold text-teal-700 bg-teal-50 border border-teal-200 px-1.5 py-0.5 rounded flex items-center gap-1">
+                    <span>✓ Produto Selecionado</span>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setFiltroProdutoId(null);
+                        setFiltroProdutoTexto('');
+                        setIsProdutoDropdownOpen(false);
+                        setCurrentPage(1);
+                      }}
+                      className="text-teal-800 hover:text-teal-950 font-bold ml-0.5 cursor-pointer"
+                      title="Remover seleção"
+                    >
+                      ×
+                    </button>
+                  </span>
+                ) : filtroProdutoTexto.trim() ? (
+                  <span className="text-[10px] font-bold text-amber-800 bg-amber-50 border border-amber-200 px-1.5 py-0.5 rounded">
+                    🔍 Modo de Texto Livre
+                  </span>
+                ) : null}
+              </div>
+
+              <div className="relative flex items-center">
+                <Search className="absolute left-3 w-3.5 h-3.5 text-slate-400 pointer-events-none" />
+                <input
+                  type="text"
+                  value={filtroProdutoTexto}
+                  onFocus={() => setIsProdutoDropdownOpen(true)}
+                  onChange={(e) => {
+                    const val = e.target.value;
+                    setFiltroProdutoTexto(val);
+                    if (filtroProdutoId !== null) {
+                      setFiltroProdutoId(null);
+                    }
+                    setIsProdutoDropdownOpen(true);
+                    setCurrentPage(1);
+                  }}
+                  placeholder="Código ou nome do produto na NF..."
+                  className="w-full pl-9 pr-8 py-2 bg-slate-50 border border-slate-300 rounded text-xs text-slate-800 focus:bg-white focus:border-teal-500 shadow-inner"
+                />
+                {(filtroProdutoTexto || filtroProdutoId !== null) && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setFiltroProdutoTexto('');
+                      setFiltroProdutoId(null);
+                      setIsProdutoDropdownOpen(false);
+                      setCurrentPage(1);
+                    }}
+                    className="absolute right-2.5 p-1 text-slate-400 hover:text-slate-600 cursor-pointer"
+                    title="Limpar campo"
+                  >
+                    <X className="w-3.5 h-3.5" />
+                  </button>
+                )}
+              </div>
+
+              {/* Lista de Sugestões */}
+              {isProdutoDropdownOpen && (
+                <div className="absolute z-50 left-0 right-0 mt-1 bg-white border border-slate-300 rounded-xl shadow-2xl max-h-72 overflow-y-auto divide-y divide-slate-100">
+                  {filteredProdutosForSuggestions.length > 0 ? (
+                    filteredProdutosForSuggestions.map((prod) => (
+                      <div
+                        key={prod.id}
+                        onMouseDown={(e) => e.preventDefault()}
+                        onClick={() => {
+                          setFiltroProdutoId(prod.id);
+                          setFiltroProdutoTexto(`${prod.codigo} - ${prod.nome}`);
+                          setIsProdutoDropdownOpen(false);
+                          setCurrentPage(1);
+                        }}
+                        className="p-3 hover:bg-teal-50/80 cursor-pointer transition-colors flex flex-col gap-1 min-w-0"
+                      >
+                        <div className="font-mono font-bold text-teal-800 text-xs">{prod.codigo}</div>
+                        <div className="text-slate-900 text-xs whitespace-normal break-words leading-snug min-w-0">
+                          {prod.nome}
+                        </div>
+                        <div className="text-[10px] text-slate-500 flex items-center gap-2">
+                          <span>Unidade: {prod.unidade_medida}</span>
+                          <span>•</span>
+                          <span>Saldo: {prod.quantidade_atual}</span>
+                          {prod.tipo === 'consumivel' && (
+                            <>
+                              <span>•</span>
+                              <span className="text-teal-700 font-semibold">Consumível</span>
+                            </>
+                          )}
+                        </div>
+                      </div>
+                    ))
+                  ) : (
+                    <div className="p-4 text-center text-xs text-slate-500 space-y-1">
+                      <p className="font-semibold text-slate-700">Nenhum produto correspondente encontrado no catálogo.</p>
+                      <p className="text-[11px] text-slate-400">
+                        A busca continuará em modo de texto livre para &ldquo;{filtroProdutoTexto}&rdquo;.
+                      </p>
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
 
             <div>

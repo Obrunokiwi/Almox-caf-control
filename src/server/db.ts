@@ -1271,6 +1271,10 @@ function migrateAreaDb(areaDb: DatabaseSync, areaSigla: string, dbFilePath: stri
       areaDb.exec('ALTER TABLE produtos ADD COLUMN subgrupo_nome TEXT;');
       appliedMigrations++;
     }
+    if (!prodCols.has('excluido')) {
+      areaDb.exec('ALTER TABLE produtos ADD COLUMN excluido INTEGER NOT NULL DEFAULT 0;');
+      appliedMigrations++;
+    }
 
     // 8. Verificação e adição de colunas em centros_custo
     const ccCols = new Set((areaDb.prepare("PRAGMA table_info('centros_custo')").all() as Array<{ name: string }>).map((c) => c.name));

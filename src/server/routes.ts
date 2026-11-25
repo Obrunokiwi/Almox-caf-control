@@ -3056,7 +3056,8 @@ apiRouter.get('/lotes', (req, res) => {
     FROM lotes_estoque le
     JOIN produtos p ON le.produto_id = p.id
     LEFT JOIN fornecedores f ON le.fornecedor_id = f.id
-    WHERE UPPER(TRIM(COALESCE(le.numero_lote, ''))) NOT IN ('', 'SEM LOTE', 'S/ LOTE', 'S/L', 'N/A', 'LOTE-PADRAO')
+    WHERE COALESCE(p.excluido, 0) = 0
+      AND UPPER(TRIM(COALESCE(le.numero_lote, ''))) NOT IN ('', 'SEM LOTE', 'S/ LOTE', 'S/L', 'N/A', 'LOTE-PADRAO')
   `;
   const params: any[] = [];
 
@@ -3495,7 +3496,7 @@ apiRouter.get('/produtos', (req, res) => {
     FROM produtos p
     LEFT JOIN grupos_produtos gp ON p.grupo_id = gp.id
     LEFT JOIN subgrupos_produtos sg ON p.subgrupo_id = sg.id
-    WHERE 1=1
+    WHERE COALESCE(p.excluido, 0) = 0
   `;
   const params: any[] = [];
 
@@ -3666,7 +3667,7 @@ apiRouter.post('/produtos/:id/fornecedores', (req, res) => {
   }
 
   try {
-    const prod = db.prepare('SELECT id, codigo, nome FROM produtos WHERE id = ?').get(id) as any;
+    const prod = db.prepare('SELECT id, codigo, nome FROM produtos WHERE id = ? AND COALESCE(excluido, 0) = 0').get(id) as any;
     if (!prod) {
       res.status(404).json({ error: 'Produto não encontrado no catálogo' });
       return;
@@ -3798,6 +3799,16 @@ apiRouter.post('/produtos', (req, res) => {
   }
 
   try {
+    const prodExcluidoMesmoCodigo = db
+      .prepare('SELECT id, codigo FROM produtos WHERE UPPER(codigo) = UPPER(?) AND COALESCE(excluido, 0) = 1')
+      .get(codigo) as { id: number; codigo: string } | undefined;
+    if (prodExcluidoMesmoCodigo) {
+      db.prepare('UPDATE produtos SET codigo = ? WHERE id = ?').run(
+        `${prodExcluidoMesmoCodigo.codigo}#HIST-${prodExcluidoMesmoCodigo.id}`,
+        prodExcluidoMesmoCodigo.id
+      );
+    }
+
     const stmt = db.prepare(`
       INSERT INTO produtos (
         codigo, nome, descricao, grupo_id, subgrupo_id, subgrupo_nome, unidade_medida, tipo,
@@ -3847,6 +3858,11 @@ apiRouter.put('/produtos/:id', (req, res) => {
   }
 
   const { id } = req.params;
+  const prodExistente = db.prepare('SELECT id FROM produtos WHERE id = ? AND COALESCE(excluido, 0) = 0').get(Number(id));
+  if (!prodExistente) {
+    res.status(404).json({ error: 'Produto não encontrado no catálogo desta área operacional.' });
+    return;
+  }
   const {
     codigo,
     nome,
@@ -3888,6 +3904,19 @@ apiRouter.put('/produtos/:id', (req, res) => {
   }
 
   try {
+    const codigoTrim = codigo ? String(codigo).trim() : '';
+    if (codigoTrim) {
+      const prodExcluidoMesmoCodigo = db
+        .prepare('SELECT id, codigo FROM produtos WHERE UPPER(codigo) = UPPER(?) AND id != ? AND COALESCE(excluido, 0) = 1')
+        .get(codigoTrim, Number(id)) as { id: number; codigo: string } | undefined;
+      if (prodExcluidoMesmoCodigo) {
+        db.prepare('UPDATE produtos SET codigo = ? WHERE id = ?').run(
+          `${prodExcluidoMesmoCodigo.codigo}#HIST-${prodExcluidoMesmoCodigo.id}`,
+          prodExcluidoMesmoCodigo.id
+        );
+      }
+    }
+
     db.prepare(`
       UPDATE produtos
       SET codigo = ?, nome = ?, descricao = ?, grupo_id = ?,
@@ -3897,7 +3926,7 @@ apiRouter.put('/produtos/:id', (req, res) => {
           estoque_minimo = ?, estoque_maximo = ?, valor_unitario = ?, custo_unitario = ?, localizacao = ?, ativo = ?
       WHERE id = ?
     `).run(
-      codigo ? String(codigo).trim() : '',
+      codigoTrim,
       nome.trim().toUpperCase(),
       descricao ? descricao.trim() : null,
       grupo_id !== undefined ? (grupo_id ? Number(grupo_id) : null) : null,
@@ -3944,7 +3973,7 @@ apiRouter.patch('/produtos/:id/inativar', (req, res) => {
     return;
   }
 
-  const prod = db.prepare('SELECT id, codigo, nome, ativo FROM produtos WHERE id = ?').get(produtoId) as any;
+  const prod = db.prepare('SELECT id, codigo, nome, ativo FROM produtos WHERE id = ? AND COALESCE(excluido, 0) = 0').get(produtoId) as any;
   if (!prod) {
     res.status(404).json({ error: 'Produto não encontrado no catálogo desta área operacional.' });
     return;
@@ -3985,7 +4014,7 @@ apiRouter.delete('/produtos/:id', (req, res) => {
     return;
   }
 
-  const prod = db.prepare('SELECT * FROM produtos WHERE id = ?').get(produtoId) as any;
+  const prod = db.prepare('SELECT * FROM produtos WHERE id = ? AND COALESCE(excluido, 0) = 0').get(produtoId) as any;
   if (!prod) {
     res.status(404).json({ error: 'Produto não encontrado no catálogo desta área operacional.' });
     return;
@@ -4003,6 +4032,7 @@ apiRouter.delete('/produtos/:id', (req, res) => {
   const movCount = safeCount('SELECT COUNT(*) as count FROM movimentacoes WHERE produto_id = ?', produtoId);
   const consCount = safeCount('SELECT COUNT(*) as count FROM itens_consumo WHERE produto_id = ?', produtoId);
   const reqCount = safeCount('SELECT COUNT(*) as count FROM itens_requisicao WHERE produto_id = ?', produtoId);
+  const histReqCount = safeCount('SELECT COUNT(*) as count FROM historico_requisicoes WHERE produto_id = ?', produtoId);
   const invCount = safeCount('SELECT COUNT(*) as count FROM itens_inventario WHERE produto_id = ?', produtoId);
   const empAtivosCount = safeCount(
     "SELECT COUNT(*) as count FROM emprestimos WHERE produto_id = ? AND status IN ('emprestado', 'atrasado')",
@@ -4011,6 +4041,10 @@ apiRouter.delete('/produtos/:id', (req, res) => {
   const empTotalCount = safeCount('SELECT COUNT(*) as count FROM emprestimos WHERE produto_id = ?', produtoId);
   const empInstCount = safeCount(
     'SELECT COUNT(*) as count FROM itens_emprestimo_institucional WHERE produto_id = ?',
+    produtoId
+  );
+  const listaFechadaCount = safeCount(
+    "SELECT COUNT(*) as count FROM itens_lista_reposicao ilr JOIN listas_reposicao lr ON lr.id = ilr.lista_id WHERE ilr.produto_id = ? AND lr.status = 'FECHADA'",
     produtoId
   );
 
@@ -4024,6 +4058,8 @@ apiRouter.delete('/produtos/:id', (req, res) => {
     saldoLotes = 0;
   }
   const saldoAtual = Math.max(Number(prod.quantidade_atual || 0), saldoLotes);
+
+  const isAtivo = Number(prod.ativo) === 1;
 
   const detalhesVinculos: string[] = [];
   if (movCount > 0) {
@@ -4050,11 +4086,12 @@ apiRouter.delete('/produtos/:id', (req, res) => {
     detalhesVinculos.push(`saldo físico positivo em estoque (${saldoAtual} ${prod.unidade_medida || 'UN'})`);
   }
 
-  if (detalhesVinculos.length > 0) {
+  // Produto ATIVO com movimentações vinculadas: mantém o bloqueio e oferece inativação
+  if (isAtivo && detalhesVinculos.length > 0) {
     res.status(409).json({
-      error: `Não é possível excluir o produto "${prod.codigo} - ${prod.nome}" pois ele possui movimentações ou vínculos operacionais (${detalhesVinculos.join('; ')}). Para preservar a integridade contábil e a auditoria do Kardex, inative o produto no catálogo.`,
+      error: `Não é possível excluir o produto "${prod.codigo} - ${prod.nome}" pois ele está ativo e possui movimentações ou vínculos operacionais (${detalhesVinculos.join('; ')}). Para preservar a integridade contábil e a auditoria do Kardex, inative o produto no catálogo.`,
       code: 'PRODUTO_COM_MOVIMENTACOES',
-      canInactivate: Number(prod.ativo) === 1,
+      canInactivate: true,
       vinculos: {
         movimentacoes: movCount,
         consumos: consCount,
@@ -4070,11 +4107,63 @@ apiRouter.delete('/produtos/:id', (req, res) => {
     return;
   }
 
+  const possuiHistoricoAssociado =
+    movCount > 0 ||
+    consCount > 0 ||
+    reqCount > 0 ||
+    histReqCount > 0 ||
+    invCount > 0 ||
+    empTotalCount > 0 ||
+    empInstCount > 0 ||
+    listaFechadaCount > 0;
+
   try {
+    const clientIp = (req.headers['x-forwarded-for'] as string)?.split(',')[0]?.trim() || req.socket.remoteAddress || 'local';
+    const areaSigla = (req as any).areaSigla || user.area_sigla || 'ALM';
+
+    if (!isAtivo && possuiHistoricoAssociado) {
+      // Produto INATIVO com histórico anterior: remove do catálogo e limpa apenas vínculos auxiliares,
+      // preservando integralmente movimentações, requisições, inventários, consumos e registros de auditoria.
+      runInTransaction(() => {
+        try {
+          db.prepare(
+            "DELETE FROM itens_lista_reposicao WHERE produto_id = ? AND lista_id IN (SELECT id FROM listas_reposicao WHERE status = 'RASCUNHO')"
+          ).run(produtoId);
+        } catch {}
+        db.prepare('DELETE FROM produto_fornecedores WHERE produto_id = ?').run(produtoId);
+        try {
+          db.prepare(`
+            DELETE FROM lotes_estoque
+            WHERE produto_id = ?
+              AND quantidade_atual = 0
+              AND id NOT IN (SELECT lote_id FROM itens_consumo WHERE lote_id IS NOT NULL)
+              AND id NOT IN (SELECT lote_id FROM movimentacoes WHERE lote_id IS NOT NULL)
+              AND id NOT IN (SELECT lote_id FROM itens_inventario WHERE lote_id IS NOT NULL)
+              AND id NOT IN (SELECT lote_id FROM itens_requisicao WHERE lote_id IS NOT NULL)
+              AND id NOT IN (SELECT lote_id FROM itens_emprestimo_institucional WHERE lote_id IS NOT NULL)
+          `).run(produtoId);
+        } catch {}
+        db.prepare('UPDATE produtos SET excluido = 1, ativo = 0 WHERE id = ?').run(produtoId);
+      });
+
+      registrarLogAcesso(
+        user,
+        clientIp,
+        'excluir_produto',
+        `Produto inativo "${prod.codigo} - ${prod.nome}" (ID ${produtoId}) excluído do catálogo com preservação integral do histórico associado.`,
+        areaSigla
+      );
+
+      res.json({
+        id: produtoId,
+        preservedHistory: true,
+        message: `Produto "${prod.codigo} - ${prod.nome}" excluído do catálogo com sucesso. O histórico de movimentações e registros associados foi preservado.`,
+      });
+      return;
+    }
+
+    // Produto (ativo ou inativo) SEM movimentações/histórico associado: remoção física limpa
     runInTransaction(() => {
-      try {
-        db.prepare('UPDATE historico_requisicoes SET produto_id = NULL WHERE produto_id = ?').run(produtoId);
-      } catch {}
       try {
         db.prepare('DELETE FROM itens_lista_reposicao WHERE produto_id = ?').run(produtoId);
       } catch {}
@@ -4083,8 +4172,6 @@ apiRouter.delete('/produtos/:id', (req, res) => {
       db.prepare('DELETE FROM produtos WHERE id = ?').run(produtoId);
     });
 
-    const clientIp = (req.headers['x-forwarded-for'] as string)?.split(',')[0]?.trim() || req.socket.remoteAddress || 'local';
-    const areaSigla = (req as any).areaSigla || user.area_sigla || 'ALM';
     registrarLogAcesso(
       user,
       clientIp,
@@ -4095,6 +4182,7 @@ apiRouter.delete('/produtos/:id', (req, res) => {
 
     res.json({
       id: produtoId,
+      preservedHistory: false,
       message: `Produto "${prod.codigo} - ${prod.nome}" excluído com sucesso do catálogo.`,
     });
   } catch (err: any) {
@@ -4103,7 +4191,7 @@ apiRouter.delete('/produtos/:id', (req, res) => {
       res.status(409).json({
         error: `Não é possível excluir o produto "${prod.codigo} - ${prod.nome}" pois existem registros ou movimentações vinculadas no banco de dados que impedem sua remoção.`,
         code: 'INTEGRIDADE_REFERENCIAL',
-        canInactivate: Number(prod.ativo) === 1,
+        canInactivate: isAtivo,
       });
       return;
     }
@@ -4552,7 +4640,7 @@ apiRouter.get('/notas-fiscais', (req, res) => {
     return;
   }
 
-  const { busca, produto_busca, situacao, limite } = req.query;
+  const { busca, produto_id, produto_busca, situacao, limite } = req.query;
 
   try {
     try {
@@ -4630,7 +4718,16 @@ apiRouter.get('/notas-fiscais', (req, res) => {
       params.push(term, term, term, term, term, term, term);
     }
 
-    if (produto_busca && typeof produto_busca === 'string' && produto_busca.trim()) {
+    if (produto_id && !isNaN(Number(produto_id))) {
+      query += ` AND EXISTS (
+        SELECT 1 FROM movimentacoes m
+        WHERE m.nota_fiscal_id = nf.id
+          AND m.tipo = 'entrada'
+          AND COALESCE(m.motivo_diverso, '') NOT IN ('Entrada corrigida (estornada)', 'Entrada corrigida (item removido)')
+          AND m.produto_id = ?
+      )`;
+      params.push(Number(produto_id));
+    } else if (produto_busca && typeof produto_busca === 'string' && produto_busca.trim()) {
       const prodTerm = `%${produto_busca.trim()}%`;
       query += ` AND EXISTS (
         SELECT 1 FROM movimentacoes m
@@ -10056,6 +10153,7 @@ apiRouter.post('/relatorios/dinamico', (req, res) => {
         p.estoque_maximo,
         p.localizacao,
         p.ativo,
+        COALESCE(p.excluido, 0) as excluido,
         COALESCE(g.nome, 'Sem Grupo') as grupo_nome,
         COALESCE(sg.nome, NULLIF(TRIM(p.subgrupo_nome), ''), 'Sem Subgrupo') as subgrupo_resolvido
       FROM produtos p
@@ -10713,6 +10811,7 @@ apiRouter.post('/relatorios/dinamico', (req, res) => {
         // Se incluirZeros estiver ativo no detalhamento por produto, inclui produtos do catálogo que passaram nos filtros mesmo sem movimentação no período
         if (incluirZeros && detalhamento === 'produto' && agrupamento !== 'centro_custo') {
           for (const prod of produtosRows) {
+            if (Number(prod.excluido) === 1) continue;
             if (!passaFiltrosCatalogo(prod)) continue;
             const chave = `${prod.id}::__TODOS__::__TODOS__`;
             if (!gruposConsol.has(chave)) {
@@ -12290,7 +12389,7 @@ function executarFechamentoInventario(invId: number, usuario: any) {
   // Se Zera estoque de produtos não listados estiver ativo: produtos que não foram incluídos na contagem têm seus saldos zerados
   if (inv.zera_nao_listados === 1) {
     const countedProdIdsArr = Array.from(countedProdIds);
-    let queryProdsNaoContados = 'SELECT * FROM produtos WHERE quantidade_atual > 0';
+    let queryProdsNaoContados = 'SELECT * FROM produtos WHERE quantidade_atual > 0 AND COALESCE(excluido, 0) = 0';
     const paramsProds: any[] = [];
     if (countedProdIdsArr.length > 0) {
       queryProdsNaoContados += ` AND id NOT IN (${countedProdIdsArr.map(() => '?').join(',')})`;
@@ -13366,7 +13465,7 @@ function handleImportacaoProdutosRoute(req: any, res: any) {
       const auditoriaUserId = userExiste ? user.id : 1;
       const auditoriaUserNome = user.nome || 'Administrador Geral';
 
-      const stmtCheckProd = targetDb.prepare('SELECT id, codigo, nome, grupo_id, subgrupo_id, subgrupo_nome, quantidade_atual, custo_unitario FROM produtos WHERE UPPER(codigo) = UPPER(?)');
+      const stmtCheckProd = targetDb.prepare('SELECT id, codigo, nome, grupo_id, subgrupo_id, subgrupo_nome, quantidade_atual, custo_unitario FROM produtos WHERE UPPER(codigo) = UPPER(?) AND COALESCE(excluido, 0) = 0');
       const stmtInsertProd = targetDb.prepare(`
         INSERT INTO produtos (
           codigo, nome, descricao, grupo_id, subgrupo_id, subgrupo_nome, unidade_medida, tipo, controla_validade,
@@ -13543,6 +13642,15 @@ function handleImportacaoProdutosRoute(req: any, res: any) {
           });
         } else {
           isNovo = true;
+          const prodExcluidoImp = targetDb
+            .prepare('SELECT id, codigo FROM produtos WHERE UPPER(TRIM(codigo)) = UPPER(TRIM(?)) AND COALESCE(excluido, 0) = 1')
+            .get(rawCod) as { id: number; codigo: string } | undefined;
+          if (prodExcluidoImp) {
+            targetDb.prepare('UPDATE produtos SET codigo = ? WHERE id = ?').run(
+              `${prodExcluidoImp.codigo}#HIST-${prodExcluidoImp.id}`,
+              prodExcluidoImp.id
+            );
+          }
           const insertInfo = stmtInsertProd.run(
             rawCod,
             rawDesc,

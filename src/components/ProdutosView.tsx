@@ -1734,10 +1734,18 @@ export const ProdutosView: React.FC<ProdutosViewProps> = ({
 
       <ConfirmDeleteModal
         isOpen={!!deletingProduto}
-        title="Excluir Produto do Catálogo"
+        title={
+          deletingProduto && Number(deletingProduto.ativo) === 0
+            ? 'Confirmar Exclusão de Produto Inativo'
+            : 'Excluir Produto do Catálogo'
+        }
         entityCode={deletingProduto?.codigo}
         entityName={deletingProduto?.nome || ''}
-        description="A remoção definitiva só é permitida para itens sem histórico de movimentações, requisições, consumos, inventários ou empréstimos vinculados. Itens com movimentações registradas são protegidos para auditoria contábil."
+        description={
+          deletingProduto && Number(deletingProduto.ativo) === 0
+            ? 'Este produto está inativo. Confirma a remoção do seu cadastro do catálogo? Movimentações anteriores, requisições, inventários, consumos e registros de auditoria serão integralmente preservados.'
+            : 'A remoção imediata de um produto ativo só ocorre caso não existam movimentações vinculadas. Se houver histórico operacional, a exclusão será bloqueada com opção de inativá-lo.'
+        }
         isProcessing={isProcessing}
         onConfirm={handleConfirmDelete}
         onClose={() => setDeletingProduto(null)}

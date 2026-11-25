@@ -112,6 +112,7 @@ CREATE TABLE IF NOT EXISTS produtos (
     custo_unitario REAL NOT NULL DEFAULT 0,
     localizacao TEXT,
     ativo INTEGER NOT NULL DEFAULT 1,
+    excluido INTEGER NOT NULL DEFAULT 0,
     criado_em DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 CREATE INDEX IF NOT EXISTS idx_produtos_codigo ON produtos (codigo);
