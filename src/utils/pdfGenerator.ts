@@ -6,6 +6,7 @@ import type {
   ItemRequisicao,
   HistoricoRequisicao,
   Emprestimo,
+  EmprestimoInstitucional,
   Usuario,
   EmpresaUnidade,
   NotaFiscal,
@@ -1832,6 +1833,140 @@ export async function generateComprovanteConsumoPDF(
 
   const filename = `comprovante_consumo_${consumo.numero_consumo.toLowerCase()}_${Date.now()}.pdf`;
   return finalizeJsPDF(doc, filename, tituloDoc, mode);
+}
+
+// ============================================================================
+// COMPROVANTE / FICHA INSTITUCIONAL DE EMPRÉSTIMO OU DEVOLUÇÃO ENTRE ENTIDADES
+// ============================================================================
+export async function generateComprovanteEmprestimoInstitucionalPDF(params: {
+  loan: EmprestimoInstitucional;
+  modoFicha?: 'emprestimo' | 'devolucao';
+  currentUser?: Usuario | null;
+  activeUnidade?: EmpresaUnidade | null;
+  mode: PdfOutputMode;
+}): Promise<PdfGeneratedDocument> {
+  const { loan, modoFicha = 'emprestimo', currentUser, activeUnidade, mode } = params;
+  const doc = new jsPDF({
+    orientation: 'portrait',
+    unit: 'mm',
+    format: 'a4',
+  });
+
+  const pageWidth = doc.internal.pageSize.getWidth();
+  const docNumber = modoFicha === 'devolucao' ? `DEV-${loan.numero_documento}` : loan.numero_documento;
+  const titulo = modoFicha === 'devolucao'
+    ? (loan.tipo === 'recebido' ? 'FICHA DE DEVOLUÇÃO DE EMPRÉSTIMO A TERCEIROS' : 'FICHA DE RECEBIMENTO DE DEVOLUÇÃO DE EMPRÉSTIMO')
+    : (loan.tipo === 'recebido' ? 'FICHA DE ENTRADA POR EMPRÉSTIMO RECEBIDO' : 'FICHA DE EMPRÉSTIMO CONCEDIDO A TERCEIROS');
+
+  let currentY = await drawInstitutionalHeader(doc, {
+    titulo,
+    subtitulo: 'Controle interinstitucional de empréstimos, insumos hospitalares e rastreabilidade de lotes',
+    protocolo: docNumber,
+    activeUnidade,
+    currentUser,
+  });
+
+  const nomeNossaUnidade = activeUnidade ? `${activeUnidade.codigo} - ${activeUnidade.nome}` : 'Unidade Principal / Hospital Central';
+  const entidadeOrigem = modoFicha === 'emprestimo'
+    ? (loan.tipo === 'recebido' ? `${loan.entidade_nome} (${loan.entidade_codigo})` : nomeNossaUnidade)
+    : (loan.tipo === 'recebido' ? nomeNossaUnidade : `${loan.entidade_nome} (${loan.entidade_codigo})`);
+  const entidadeDestino = modoFicha === 'emprestimo'
+    ? (loan.tipo === 'recebido' ? nomeNossaUnidade : `${loan.entidade_nome} (${loan.entidade_codigo})`)
+    : (loan.tipo === 'recebido' ? `${loan.entidade_nome} (${loan.entidade_codigo})` : nomeNossaUnidade);
+
+  autoTable(doc, {
+    startY: currentY,
+    head: [['Dados do Documento Interinstitucional', 'Detalhamento da Operação']],
+    body: [
+      ['Número do Documento:', docNumber],
+      ['Natureza / Cenário:', loan.tipo === 'recebido' ? 'Recebido (Pegamos Emprestado)' : 'Concedido (Emprestamos a Terceiros)'],
+      ['Entidade de Origem (Cedente):', entidadeOrigem],
+      ['Entidade de Destino (Favorecida):', entidadeDestino],
+      ['Data / Hora da Operação:', formatDateTimeBrasilia(modoFicha === 'devolucao' && loan.data_quitacao ? loan.data_quitacao : loan.data_operacao)],
+      ['Status Atual do Termo:', loan.status.toUpperCase()],
+      ['Responsável Parceiro:', loan.responsavel_entidade_nome || '—'],
+    ],
+    margin: { left: 12, right: 12 },
+    theme: 'grid',
+    styles: { fontSize: 8, cellPadding: 2.5, textColor: [30, 41, 59] },
+    headStyles: { fillColor: [0, 35, 125], textColor: [255, 255, 255], fontStyle: 'bold' },
+    columnStyles: { 0: { fontStyle: 'bold', fillColor: [248, 250, 252], cellWidth: 70 } },
+  });
+
+  currentY = ((doc as any).lastAutoTable?.finalY || currentY + 50) + 6;
+
+  const bodyItens = (loan.itens || []).map((item) => {
+    const qtd = modoFicha === 'devolucao' && Number(item.quantidade_devolvida) > 0 ? item.quantidade_devolvida : item.quantidade;
+    const custo = Number(item.valor_unitario ?? item.custo_unitario ?? 0);
+    const subtotal = custo * Number(qtd);
+    return [
+      item.produto_codigo || '',
+      item.produto_nome || '',
+      `${item.numero_lote || 'S/L'}${item.data_validade ? ` (Val: ${item.data_validade.split('-').reverse().join('/')})` : ''}`,
+      `${qtd} ${item.unidade_medida || 'UN'}`,
+      `R$ ${custo.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`,
+      `R$ ${subtotal.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`,
+    ];
+  });
+
+  autoTable(doc, {
+    startY: currentY,
+    head: [['Código', 'Descrição do Produto / Insumo', 'Lote & Validade', 'Quantidade', 'Custo Unit.', 'Subtotal']],
+    body: bodyItens.length > 0 ? bodyItens : [['—', 'Nenhum item registrado', '—', '0', 'R$ 0,00', 'R$ 0,00']],
+    margin: { left: 12, right: 12 },
+    theme: 'grid',
+    styles: { fontSize: 8, cellPadding: 2.5, textColor: [30, 41, 59] },
+    headStyles: { fillColor: [13, 148, 136], textColor: [255, 255, 255], fontStyle: 'bold' },
+    columnStyles: {
+      3: { halign: 'right' },
+      4: { halign: 'right' },
+      5: { halign: 'right' },
+    },
+  });
+
+  currentY = ((doc as any).lastAutoTable?.finalY || currentY + 40) + 6;
+
+  if (loan.observacao) {
+    doc.setFillColor(248, 250, 252);
+    doc.setDrawColor(203, 213, 225);
+    doc.roundedRect(12, currentY, pageWidth - 24, 16, 1, 1, 'FD');
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(7.5);
+    doc.setTextColor(100, 116, 139);
+    doc.text('OBSERVAÇÕES / AUTORIZAÇÃO DIRETORIA:', 15, currentY + 4.5);
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(8);
+    doc.setTextColor(30, 41, 59);
+    doc.text(loan.observacao, 15, currentY + 11, { maxWidth: pageWidth - 30 });
+    currentY += 22;
+  }
+
+  currentY = Math.max(currentY + 10, doc.internal.pageSize.getHeight() - 45);
+
+  doc.setDrawColor(100, 116, 139);
+  doc.setLineWidth(0.3);
+  doc.line(20, currentY, 90, currentY);
+  doc.line(pageWidth - 90, currentY, pageWidth - 20, currentY);
+
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(8);
+  doc.setTextColor(30, 41, 59);
+  doc.text('Responsável pelo Almoxarifado', 55, currentY + 4.5, { align: 'center' });
+  doc.setFont('helvetica', 'normal');
+  doc.setFontSize(7.5);
+  doc.text(loan.responsavel_almoxarifado_nome || currentUser?.nome || 'Almoxarifado Central', 55, currentY + 9, { align: 'center' });
+
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(8);
+  doc.text('Responsável Entidade Parceira', pageWidth - 55, currentY + 4.5, { align: 'center' });
+  doc.setFont('helvetica', 'normal');
+  doc.setFontSize(7.5);
+  doc.text(loan.responsavel_entidade_nome || loan.entidade_nome || 'Representante Legal', pageWidth - 55, currentY + 9, { align: 'center' });
+
+  drawInstitutionalFooters(doc, docNumber);
+
+  const filename = `ficha_emprestimo_${docNumber.toLowerCase()}_${Date.now()}.pdf`;
+  return finalizeJsPDF(doc, filename, titulo, mode);
 }
 
 

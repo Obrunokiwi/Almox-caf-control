@@ -33,6 +33,7 @@ import { HelpFloatingModal } from './HelpFloatingModal.tsx';
 import { SearchableSelect, type SearchableOption } from './SearchableSelect.tsx';
 import { getAuthHeaders } from '../utils/apiUtils.ts';
 import { formatDateTimeBrasilia } from '../utils/dateUtils.ts';
+import { generateComprovanteEmprestimoInstitucionalPDF } from '../utils/pdfGenerator.ts';
 import { useFormDraft } from '../hooks/useFormDraft.ts';
 import {
   FormDraftResumeBanner,
@@ -494,10 +495,17 @@ export const EmprestimosView: React.FC<EmprestimosViewProps> = ({
       onRefresh();
 
       if (statusInicial === 'pendente_devolucao' && data.data) {
-        setFichaImpressao({
-          loan: data.data,
-          modoFicha: 'emprestimo',
-        });
+        try {
+          await generateComprovanteEmprestimoInstitucionalPDF({
+            loan: data.data,
+            modoFicha: 'emprestimo',
+            currentUser,
+            activeUnidade,
+            mode: 'print',
+          });
+        } catch (err) {
+          console.error('Erro ao gerar PDF da ficha:', err);
+        }
       }
     } catch (err: any) {
       const msg = err.message || 'Falha ao salvar empréstimo institucional.';
@@ -671,10 +679,17 @@ export const EmprestimosView: React.FC<EmprestimosViewProps> = ({
       onRefresh();
 
       if (data.data) {
-        setFichaImpressao({
-          loan: data.data,
-          modoFicha: 'devolucao',
-        });
+        try {
+          await generateComprovanteEmprestimoInstitucionalPDF({
+            loan: data.data,
+            modoFicha: 'devolucao',
+            currentUser,
+            activeUnidade,
+            mode: 'print',
+          });
+        } catch (err) {
+          console.error('Erro ao gerar PDF de devolução:', err);
+        }
       }
     } catch (err: any) {
       const msg = err.message || 'Erro ao processar devolução.';
@@ -1530,17 +1545,25 @@ export const EmprestimosView: React.FC<EmprestimosViewProps> = ({
 
                           <button
                             type="button"
-                            onClick={() =>
-                              setFichaImpressao({
-                                loan,
-                                modoFicha: loan.status === 'quitado' ? 'devolucao' : 'emprestimo',
-                              })
-                            }
+                            onClick={async () => {
+                              try {
+                                await generateComprovanteEmprestimoInstitucionalPDF({
+                                  loan,
+                                  modoFicha: loan.status === 'quitado' ? 'devolucao' : 'emprestimo',
+                                  currentUser,
+                                  activeUnidade,
+                                  mode: 'print',
+                                });
+                                toast.success('PDF Gerado', 'Ficha institucional gerada e enviada para impressão com sucesso.');
+                              } catch (err: any) {
+                                toast.error('Erro no PDF', err.message || 'Não foi possível gerar a ficha em PDF.');
+                              }
+                            }}
                             className="px-2.5 py-1.5 rounded bg-slate-100 hover:bg-slate-200 text-slate-800 border border-slate-300 font-bold text-[11px] inline-flex items-center gap-1 cursor-pointer"
-                            title="Visualizar e Imprimir Ficha com Assinaturas"
+                            title="Gerar PDF Oficial da Ficha com Assinaturas"
                           >
                             <Printer className="w-3.5 h-3.5 text-[#00237D]" />
-                            <span>Ficha</span>
+                            <span>Ficha PDF</span>
                           </button>
 
                           {canManage && isPendente && (
